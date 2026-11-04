@@ -11,7 +11,7 @@ import FinanceView from './components/finance/FinanceView';
 import ReportsView from './components/reports/ReportsView';
 import SettingsView from './components/settings/SettingsView';
 import StudentPortal from './components/student/StudentPortal';
-import { authService } from './services/authService';
+import { authService, resolveCoachProfile } from './services/authService';
 import { supabase } from './lib/supabase';
 import { Menu } from 'lucide-react';
 import BrandLogoOfficial from './components/common/BrandLogoOfficial';
@@ -62,24 +62,7 @@ export default function App() {
         const { data: { session: sbSession } } = await supabase.auth.getSession();
 
         if (sbSession && sbSession.user) {
-          let coachProfile = {
-            id: sbSession.user.id,
-            nombre: sbSession.user.user_metadata?.nombre || sbSession.user.user_metadata?.full_name || 'Esteban Correa',
-            email: sbSession.user.email,
-            avatar_url: sbSession.user.user_metadata?.avatar_url || null
-          };
-
-          try {
-            const { data: coachData } = await supabase
-              .from('coaches')
-              .select('*')
-              .eq('user_id', sbSession.user.id)
-              .maybeSingle();
-
-            if (coachData) coachProfile = { ...coachProfile, ...coachData };
-          } catch (e) {
-            // ignore
-          }
+          const coachProfile = await resolveCoachProfile(sbSession.user);
 
           const coachSession = {
             role: 'coach',
@@ -117,6 +100,15 @@ export default function App() {
 
     // Escuchar eventos de sesión de Supabase Auth
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, sbSession) => {
+      if (event === 'TOKEN_REFRESHED' && sbSession?.access_token) {
+        // Mantener sincronizado el token guardado localmente con el renovado por Supabase
+        const local = authService.getCurrentSession();
+        if (local?.role === 'coach') {
+          const updated = { ...local, token: sbSession.access_token };
+          authService.saveSession(updated);
+          setSession(updated);
+        }
+      }
       if (event === 'SIGNED_OUT') {
         localStorage.removeItem('ec_trainer_auth_session');
         setSession(prev => (prev?.role === 'coach' ? null : prev));
@@ -329,7 +321,7 @@ export default function App() {
 
           {/* 10. Configuración */}
           {currentView === 'configuracion' && (
-            <SettingsView onUpdateProfile={(updated) => setSession(prev => ({ ...prev, user: { ...prev.user, ...updated } }))} />
+            <SettingsView user={session.user} onUpdateProfile={(updated) => setSession(prev => ({ ...prev, user: { ...prev.user, ...updated } }))} />
           )}
 
         </main>

@@ -280,6 +280,75 @@ export const dataService = {
     }
   },
 
+  /**
+   * Actividad real de la semana en curso (Lunes a Sábado).
+   * Fuente: tabla `appointments` (fecha_hora_inicio, estado). Los turnos cancelados no cuentan
+   * como programados y `Completado` cuenta como asistencia real.
+   * Si no hay turnos en la semana, estima las sesiones programadas desde los días de
+   * entrenamiento de los clientes activos (sin asistencias, porque no hay sesiones completadas).
+   */
+  async getWeeklyActivity() {
+    const DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    const chart = DAYS.map(dia => ({ dia, programados: 0, asistencias: 0 }));
+
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7)); // Lunes de esta semana
+    const end = new Date(start);
+    end.setDate(end.getDate() + 7); // Lunes siguiente (exclusivo)
+
+    let source = 'none';
+    try {
+      const { data: apts, error } = await supabase
+        .from('appointments')
+        .select('id, fecha_hora_inicio, estado')
+        .gte('fecha_hora_inicio', start.toISOString())
+        .lt('fecha_hora_inicio', end.toISOString());
+
+      if (error) throw error;
+
+      (apts || []).forEach(a => {
+        if ((a.estado || '').toLowerCase() === 'cancelado') return;
+        const idx = (new Date(a.fecha_hora_inicio).getDay() + 6) % 7; // 0 = Lunes
+        if (idx > 5) return; // Domingo no se grafica
+        chart[idx].programados += 1;
+        if ((a.estado || '').toLowerCase() === 'completado') chart[idx].asistencias += 1;
+      });
+
+      if ((apts || []).length > 0) source = 'appointments';
+    } catch (err) {
+      console.error('[DataService] Error consultando actividad semanal:', err);
+    }
+
+    if (source === 'none') {
+      try {
+        const clients = await this.getClients();
+        clients
+          .filter(c => (c.estado || 'Activo').toLowerCase() === 'activo')
+          .forEach(c => {
+            (c.dias_asignados || []).forEach(d => {
+              const norm = String(d).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+              const idx = DAYS.findIndex(x => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() === norm);
+              if (idx >= 0) {
+                chart[idx].programados += 1;
+                source = 'clients';
+              }
+            });
+          });
+      } catch (err) {
+        console.error('[DataService] Error estimando actividad desde clientes:', err);
+      }
+    }
+
+    const totalProgramados = chart.reduce((t, d) => t + d.programados, 0);
+    const totalAsistencias = chart.reduce((t, d) => t + d.asistencias, 0);
+    const adherencia = totalProgramados > 0
+      ? Math.round((totalAsistencias / totalProgramados) * 100)
+      : null;
+
+    return { chart, totalProgramados, totalAsistencias, adherencia, source };
+  },
+
   // ==========================================================
   // 2. CLIENTES (SELECT, INSERT Y UPDATE EXCLUSIVAMENTE EN SUPABASE)
   // ==========================================================

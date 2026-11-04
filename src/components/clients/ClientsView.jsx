@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import ClientsListView from './ClientsListView';
 import ClientDetailView from './ClientDetailView';
 import NewClientModal from './NewClientModal';
+import ClientEditModal from './ClientEditModal';
+import ClientDeleteModal from './ClientDeleteModal';
+import { CheckCircle2, AlertTriangle } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { dataService } from '../../services/dataService';
 
@@ -10,6 +13,30 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
   const [selectedClient, setSelectedClient] = useState(null);
   const [loading, setLoading] = useState(true);
   const [internalModalOpen, setInternalModalOpen] = useState(false);
+  const [editingClient, setEditingClient] = useState(null);
+  const [deletingClient, setDeletingClient] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  const handleClientEdited = (updated, { routineChanged } = {}) => {
+    // Actualización inmediata del estado local, sin recargar la página
+    setClients(prev => prev.map(c => (c.id === updated.id ? { ...c, ...updated } : c)));
+    setSelectedClient(prev => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
+    setEditingClient(null);
+    showToast('Alumno actualizado con éxito');
+    if (routineChanged) loadClients(); // re-sincroniza las rutinas del alumno
+  };
+
+  const handleClientDeleted = (clienteId) => {
+    setClients(prev => prev.filter(c => c.id !== clienteId));
+    setSelectedClient(prev => (prev && prev.id === clienteId ? null : prev));
+    setDeletingClient(null);
+    showToast('Alumno eliminado correctamente');
+  };
 
   useEffect(() => {
     loadClients();
@@ -134,7 +161,37 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
           clients={clients}
           onSelectClient={(client) => setSelectedClient(client)}
           onOpenModal={() => setInternalModalOpen(true)}
+          onEditClient={(client) => setEditingClient(client)}
+          onDeleteClient={(client) => setDeletingClient(client)}
         />
+      )}
+
+      {editingClient && (
+        <ClientEditModal
+          client={editingClient}
+          onClose={() => setEditingClient(null)}
+          onSaved={handleClientEdited}
+        />
+      )}
+
+      {deletingClient && (
+        <ClientDeleteModal
+          client={deletingClient}
+          onClose={() => setDeletingClient(null)}
+          onDeleted={handleClientDeleted}
+        />
+      )}
+
+      {toast && (
+        <div role="status"
+             className={`fixed bottom-24 md:bottom-6 right-4 z-[60] px-4 py-3 rounded-xl shadow-lg text-sm font-bold flex items-center gap-2 border ${
+               toast.type === 'error'
+                 ? 'bg-red-950/90 border-red-500/40 text-red-200'
+                 : 'bg-emerald-950/90 border-emerald-500/40 text-emerald-200'
+             }`}>
+          {toast.type === 'error' ? <AlertTriangle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+          {toast.message}
+        </div>
       )}
     </>
   );

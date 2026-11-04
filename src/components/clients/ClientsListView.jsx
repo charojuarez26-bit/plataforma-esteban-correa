@@ -14,7 +14,9 @@ import {
   Target, 
   CreditCard,
   MessageSquare,
-  AlertCircle
+  AlertCircle,
+  Pencil,
+  Trash2
 } from 'lucide-react';
 import ClientAvatar from '../common/ClientAvatar';
 
@@ -23,6 +25,8 @@ export default function ClientsListView({
   onSelectClient, 
   isNewClientModalOpen, 
   onOpenModal, 
+  onEditClient,
+  onDeleteClient,
   onCloseModal, 
   onCreateClient 
 }) {
@@ -292,7 +296,30 @@ export default function ClientsListView({
                         </span>
                       </div>
 
-                      <button
+                      <div className="flex items-center gap-1">
+                        {onEditClient && (
+                          <button
+                            type="button"
+                            title="Editar alumno"
+                            aria-label={`Editar a ${client.nombre_completo}`}
+                            onClick={(e) => { e.stopPropagation(); onEditClient(client); }}
+                            className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/5 transition-colors"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                        )}
+                        {onDeleteClient && (
+                          <button
+                            type="button"
+                            title="Eliminar alumno"
+                            aria-label={`Eliminar a ${client.nombre_completo}`}
+                            onClick={(e) => { e.stopPropagation(); onDeleteClient(client); }}
+                            className="p-2 rounded-lg text-red-400/60 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -302,7 +329,8 @@ export default function ClientsListView({
                       >
                         <span>Ver Perfil</span>
                         <ChevronRight className="w-4 h-4 text-brand group-hover:translate-x-1 transition-transform" />
-                      </button>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -378,9 +406,25 @@ export default function ClientsListView({
                         </span>
                       </td>
                       <td className="py-3 px-3 text-right">
-                        <span className="text-xs text-brand-light font-bold hover:underline">
-                          Abrir &rarr;
-                        </span>
+                        <div className="flex items-center justify-end gap-1">
+                          {onEditClient && (
+                            <button type="button" title="Editar alumno" aria-label={`Editar a ${c.nombre_completo}`}
+                              onClick={(e) => { e.stopPropagation(); onEditClient(c); }}
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/5">
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                          )}
+                          {onDeleteClient && (
+                            <button type="button" title="Eliminar alumno" aria-label={`Eliminar a ${c.nombre_completo}`}
+                              onClick={(e) => { e.stopPropagation(); onDeleteClient(c); }}
+                              className="p-1.5 rounded-lg text-red-400/60 hover:text-red-400 hover:bg-red-500/10">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                          <span className="text-xs text-brand-light font-bold hover:underline pl-1">
+                            Abrir &rarr;
+                          </span>
+                        </div>
                       </td>
                     </tr>
                   ))}

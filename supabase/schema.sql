@@ -313,3 +313,24 @@ ALTER TABLE IF EXISTS client_routines
 -- ALTER TABLE routines ADD COLUMN IF NOT EXISTS es_plantilla BOOLEAN DEFAULT FALSE;
 -- ALTER TABLE routines ADD COLUMN IF NOT EXISTS activa BOOLEAN DEFAULT TRUE;
 
+
+-- ==========================================================
+-- PERFIL DEL ENTRENADOR: campos extra + almacenamiento de fotos
+-- ==========================================================
+ALTER TABLE coaches ADD COLUMN IF NOT EXISTS slogan TEXT;
+ALTER TABLE coaches ADD COLUMN IF NOT EXISTS estudios JSONB DEFAULT '[]'::jsonb;
+
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('avatars', 'avatars', true)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE POLICY "Avatares publicos de lectura"
+ON storage.objects FOR SELECT USING (bucket_id = 'avatars');
+
+CREATE POLICY "Usuarios suben su propio avatar"
+ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::text);
+
+CREATE POLICY "Usuarios actualizan su propio avatar"
+ON storage.objects FOR UPDATE TO authenticated
+USING (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::text);

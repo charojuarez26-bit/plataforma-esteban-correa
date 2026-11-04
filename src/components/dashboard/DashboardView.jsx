@@ -43,10 +43,46 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
   });
   const [appointments, setAppointments] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [weekly, setWeekly] = useState({
+    chart: ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'].map(dia => ({ dia, programados: 0, asistencias: 0 })),
+    totalProgramados: 0,
+    totalAsistencias: 0,
+    adherencia: null
+  });
 
   useEffect(() => {
     loadDashboardData();
   }, []);
+
+  // Actividad semanal real: al montar y cada vez que la pestaña vuelve a estar visible
+  useEffect(() => {
+    let alive = true;
+    const refreshWeekly = async () => {
+      try {
+        const result = await dataService.getWeeklyActivity();
+        if (alive) setWeekly(result);
+      } catch (err) {
+        console.error('Error cargando actividad semanal:', err);
+      }
+    };
+    refreshWeekly();
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshWeekly(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      alive = false;
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+
+  const weeklyMaxValue = Math.max(0, ...weekly.chart.map(d => Math.max(d.programados, d.asistencias)));
+  const yAxisMax = Math.max(5, Math.ceil(weeklyMaxValue * 1.2));
+  const adherenceTone = weekly.adherencia === null
+    ? 'bg-dark-800 text-gray-400 border-dark-700'
+    : weekly.adherencia >= 80
+      ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+      : weekly.adherencia >= 50
+        ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+        : 'bg-red-500/15 text-red-400 border-red-500/30';
 
   const loadDashboardData = async () => {
     try {
@@ -274,20 +310,20 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
               </h2>
               <p className="text-xs text-gray-400">Sesiones programadas vs Asistencia efectiva por día</p>
             </div>
-            <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-              96% Adherencia
+            <span className={`text-xs font-semibold px-2.5 py-1 rounded-lg border ${adherenceTone}`}>
+              {weekly.adherencia === null ? 'Sin datos' : `${weekly.adherencia}% Adherencia`}
             </span>
           </div>
 
           <div className="h-64 sm:h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
-                data={metrics.weeklyChart}
+                data={weekly.chart}
                 margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#272733" />
                 <XAxis dataKey="dia" stroke="#888" fontSize={12} tickLine={false} />
-                <YAxis stroke="#888" fontSize={12} tickLine={false} />
+                <YAxis stroke="#888" fontSize={12} tickLine={false} allowDecimals={false} domain={[0, yAxisMax]} />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: '#18181f',
