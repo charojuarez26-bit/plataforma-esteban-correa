@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #0a0a0c;
+    color: #f3f4f6;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+}
+
+/* Scrollbars sutiles para tema oscuro */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #121216;
+}
+::-webkit-scrollbar-thumb {
+  background: #272733;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #e50914;
+}
+
+/* Ocultar barra de scroll visual manteniendo el scroll táctil y de ratón activo */
+.no-scrollbar::-webkit-scrollbar {
+  display: none !important;
+}
+.no-scrollbar {
+  -ms-overflow-style: none !important; /* IE y Edge */
+  scrollbar-width: none !important; /* Firefox / LibreWolf */
+}
+
+/* Regla automática para todos los contenedores scrolleables dentro de modales */
+.fixed.z-50 [class*="overflow-y-auto"],
+.fixed.z-50 [class*="overflow-x-auto"],
+.fixed.z-50 [class*="overflow-auto"],
+[role="dialog"] [class*="overflow-y-auto"],
+[role="dialog"] [class*="overflow-x-auto"],
+[role="dialog"] [class*="overflow-auto"],
+.modal-body [class*="overflow-y-auto"] {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+
+.fixed.z-50 [class*="overflow-y-auto"]::-webkit-scrollbar,
+.fixed.z-50 [class*="overflow-x-auto"]::-webkit-scrollbar,
+.fixed.z-50 [class*="overflow-auto"]::-webkit-scrollbar,
+[role="dialog"] [class*="overflow-y-auto"]::-webkit-scrollbar,
+[role="dialog"] [class*="overflow-x-auto"]::-webkit-scrollbar,
+[role="dialog"] [class*="overflow-auto"]::-webkit-scrollbar,
+.modal-body [class*="overflow-y-auto"]::-webkit-scrollbar {
+  display: none !important;
+}
+
+/* Fuente Caligráfica / Brush Deportiva */
+.font-script, .font-brush {
+  font-family: 'Kaushan Script', 'Caveat', cursive, sans-serif;
+  letter-spacing: 0.02em;
+}
+
+/* Efectos de acento deportivo */
+.brand-glow {
+  box-shadow: 0 0 25px rgba(229, 9, 20, 0.35);
+}
+
+.brand-gradient {
+  background: linear-gradient(135deg, #e50914 0%, #991b1b 100%);
+}
+
+.card-dark {
+  background-color: #14141b;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.card-dark-hover {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.card-dark-hover:hover {
+  border-color: rgba(239, 68, 68, 0.35);
+  transform: translateY(-2px);
+}
+
+/* Mínimo de área táctil de 44px para móviles */
+@media (max-width: 640px) {
+  button, a.touch-target {
+    min-height: 44px;
+  }
+}
