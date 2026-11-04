@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 export function getInitials(name) {
   if (!name || typeof name !== 'string') return 'EC';
@@ -20,9 +20,15 @@ export default function ClientAvatar({
   const [imageError, setImageError] = useState(false);
 
   const clientName = name || client?.nombre_completo || 'Alumno';
-  const photo = fotoUrl || client?.foto_url || client?.avatar_url || null;
+  const rawPhoto = fotoUrl || client?.foto_url || client?.avatar_url || null;
+  const photo = typeof rawPhoto === 'string' && rawPhoto.trim() !== '' ? rawPhoto.trim() : null;
   const clientStatus = status || client?.estado || 'Activo';
   const initials = getInitials(clientName);
+
+  // Reiniciar estado de error si cambia la URL de la foto
+  useEffect(() => {
+    setImageError(false);
+  }, [photo]);
 
   const sizeClasses = {
     xs: 'w-6 h-6 text-[10px]',

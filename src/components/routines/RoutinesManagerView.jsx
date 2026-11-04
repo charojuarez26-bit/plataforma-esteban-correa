@@ -8,6 +8,7 @@ import {
   CheckCircle2, 
   ArrowUp, 
   ArrowDown, 
+  ArrowLeft,
   Trash2, 
   X, 
   Search, 
@@ -45,6 +46,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   // Modal Constructor / Editor de Rutina
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingRoutineId, setEditingRoutineId] = useState(null); // null = Crear nueva, string = Editar existente
+  const [currentStep, setCurrentStep] = useState(1); // 1: Datos Generales, 2: Hub de Días (guardado final)
+  const [mobileTab, setMobileTab] = useState('library'); // 'library' | 'sequence'
   const [routineForm, setRoutineForm] = useState({
     nombre: '',
     descripcion: '',
@@ -53,7 +56,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     frecuenciaDias: 3
   });
   const [routineDays, setRoutineDays] = useState([]);
-  const [activeDayIndex, setActiveDayIndex] = useState(0);
+  const [activeDayIndex, setActiveDayIndex] = useState(null); // null = Hub de días, número = Editor de Día
 
   // Buscador de ejercicios dentro del editor
   const [exerciseSearch, setExerciseSearch] = useState('');
@@ -147,7 +150,9 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     });
 
     setRoutineDays(initialDays);
-    setActiveDayIndex(0);
+    setActiveDayIndex(null);
+    setCurrentStep(1);
+    setMobileTab('library');
     setIsEditorOpen(true);
   };
 
@@ -186,7 +191,9 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     }));
 
     setRoutineDays(clonedDays);
-    setActiveDayIndex(0);
+    setActiveDayIndex(null);
+    setCurrentStep(1);
+    setMobileTab('library');
     setIsEditorOpen(true);
   };
 
@@ -222,8 +229,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       }
     });
 
-    if (activeDayIndex >= newCount) {
-      setActiveDayIndex(newCount - 1);
+    if (activeDayIndex !== null && activeDayIndex >= newCount) {
+      setActiveDayIndex(null);
     }
   };
 
@@ -239,28 +246,35 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     });
   };
 
-  // Agregar ejercicio al día activo con ID único seguro
-  const handleAddExerciseToCurrentDay = (exercise) => {
+  // Agregar ejercicio al día activo con ID único seguro e inmutabilidad estricta
+  const handleAddExerciseToCurrentDay = (e, exercise) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     if (routineDays.length === 0) return;
 
+    const uniqueId = generateUniqueId('item');
     const newItem = {
-      id: generateUniqueId('item'),
+      id: uniqueId,
+      instanceId: uniqueId,
       exercise_id: exercise.id,
       exercise: exercise,
-      series: 4,
-      repeticiones: '10-12',
-      peso_sugerido: 70,
-      descanso_seg: 90
+      series: exercise.series || 4,
+      repeticiones: exercise.repeticiones || exercise.reps || '10-12',
+      peso_sugerido: exercise.peso_sugerido || exercise.carga || 70,
+      descanso_seg: exercise.descanso_seg || exercise.descanso || 90
     };
 
-    setRoutineDays(prev => {
-      const copy = [...prev];
-      const targetDay = copy[activeDayIndex];
-      if (targetDay) {
-        targetDay.ejercicios = [...(targetDay.ejercicios || []), newItem];
-      }
-      return copy;
-    });
+    setRoutineDays(prev => 
+      prev.map((day, idx) => {
+        if (idx !== activeDayIndex) return day;
+        return {
+          ...day,
+          ejercicios: [...(day.ejercicios || []), newItem]
+        };
+      })
+    );
   };
 
   // Quitar ejercicio del día activo
@@ -485,7 +499,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     return matchSearch && matchGroup;
   });
 
-  const currentActiveDay = routineDays[activeDayIndex] || null;
+  const currentActiveDay = activeDayIndex !== null ? (routineDays[activeDayIndex] || null) : null;
+  const isDayEditorOpen = currentStep === 2 && activeDayIndex !== null && Boolean(currentActiveDay);
   const totalModalExercisesCount = routineDays.reduce((acc, d) => acc + (d.ejercicios?.length || 0), 0);
   const selectedFormClient = clients.find(c => c.id === routineForm.client_id);
 
@@ -757,444 +772,635 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       )}
 
       {/* ========================================================== */}
-      {/* 4. MODAL CONSTRUCTOR / EDITOR GUIADO MULTIDÍA               */}
+      {/* 4. WIZARD PRINCIPAL (PASO 1 Y HUB DE SESIONES)             */}
       {/* ========================================================== */}
-      {isEditorOpen && (
-        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4">
-          <div className="w-full max-w-4xl max-h-[92vh] sm:max-h-[85vh] flex flex-col p-4 sm:p-6 overflow-hidden rounded-2xl bg-dark-850 border border-dark-700 shadow-2xl relative animate-scale">
+      {isEditorOpen && !isDayEditorOpen && (
+        <div className="fixed inset-0 z-50 w-full h-full bg-gray-950 md:bg-black/85 md:backdrop-blur-sm flex items-center justify-center p-0 md:p-4 overflow-y-auto">
+          <div className="w-full h-full md:h-auto md:max-w-4xl md:max-h-[90vh] flex flex-col p-0 md:p-6 overflow-hidden rounded-none md:rounded-2xl bg-gray-950 md:bg-dark-850 md:border md:border-dark-700 md:shadow-2xl relative animate-scale">
             
-            {/* Cabecera Fija */}
-            <div className="flex items-start justify-between pb-3 border-b border-dark-700 shrink-0">
-              <div className="pr-4">
-                <span className="inline-flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-brand-light bg-brand/15 px-2.5 py-0.5 rounded-full border border-brand/30 mb-1.5">
-                  <Calendar className="w-3.5 h-3.5" /> {editingRoutineId ? 'Editor de Rutina' : 'Creador de Rutina'}
-                </span>
-                <h2 className="text-lg sm:text-xl font-black text-white flex items-center gap-2">
-                  {editingRoutineId ? `Modificar: ${routineForm.nombre}` : 'Diseñar Nueva Rutina de Entrenamiento'}
-                </h2>
-                <p className="text-[11px] sm:text-xs text-gray-400 mt-0.5">
-                  Estructura las sesiones por día, agrega ejercicios desde la biblioteca y define series, reps y descanso.
-                </p>
+            {/* Header: Sticky top-0 (Wizard Principal) */}
+            <div className="sticky top-0 z-20 bg-gray-900 border-b border-gray-800 p-4 shrink-0 flex items-center justify-between">
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (currentStep > 1) {
+                      setCurrentStep(1);
+                    } else {
+                      setIsEditorOpen(false);
+                    }
+                  }}
+                  className="p-2 -ml-1 rounded-xl text-zinc-300 hover:text-white bg-dark-800 border border-dark-700 min-h-[40px] min-w-[40px] flex items-center justify-center shrink-0"
+                  aria-label="Volver o cerrar"
+                  title={currentStep > 1 ? "Paso anterior" : "Cerrar"}
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+
+                <div className="min-w-0">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-brand-light bg-brand/15 px-2 py-0.5 rounded-full border border-brand/30">
+                    Paso {currentStep} de 2
+                  </span>
+                  <h2 className="text-base sm:text-lg font-black text-white leading-tight mt-1">
+                    {currentStep === 1 ? 'Detalles de la Rutina' : `Estructura de Días (${totalModalExercisesCount} ej.)`}
+                  </h2>
+                </div>
               </div>
 
               <button
                 type="button"
                 onClick={() => setIsEditorOpen(false)}
-                className="p-1.5 rounded-xl text-gray-400 hover:text-white bg-dark-800 border border-dark-700 shrink-0"
-                aria-label="Cerrar modal"
+                className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-dark-800 border border-transparent hover:border-dark-700 min-h-[40px] min-w-[40px] flex items-center justify-center shrink-0"
+                aria-label="Cerrar creador"
               >
-                <X className="w-4 h-4" />
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Formulario y Scroll Interno */}
-            <form onSubmit={handleSaveRoutineSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden mt-3">
-              <div className="overflow-y-auto no-scrollbar flex-1 pr-1 space-y-4 pb-3">
+            {/* Contenedor del Formulario con Scroll Interno */}
+            <form onSubmit={(e) => e.preventDefault()} className="flex flex-col flex-1 min-h-0 overflow-hidden relative">
+              <div className="overflow-y-auto no-scrollbar flex-1 px-4 py-4 md:p-4 space-y-5 pb-28">
 
-                {/* SECCIÓN 1: DATOS GENERALES */}
-                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 p-3.5 rounded-xl bg-dark-900 border border-dark-700">
-                  
-                  {/* Nombre */}
-                  <div className="sm:col-span-7">
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-300 mb-1">
-                      Nombre de la Rutina *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Ej: Hipertrofia Torso-Pierna (4 Días)"
-                      value={routineForm.nombre}
-                      onChange={(e) => setRoutineForm({ ...routineForm, nombre: e.target.value })}
-                      className="w-full bg-dark-850 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white focus:outline-none focus:border-brand font-medium min-h-[44px]"
-                    />
-                  </div>
+                {/* ======================================================== */}
+                {/* PASO 1: DATOS GENERALES                                  */}
+                {/* ======================================================== */}
+                {currentStep === 1 && (
+                  <div className="space-y-4 max-w-2xl mx-auto w-full py-2">
+                    <div className="text-left space-y-1 pb-1">
+                      <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                        <Sparkles className="w-5 h-5 text-brand-light" />
+                        Paso 1: Datos Generales
+                      </h3>
+                      <p className="text-xs text-zinc-400">
+                        Define el nombre, a quién va dirigida la planificación y su frecuencia semanal.
+                      </p>
+                    </div>
 
-                  {/* Frecuencia de Días (Píldoras) */}
-                  <div className="sm:col-span-5">
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-300 mb-1">
-                      Frecuencia Semanal
-                    </label>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {[3, 4, 5].map((cnt) => (
+                    {/* 1. Nombre de la Rutina */}
+                    <div className="card-dark rounded-2xl p-4 sm:p-5 border border-dark-700 space-y-2">
+                      <label className="block text-xs font-bold uppercase tracking-wider text-zinc-200">
+                        1. Nombre de la Rutina *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ej: Hipertrofia 4 días, Fuerza y Potencia..."
+                        value={routineForm.nombre}
+                        onChange={(e) => setRoutineForm({ ...routineForm, nombre: e.target.value })}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-3 text-base text-white focus:outline-none focus:border-brand font-medium min-h-[48px]"
+                      />
+                    </div>
+
+                    {/* 2. Destinatario / Alumno */}
+                    <div className="card-dark rounded-2xl p-4 sm:p-5 border border-dark-700 space-y-3">
+                      <label className="block text-xs font-bold uppercase tracking-wider text-zinc-200">
+                        2. Destinatario / Alumno
+                      </label>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <button
-                          key={cnt}
                           type="button"
-                          onClick={() => handleSetFrequency(cnt)}
-                          className={`py-2 px-1 rounded-xl text-xs font-bold text-center transition-all min-h-[44px] ${
-                            routineForm.frecuenciaDias === cnt
-                              ? 'bg-brand text-white shadow-glow-red'
-                              : 'bg-dark-850 hover:bg-dark-800 text-zinc-400 border border-dark-700'
+                          onClick={() => setRoutineForm({ ...routineForm, destinatarioTipo: 'plantilla', client_id: '' })}
+                          className={`p-3 rounded-xl border text-left flex items-center gap-3 transition-all min-h-[48px] ${
+                            routineForm.destinatarioTipo === 'plantilla'
+                              ? 'bg-brand/15 border-brand text-white shadow-glow-red/20'
+                              : 'bg-dark-900 border-dark-700 text-zinc-400 hover:text-white'
                           }`}
                         >
-                          {cnt} Días
+                          <Sparkles className={`w-5 h-5 shrink-0 ${routineForm.destinatarioTipo === 'plantilla' ? 'text-brand-light' : 'text-zinc-500'}`} />
+                          <div>
+                            <span className="text-xs font-bold block text-white">🌟 Plantilla General</span>
+                            <span className="text-[10px] text-zinc-400">Reutilizable para cualquier alumno</span>
+                          </div>
                         </button>
-                      ))}
-                    </div>
-                  </div>
 
-                  {/* Descripción / Objetivo */}
-                  <div className="sm:col-span-12">
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-300 mb-1">
-                      Objetivo / Descripción
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Ej: Enfoque en hipertrofia y sobrecarga progresiva"
-                      value={routineForm.descripcion}
-                      onChange={(e) => setRoutineForm({ ...routineForm, descripcion: e.target.value })}
-                      className="w-full bg-dark-850 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white focus:outline-none focus:border-brand font-medium min-h-[42px]"
-                    />
-                  </div>
-
-                  {/* Destinatario: Plantilla vs Alumno */}
-                  <div className="sm:col-span-12 pt-2 border-t border-dark-700/60">
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-300 mb-1.5">
-                      Destinatario de la Rutina
-                    </label>
-                    
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
-                      <button
-                        type="button"
-                        onClick={() => setRoutineForm({ ...routineForm, destinatarioTipo: 'plantilla', client_id: '' })}
-                        className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all min-h-[44px] ${
-                          routineForm.destinatarioTipo === 'plantilla'
-                            ? 'bg-brand/10 border-brand text-white'
-                            : 'bg-dark-850 border-dark-700 text-zinc-400 hover:text-white'
-                        }`}
-                      >
-                        <Sparkles className={`w-4 h-4 ${routineForm.destinatarioTipo === 'plantilla' ? 'text-brand-light' : 'text-zinc-500'}`} />
-                        <div>
-                          <span className="text-xs font-bold block">🌟 Guardar como Plantilla Reutilizable</span>
-                          <span className="text-[10px] text-zinc-400">Queda en el catálogo del coach para asignar después</span>
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setRoutineForm({ ...routineForm, destinatarioTipo: 'alumno' })}
-                        className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all min-h-[44px] ${
-                          routineForm.destinatarioTipo === 'alumno'
-                            ? 'bg-brand/10 border-brand text-white'
-                            : 'bg-dark-850 border-dark-700 text-zinc-400 hover:text-white'
-                        }`}
-                      >
-                        <Users className={`w-4 h-4 ${routineForm.destinatarioTipo === 'alumno' ? 'text-brand-light' : 'text-zinc-500'}`} />
-                        <div>
-                          <span className="text-xs font-bold block">👤 Asignar a un Alumno Específico</span>
-                          <span className="text-[10px] text-zinc-400">Se vincula a su perfil y portal móvil de inmediato</span>
-                        </div>
-                      </button>
-                    </div>
-
-                    {/* Selector de alumno si se eligió esa opción */}
-                    {routineForm.destinatarioTipo === 'alumno' && (
-                      <div className="mt-2">
-                        <select
-                          required
-                          value={routineForm.client_id}
-                          onChange={(e) => setRoutineForm({ ...routineForm, client_id: e.target.value })}
-                          className="w-full bg-dark-850 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white focus:outline-none focus:border-brand font-medium min-h-[44px]"
+                        <button
+                          type="button"
+                          onClick={() => setRoutineForm({ ...routineForm, destinatarioTipo: 'alumno' })}
+                          className={`p-3 rounded-xl border text-left flex items-center gap-3 transition-all min-h-[48px] ${
+                            routineForm.destinatarioTipo === 'alumno'
+                              ? 'bg-brand/15 border-brand text-white shadow-glow-red/20'
+                              : 'bg-dark-900 border-dark-700 text-zinc-400 hover:text-white'
+                          }`}
                         >
-                          <option value="">-- Selecciona el Alumno --</option>
-                          {clients.map(c => (
-                            <option key={c.id} value={c.id}>
-                              {c.nombre_completo} ({c.access_code}) • {c.dias_por_semana || 3} días/sem • {c.modalidad}
-                            </option>
-                          ))}
-                        </select>
+                          <Users className={`w-5 h-5 shrink-0 ${routineForm.destinatarioTipo === 'alumno' ? 'text-brand-light' : 'text-zinc-500'}`} />
+                          <div>
+                            <span className="text-xs font-bold block text-white">👤 Alumno Específico</span>
+                            <span className="text-[10px] text-zinc-400">Se asigna a su app directamente</span>
+                          </div>
+                        </button>
                       </div>
-                    )}
-                  </div>
 
-                </div>
+                      {routineForm.destinatarioTipo === 'alumno' && (
+                        <div className="pt-2">
+                          <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                            Seleccionar Alumno del Directorio:
+                          </label>
+                          <select
+                            required
+                            value={routineForm.client_id}
+                            onChange={(e) => setRoutineForm({ ...routineForm, client_id: e.target.value })}
+                            className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-brand font-medium min-h-[48px]"
+                          >
+                            <option value="">-- Elige un alumno --</option>
+                            {clients.map(c => (
+                              <option key={c.id} value={c.id}>
+                                {c.nombre_completo} ({c.access_code}) • {c.modalidad}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
 
-                {/* SECCIÓN 2: PESTAÑAS DE DÍAS */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-zinc-300 flex items-center gap-1.5">
-                      <Calendar className="w-4 h-4 text-brand-light" />
-                      Estructura por Días ({routineDays.length} sesiones)
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleSetFrequency(routineDays.length + 1)}
-                      className="text-[11px] font-bold text-brand-light hover:text-white flex items-center gap-1"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Añadir Día Extra</span>
-                    </button>
-                  </div>
-
-                  <div className="flex gap-2 overflow-x-auto pb-1">
-                    {routineDays.map((d, idx) => {
-                      const isActive = activeDayIndex === idx;
-                      const count = d.ejercicios?.length || 0;
-                      return (
-                        <button
-                          key={d.id || `routine-day-tab-${idx}`}
-                          type="button"
-                          onClick={() => setActiveDayIndex(idx)}
-                          className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 min-h-[40px] ${
-                            isActive
-                              ? 'bg-brand text-white shadow-glow-red scale-[1.02]'
-                              : 'bg-dark-900 text-zinc-400 hover:text-white border border-dark-700'
-                          }`}
-                        >
-                          <span>{d.dia_semana || `Día ${idx + 1}`}</span>
-                          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                            isActive ? 'bg-black/40 text-white' : 'bg-dark-800 text-zinc-300'
-                          }`}>
-                            {count}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* SECCIÓN 3: ARMADO DE EJERCICIOS DEL DÍA ACTIVO */}
-                {currentActiveDay && (
-                  <div className="space-y-3 pt-2 border-t border-dark-700/80">
-                    
-                    {/* Enfoque del Día Activo */}
-                    <div className="p-3 rounded-xl bg-dark-900 border border-dark-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                      <div className="flex-1">
-                        <label className="block text-[10px] uppercase font-bold text-brand-light mb-1">
-                          Enfoque / Título de la Sesión ({currentActiveDay.dia_semana || `Día ${activeDayIndex + 1}`})
+                    {/* 3. Frecuencia Semanal (1 a 6 días) */}
+                    <div className="card-dark rounded-2xl p-4 sm:p-5 border border-dark-700 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xs font-bold uppercase tracking-wider text-zinc-200">
+                          3. Frecuencia Semanal
                         </label>
-                        <input
-                          type="text"
-                          value={currentActiveDay.dia}
-                          onChange={(e) => handleUpdateDayName(activeDayIndex, e.target.value)}
-                          placeholder="Ej: Día 1 (Lunes): Torso & Empuje"
-                          className="w-full bg-dark-850 border border-dark-700 rounded-lg px-3 py-1.5 text-base sm:text-xs font-bold text-white focus:outline-none focus:border-brand min-h-[40px]"
-                        />
+                        <span className="text-xs font-bold text-brand-light">
+                          {routineForm.frecuenciaDias} Días por semana
+                        </span>
                       </div>
-                      <span className="text-xs text-zinc-400 font-semibold self-end sm:self-center shrink-0">
-                        {currentActiveDay.ejercicios?.length || 0} ejercicios programados
-                      </span>
+                      
+                      <div className="grid grid-cols-6 gap-2">
+                        {[1, 2, 3, 4, 5, 6].map((cnt) => (
+                          <button
+                            key={cnt}
+                            type="button"
+                            onClick={() => handleSetFrequency(cnt)}
+                            className={`py-3 px-1 rounded-xl text-sm font-bold text-center transition-all min-h-[48px] flex flex-col items-center justify-center ${
+                              routineForm.frecuenciaDias === cnt
+                                ? 'bg-brand text-white shadow-glow-red scale-[1.03]'
+                                : 'bg-dark-900 hover:bg-dark-800 text-zinc-400 border border-dark-700'
+                            }`}
+                          >
+                            <span className="text-base font-black leading-none">{cnt}</span>
+                            <span className="text-[10px] uppercase font-semibold mt-0.5 opacity-80">Día{cnt > 1 ? 's' : ''}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
-                    {/* Catálogo de ejercicios (Izq) + Secuencia (Der) */}
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                      
-                      {/* Columna Izquierda: Catálogo */}
-                      <div className="lg:col-span-5 space-y-2.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">
-                            Biblioteca de Ejercicios
-                          </span>
-                          <span className="text-[10px] text-zinc-400">Toca "+ Agregar"</span>
-                        </div>
+                    {/* 4. Objetivo Opcional */}
+                    <div className="card-dark rounded-2xl p-4 border border-dark-700 space-y-1.5">
+                      <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400">
+                        Descripción u Objetivo (Opcional)
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ej: Enfoque en hipertrofia y sobrecarga progresiva"
+                        value={routineForm.descripcion}
+                        onChange={(e) => setRoutineForm({ ...routineForm, descripcion: e.target.value })}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand font-medium min-h-[44px]"
+                      />
+                    </div>
+                  </div>
+                )}
 
-                        <div className="relative">
-                          <input
-                            type="text"
-                            placeholder="Buscar ejercicio..."
-                            value={exerciseSearch}
-                            onChange={(e) => setExerciseSearch(e.target.value)}
-                            className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-xs text-white placeholder-gray-500 pl-8 focus:outline-none focus:border-brand min-h-[42px]"
-                          />
-                          <Search className="w-3.5 h-3.5 text-gray-500 absolute left-2.5 top-3" />
-                        </div>
+                {/* ======================================================== */}
+                {/* PASO 2: HUB DE ESTRUCTURA DE DÍAS                        */}
+                {/* ======================================================== */}
+                {currentStep === 2 && (
+                  <div className="space-y-4 max-w-2xl mx-auto w-full py-2">
+                    <div className="text-left space-y-1 pb-1">
+                      <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                        <Calendar className="w-5 h-5 text-brand-light" />
+                        Estructura de Días
+                      </h3>
+                      <p className="text-xs text-zinc-400">
+                        Toca una sesión para armar sus ejercicios. Cuando termines todas, guarda la rutina completa.
+                      </p>
+                    </div>
 
-                        {/* Píldoras de grupo muscular */}
-                        <div className="flex gap-1 overflow-x-auto pb-1 text-[10px]">
-                          {dynamicMuscleGroups.map(grp => (
-                            <button
-                              key={grp}
-                              type="button"
-                              onClick={() => setSelectedMuscleFilter(grp)}
-                              className={`px-2.5 py-1.5 rounded-lg shrink-0 font-medium ${
-                                selectedMuscleFilter === grp ? 'bg-brand text-white font-bold' : 'bg-dark-900 text-zinc-400'
-                              }`}
-                            >
-                              {grp}
-                            </button>
-                          ))}
-                        </div>
-
-                        {/* Lista con scroll */}
-                        <div className="space-y-1.5 max-h-56 sm:max-h-72 overflow-y-auto no-scrollbar pr-1">
-                          {filteredExercisesForSelector.map(ex => (
-                            <div
-                              key={ex.id}
-                              onClick={() => handleAddExerciseToCurrentDay(ex)}
-                              className="p-2.5 rounded-xl bg-dark-900 hover:bg-dark-800 border border-dark-700 hover:border-brand/40 cursor-pointer flex items-center justify-between group transition-all min-h-[44px]"
-                            >
-                              <div className="flex items-center gap-2.5 min-w-0">
-                                <img
-                                  src={ex.imagen_url}
-                                  alt={ex.nombre}
-                                  className="w-9 h-9 rounded-lg object-cover shrink-0"
-                                />
-                                <div className="min-w-0">
-                                  <p className="text-xs font-bold text-white group-hover:text-brand-light truncate">
-                                    {ex.nombre}
-                                  </p>
-                                  <span className="text-[10px] text-zinc-400">{ex.grupo_muscular}</span>
-                                </div>
-                              </div>
-
-                              <button
-                                type="button"
-                                className="px-2 py-1 rounded-lg bg-brand/10 group-hover:bg-brand text-brand-light group-hover:text-white text-[11px] font-bold transition-all shrink-0"
-                              >
-                                + Agregar
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Columna Derecha: Secuencia para el día activo */}
-                      <div className="lg:col-span-7 space-y-2.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">
-                            Secuencia del Día ({currentActiveDay.ejercicios?.length || 0} ejercicios)
-                          </span>
-                          <span className="text-[10px] text-zinc-400">Ajusta series, repes y cargas</span>
-                        </div>
-
-                        <div className="space-y-2.5 max-h-60 sm:max-h-[380px] overflow-y-auto no-scrollbar pr-1">
-                          {(currentActiveDay.ejercicios || []).map((item, idx) => (
-                            <div
-                              key={item.id || `active-day-item-${activeDayIndex}-${idx}`}
-                              className="p-3 rounded-xl bg-dark-900 border border-dark-700 space-y-2.5"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span className="w-5 h-5 rounded-full bg-brand/20 text-brand-light text-[10px] font-bold flex items-center justify-center shrink-0">
-                                    {idx + 1}
-                                  </span>
-                                  <span className="text-xs font-bold text-white truncate">
-                                    {item.exercise?.nombre || 'Ejercicio'}
-                                  </span>
-                                </div>
-
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleMoveExerciseUp(idx)}
-                                    disabled={idx === 0}
-                                    className="p-1 rounded hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[32px] min-w-[32px] flex items-center justify-center"
-                                    title="Subir orden"
-                                  >
-                                    <ArrowUp className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleMoveExerciseDown(idx)}
-                                    disabled={idx === currentActiveDay.ejercicios.length - 1}
-                                    className="p-1 rounded hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[32px] min-w-[32px] flex items-center justify-center"
-                                    title="Bajar orden"
-                                  >
-                                    <ArrowDown className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveExercise(idx)}
-                                    className="p-1 rounded hover:bg-red-950/40 text-red-400 hover:text-red-300 ml-1 min-h-[32px] min-w-[32px] flex items-center justify-center"
-                                    title="Quitar ejercicio"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              </div>
-
-                              {/* Inputs de Parámetros */}
-                              <div className="grid grid-cols-4 gap-2 text-center text-xs">
-                                <div>
-                                  <span className="text-[10px] text-zinc-400 uppercase font-semibold block mb-0.5">Series</span>
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    value={item.series}
-                                    onChange={(e) => handleUpdateExerciseParam(idx, 'series', e.target.value)}
-                                    className="w-full bg-dark-850 border border-dark-700 rounded-lg py-1 px-1 text-center text-xs font-bold text-white min-h-[36px]"
-                                  />
-                                </div>
-                                <div>
-                                  <span className="text-[10px] text-zinc-400 uppercase font-semibold block mb-0.5">Reps</span>
-                                  <input
-                                    type="text"
-                                    value={item.repeticiones}
-                                    onChange={(e) => handleUpdateExerciseParam(idx, 'repeticiones', e.target.value)}
-                                    className="w-full bg-dark-850 border border-dark-700 rounded-lg py-1 px-1 text-center text-xs font-bold text-white min-h-[36px]"
-                                  />
-                                </div>
-                                <div>
-                                  <span className="text-[10px] text-zinc-400 uppercase font-semibold block mb-0.5">Carga (kg)</span>
-                                  <input
-                                    type="number"
-                                    step="0.5"
-                                    value={item.peso_sugerido}
-                                    onChange={(e) => handleUpdateExerciseParam(idx, 'peso_sugerido', e.target.value)}
-                                    className="w-full bg-dark-850 border border-dark-700 rounded-lg py-1 px-1 text-center text-xs font-bold text-brand-light min-h-[36px]"
-                                  />
-                                </div>
-                                <div>
-                                  <span className="text-[10px] text-zinc-400 uppercase font-semibold block mb-0.5">Descanso (s)</span>
-                                  <input
-                                    type="number"
-                                    step="15"
-                                    value={item.descanso_seg}
-                                    onChange={(e) => handleUpdateExerciseParam(idx, 'descanso_seg', e.target.value)}
-                                    className="w-full bg-dark-850 border border-dark-700 rounded-lg py-1 px-1 text-center text-xs font-bold text-white min-h-[36px]"
-                                  />
-                                </div>
+                    <div className="space-y-3">
+                      {routineDays.map((d, idx) => {
+                        const count = d.ejercicios?.length || 0;
+                        return (
+                          <div
+                            key={d.id || `hub-day-${idx}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => { setMobileTab('library'); setActiveDayIndex(idx); }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                setMobileTab('library');
+                                setActiveDayIndex(idx);
+                              }
+                            }}
+                            className="card-dark rounded-2xl p-4 border border-dark-700 hover:border-brand/50 cursor-pointer hover:bg-gray-800 transition-colors flex items-center justify-between gap-3 min-h-[72px]"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <span className="w-10 h-10 rounded-xl bg-brand/15 border border-brand/30 text-brand-light font-black flex items-center justify-center shrink-0">
+                                {idx + 1}
+                              </span>
+                              <div className="min-w-0">
+                                <p className="text-sm font-bold text-white truncate">
+                                  {d.dia || d.dia_nombre || `Día ${idx + 1}`}
+                                </p>
+                                <p className={`text-xs font-semibold flex items-center gap-1 mt-0.5 ${count > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                  <Dumbbell className="w-3.5 h-3.5" />
+                                  {count === 0
+                                    ? 'Sin ejercicios cargados'
+                                    : `${count} ${count === 1 ? 'ejercicio cargado' : 'ejercicios cargados'}`}
+                                </p>
                               </div>
                             </div>
-                          ))}
+                            <ChevronRight className="w-5 h-5 text-zinc-500 shrink-0" />
+                          </div>
+                        );
+                      })}
+                    </div>
 
-                          {(currentActiveDay.ejercicios || []).length === 0 && (
-                            <div className="p-8 text-center border-2 border-dashed border-dark-700 rounded-xl text-zinc-500 text-xs">
-                              <Dumbbell className="w-8 h-8 mx-auto mb-2 text-dark-600" />
-                              <p className="font-bold text-zinc-400">No hay ejercicios en este día</p>
-                              <p className="text-[11px] text-zinc-500 mt-0.5">
-                                Selecciona ejercicios del catálogo de la izquierda con "+ Agregar".
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
+                    <div className="pt-1 text-center">
+                      <button
+                        type="button"
+                        onClick={() => handleSetFrequency(routineDays.length + 1)}
+                        className="text-xs font-bold text-brand-light hover:text-white inline-flex items-center gap-1.5 p-2 rounded-xl hover:bg-dark-800 transition-colors"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Añadir otra sesión a la semana</span>
+                      </button>
                     </div>
                   </div>
                 )}
 
               </div>
 
-              {/* Barra Inferior Sticky con Acciones */}
-              <div className="sticky bottom-0 bg-[#121217] pt-3 pb-1 border-t border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
-                <span className="text-xs text-zinc-400">
-                  Total: <strong>{totalModalExercisesCount} ejercicios</strong> en {routineDays.length} días estructurados.
-                </span>
+              {/* ======================================================== */}
+              {/* BOTTOM ACTION BAR FIJA DEL WIZARD (Paso 1 y Paso 2 Hub)  */}
+              {/* ======================================================== */}
+              <div className="fixed md:sticky bottom-0 left-0 w-full bg-gray-900 border-t border-gray-800 p-4 z-20 shadow-2xl">
+                <div className="max-w-2xl mx-auto w-full">
+                  {/* PASO 1: Siguiente a Estructura */}
+                  {currentStep === 1 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!routineForm.nombre.trim()) {
+                          showNotification('Por favor indica un nombre para la rutina', 'error');
+                          return;
+                        }
+                        if (routineForm.destinatarioTipo === 'alumno' && !routineForm.client_id) {
+                          showNotification('Por favor selecciona un alumno', 'error');
+                          return;
+                        }
+                        setActiveDayIndex(null);
+                        setCurrentStep(2);
+                      }}
+                      className="w-full py-3.5 px-6 rounded-xl text-base font-bold text-white bg-brand hover:bg-brand-dark shadow-glow-red transition-all flex items-center justify-center gap-2 min-h-[48px]"
+                    >
+                      <span>Siguiente: Estructura</span>
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  )}
 
-                <div className="flex items-center gap-2 self-end sm:self-auto">
-                  <button
-                    type="button"
-                    onClick={() => setIsEditorOpen(false)}
-                    className="px-4 py-2.5 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white bg-dark-800 border border-dark-700 min-h-[44px]"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isSubmitting || totalModalExercisesCount === 0}
-                    className="px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-white bg-brand hover:bg-brand-dark shadow-glow-red transition-all flex items-center gap-2 disabled:opacity-50 min-h-[44px]"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>
-                      {isSubmitting 
-                        ? 'Guardando en Supabase...' 
-                        : (editingRoutineId ? 'Guardar Cambios' : 'Guardar Rutina')}
-                    </span>
-                  </button>
+                  {/* PASO 2 (Hub): Atrás + Guardar Rutina completa */}
+                  {currentStep === 2 && (
+                    <div className="grid grid-cols-2 gap-3 w-full">
+                      <button
+                        type="button"
+                        onClick={() => setCurrentStep(1)}
+                        disabled={isSubmitting}
+                        className="py-3 px-4 rounded-xl text-sm font-bold text-zinc-300 hover:text-white bg-dark-800 border border-dark-700 transition-all flex items-center justify-center gap-1.5 min-h-[48px] disabled:opacity-50"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                        <span>Atrás</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveRoutineSubmit}
+                        disabled={isSubmitting}
+                        className="py-3 px-4 rounded-xl text-sm font-bold text-white bg-red-600 hover:bg-red-700 shadow-glow-red transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 min-h-[48px]"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>{isSubmitting ? 'Guardando...' : (editingRoutineId ? 'Guardar Cambios' : 'Guardar Rutina completa')}</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================== */}
+      {/* 4. SUB-VISTA: EDITOR DE DÍA A PANTALLA COMPLETA            */}
+      {/* ========================================================== */}
+      {isEditorOpen && isDayEditorOpen && currentActiveDay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950 md:bg-black/85 md:backdrop-blur-sm p-0 md:p-4">
+          <div className="fixed inset-0 md:relative z-50 flex flex-col bg-gray-950 w-full h-full md:max-w-5xl md:max-h-[90vh] md:rounded-2xl md:border md:border-gray-800 md:shadow-2xl overflow-hidden">
+            
+            {/* 2. BLOQUE SUPERIOR FIJO (Header + Tabs) */}
+            <div className="flex-none bg-gray-950 w-full border-b border-gray-800 z-10">
+              
+              {/* Header: Barra superior fija */}
+              <div className="p-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => setActiveDayIndex(null)}
+                    className="px-3 py-2 -ml-1 rounded-xl text-xs font-bold text-zinc-200 hover:text-white bg-dark-800 border border-dark-700 min-h-[40px] flex items-center justify-center gap-1.5 shrink-0"
+                    aria-label="Volver a Sesiones"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                    <span>Volver a Sesiones</span>
+                  </button>
+
+                  <div className="min-w-0">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-brand-light">
+                      Editor de Día • {currentActiveDay.ejercicios?.length || 0} ej.
+                    </span>
+                    <h2 className="text-base sm:text-lg font-black text-white leading-tight mt-0.5 truncate">
+                      {currentActiveDay.dia || currentActiveDay.dia_nombre || `Día ${activeDayIndex + 1}`}
+                    </h2>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveDayIndex(null)}
+                  className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-dark-800 border border-transparent hover:border-dark-700 min-h-[40px] min-w-[40px] flex items-center justify-center shrink-0"
+                  aria-label="Volver a Sesiones"
+                  title="Volver a Sesiones"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Selector de Pestañas Móviles (Fijo dentro del bloque superior, fondo coincidente y márgenes limpios p-4) */}
+              <div className="px-4 pb-4 md:hidden">
+                <div className="flex bg-dark-900 p-1 rounded-xl border border-dark-800 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setMobileTab('library')}
+                    className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 min-h-[42px] ${
+                      mobileTab === 'library'
+                        ? 'bg-brand text-white shadow-glow-red'
+                        : 'text-zinc-400 hover:text-white hover:bg-dark-850'
+                    }`}
+                  >
+                    <Dumbbell className="w-3.5 h-3.5" />
+                    <span>1. Biblioteca</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMobileTab('sequence')}
+                    className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 min-h-[42px] ${
+                      mobileTab === 'sequence'
+                        ? 'bg-brand text-white shadow-glow-red'
+                        : 'text-zinc-400 hover:text-white hover:bg-dark-850'
+                    }`}
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>2. Configurar ({currentActiveDay.ejercicios?.length || 0} ej.)</span>
+                  </button>
+                </div>
+              </div>
+
+            </div>
+
+            {/* 3. ÁREA DE CONTENIDO SCROLLEABLE (Lista de Ejercicios y Biblioteca) */}
+            <div className="flex-1 overflow-y-auto p-4 pb-24">
+              
+              {/* Enfoque / Título editable de la Sesión */}
+              <div className="p-3 mb-4 rounded-xl bg-dark-900 border border-dark-700 space-y-1">
+                <label className="block text-[10px] uppercase font-bold text-brand-light">
+                  Enfoque / Título de la Sesión
+                </label>
+                <input
+                  type="text"
+                  value={currentActiveDay.dia}
+                  onChange={(e) => handleUpdateDayName(activeDayIndex, e.target.value)}
+                  placeholder="Ej: Día 1: Empuje / Pecho & Tríceps"
+                  className="w-full bg-dark-850 border border-dark-700 rounded-lg px-3 py-2 text-base sm:text-sm font-bold text-white focus:outline-none focus:border-brand min-h-[44px]"
+                />
+              </div>
+
+              {/* Grid: Biblioteca de Ejercicios (Izq) + Secuencia (Der) */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                
+                {/* Columna Izquierda: Biblioteca de Ejercicios */}
+                <div className={`${mobileTab === 'library' ? 'block' : 'hidden'} md:block md:col-span-5 space-y-2.5`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">
+                      Biblioteca de Ejercicios
+                    </span>
+                    <span className="text-[10px] text-zinc-400">Toca "+ Agregar"</span>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="Buscar ejercicio..."
+                      value={exerciseSearch}
+                      onChange={(e) => setExerciseSearch(e.target.value)}
+                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-base sm:text-xs text-white placeholder-gray-500 pl-9 focus:outline-none focus:border-brand min-h-[44px]"
+                    />
+                    <Search className="w-4 h-4 text-gray-500 absolute left-3 top-3.5" />
+                  </div>
+
+                  {/* Píldoras de grupo muscular */}
+                  <div className="flex gap-1 overflow-x-auto pb-1 text-[10px] no-scrollbar">
+                    {dynamicMuscleGroups.map(grp => (
+                      <button
+                        key={grp}
+                        type="button"
+                        onClick={() => setSelectedMuscleFilter(grp)}
+                        className={`px-3 py-1.5 rounded-lg shrink-0 font-medium ${
+                          selectedMuscleFilter === grp ? 'bg-brand text-white font-bold shadow-sm' : 'bg-dark-900 text-zinc-400'
+                        }`}
+                      >
+                        {grp}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Lista de ejercicios */}
+                  <div className="space-y-1.5 md:max-h-[calc(90vh-320px)] md:overflow-y-auto no-scrollbar pr-1">
+                    {filteredExercisesForSelector.map(ex => {
+                      const isAdded = (currentActiveDay.ejercicios || []).some(
+                        item => item.exercise_id === ex.id || item.exercise?.id === ex.id
+                      );
+
+                      return (
+                        <div
+                          key={ex.id}
+                          onClick={(e) => !isAdded && handleAddExerciseToCurrentDay(e, ex)}
+                          className={`p-2.5 rounded-xl border flex items-center justify-between group transition-all min-h-[48px] ${
+                            isAdded
+                              ? 'border-emerald-500/50 bg-emerald-500/10 cursor-default'
+                              : 'border-dark-700 bg-dark-900 hover:bg-dark-800 hover:border-brand/40 cursor-pointer'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <img
+                              src={ex.imagen_url}
+                              alt={ex.nombre}
+                              className="w-10 h-10 rounded-lg object-cover shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <p className={`text-xs font-bold truncate transition-colors ${
+                                isAdded ? 'text-emerald-300' : 'text-white group-hover:text-brand-light'
+                              }`}>
+                                {ex.nombre}
+                              </p>
+                              <span className="text-[10px] text-zinc-400">{ex.grupo_muscular}</span>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={isAdded}
+                            onClick={(e) => handleAddExerciseToCurrentDay(e, ex)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 flex items-center gap-1 min-h-[36px] ${
+                              isAdded
+                                ? 'bg-emerald-600/80 text-white cursor-not-allowed opacity-80'
+                                : 'bg-brand hover:bg-brand-dark text-white shadow-glow-red'
+                            }`}
+                          >
+                            {isAdded ? (
+                              <>
+                                <Check className="w-3.5 h-3.5" />
+                                <span>Agregado</span>
+                              </>
+                            ) : (
+                              '+ Agregar'
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Columna Derecha: Configuración de la Secuencia */}
+                <div className={`${mobileTab === 'sequence' ? 'block' : 'hidden'} md:block md:col-span-7 space-y-2.5`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">
+                      Secuencia de {currentActiveDay.dia_semana || `Día ${activeDayIndex + 1}`} ({currentActiveDay.ejercicios?.length || 0} ej.)
+                    </span>
+                    <span className="text-[10px] text-zinc-400">Series, repes y descansos</span>
+                  </div>
+
+                  <div className="space-y-3 md:max-h-[calc(90vh-320px)] md:overflow-y-auto no-scrollbar pr-1">
+                    {(currentActiveDay.ejercicios || []).map((item, idx) => (
+                      <div
+                        key={item.instanceId || item.id || `active-day-item-${activeDayIndex}-${idx}`}
+                        className="p-3.5 sm:p-3 rounded-2xl md:rounded-xl bg-dark-900 border border-dark-700 space-y-3 shadow-md"
+                      >
+                        {/* Fila superior: Nombre del ejercicio y acciones */}
+                        <div className="flex items-center justify-between gap-2 pb-1 border-b border-dark-800">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-6 h-6 rounded-full bg-brand/20 text-brand-light text-xs font-bold flex items-center justify-center shrink-0">
+                              {idx + 1}
+                            </span>
+                            <span className="text-sm md:text-xs font-bold text-white truncate">
+                              {item.exercise?.nombre || 'Ejercicio'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleMoveExerciseUp(idx)}
+                              disabled={idx === 0}
+                              className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[36px] min-w-[36px] flex items-center justify-center"
+                              title="Subir orden"
+                            >
+                              <ArrowUp className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveExerciseDown(idx)}
+                              disabled={idx === currentActiveDay.ejercicios.length - 1}
+                              className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[36px] min-w-[36px] flex items-center justify-center"
+                              title="Bajar orden"
+                            >
+                              <ArrowDown className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveExercise(idx)}
+                              className="p-1.5 rounded-lg bg-red-950/30 hover:bg-red-950/60 text-red-400 hover:text-red-300 ml-1 min-h-[36px] min-w-[36px] flex items-center justify-center border border-red-500/20"
+                              title="Quitar ejercicio"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Fila inferior: Grid 2 columnas en móvil, 4 en desktop */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-left md:text-center">
+                          {/* Columna 1: Series */}
+                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
+                            <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Series</span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={item.series}
+                              onChange={(e) => handleUpdateExerciseParam(idx, 'series', e.target.value)}
+                              className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
+                            />
+                          </div>
+
+                          {/* Columna 1: Reps */}
+                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
+                            <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Reps</span>
+                            <input
+                              type="text"
+                              value={item.repeticiones}
+                              onChange={(e) => handleUpdateExerciseParam(idx, 'repeticiones', e.target.value)}
+                              className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
+                            />
+                          </div>
+
+                          {/* Columna 2: Carga */}
+                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
+                            <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Carga (kg)</span>
+                            <input
+                              type="number"
+                              step="0.5"
+                              value={item.peso_sugerido}
+                              onChange={(e) => handleUpdateExerciseParam(idx, 'peso_sugerido', e.target.value)}
+                              className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-brand-light min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
+                            />
+                          </div>
+
+                          {/* Columna 2: Descanso */}
+                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
+                            <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Descanso (s)</span>
+                            <input
+                              type="number"
+                              step="15"
+                              value={item.descanso_seg}
+                              onChange={(e) => handleUpdateExerciseParam(idx, 'descanso_seg', e.target.value)}
+                              className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {(currentActiveDay.ejercicios || []).length === 0 && (
+                      <div className="p-8 text-center border-2 border-dashed border-dark-700 rounded-xl text-zinc-500 text-xs">
+                        <Dumbbell className="w-8 h-8 mx-auto mb-2 text-dark-600" />
+                        <p className="font-bold text-zinc-400">No hay ejercicios en esta sesión</p>
+                        <p className="text-[11px] text-zinc-500 mt-0.5">
+                          Abre la pestaña "1. Biblioteca" para agregar ejercicios a este día.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
           </div>
         </div>
       )}

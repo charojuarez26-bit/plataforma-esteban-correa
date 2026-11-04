@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Pencil, Save, Loader2, AlertTriangle } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { dataService } from '../../services/dataService';
+import ClientPhotoUploader from '../common/ClientPhotoUploader';
 
 const MODALIDADES = ['Presencial', 'Online', 'Híbrido'];
 const ESTADOS = ['Activo', 'Inactivo', 'Pausado'];
@@ -29,8 +30,12 @@ export default function ClientEditModal({ client, onClose, onSaved }) {
     modalidad: client?.modalidad || 'Presencial',
     objetivo: client?.objetivo || OBJETIVOS[0],
     estado: client?.estado || 'Activo',
-    routine_id: activeRoutine?.id || ''
+    routine_id: activeRoutine?.id || '',
+    foto_url: client?.foto_url || client?.avatar_url || ''
   });
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(client?.foto_url || client?.avatar_url || null);
+  const [photoRemoved, setPhotoRemoved] = useState(false);
   const [routines, setRoutines] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -66,12 +71,24 @@ export default function ClientEditModal({ client, onClose, onSaved }) {
     setSaving(true);
     setError('');
     try {
+      let finalFotoUrl = client?.foto_url || client?.avatar_url || null;
+      if (photoRemoved) {
+        finalFotoUrl = null;
+      }
+      if (photoFile) {
+        const uploadedUrl = await dataService.uploadClientAvatar(photoFile);
+        if (uploadedUrl) {
+          finalFotoUrl = uploadedUrl;
+        }
+      }
+
       const changes = {
         nombre_completo: nombre,
         telefono,
         modalidad: form.modalidad,
         objetivo: form.objetivo,
-        estado: form.estado
+        estado: form.estado,
+        foto_url: finalFotoUrl
       };
 
       const { data, error: dbError } = await supabase
@@ -83,6 +100,19 @@ export default function ClientEditModal({ client, onClose, onSaved }) {
       if (dbError) throw dbError;
       if (!data || data.length === 0) {
         throw new Error('No se actualizó ningún registro. Verifica tus permisos (RLS) en Supabase.');
+      }
+
+      // Persistir metadatos en localStorage para consistencia
+      try {
+        const raw = localStorage.getItem(`ec_client_meta_${client.id}`);
+        const currentMeta = raw ? JSON.parse(raw) : {};
+        localStorage.setItem(`ec_client_meta_${client.id}`, JSON.stringify({
+          ...currentMeta,
+          foto_url: finalFotoUrl,
+          avatar_url: finalFotoUrl
+        }));
+      } catch (e) {
+        // ignore
       }
 
       // Rutina asignada
@@ -103,6 +133,8 @@ export default function ClientEditModal({ client, onClose, onSaved }) {
       onSaved({
         ...client,
         ...data[0],
+        foto_url: finalFotoUrl,
+        avatar_url: finalFotoUrl,
         rutina_activa: rutinaNombre,
         tiene_rutina: Boolean(rutinaNombre)
       }, { routineChanged });
@@ -129,6 +161,23 @@ export default function ClientEditModal({ client, onClose, onSaved }) {
                   className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/5">
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        {/* Foto de perfil */}
+        <div className="py-2">
+          <ClientPhotoUploader
+            initialUrl={photoPreview}
+            onPhotoSelected={(file, preview) => {
+              setPhotoFile(file);
+              setPhotoPreview(preview);
+              setPhotoRemoved(false);
+            }}
+            onPhotoRemoved={() => {
+              setPhotoFile(null);
+              setPhotoPreview(null);
+              setPhotoRemoved(true);
+            }}
+          />
         </div>
 
         <div>

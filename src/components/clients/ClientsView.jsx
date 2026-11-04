@@ -39,7 +39,30 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
   };
 
   useEffect(() => {
-    loadClients();
+    let isMounted = true;
+
+    // Cargar clientes inmediatamente asegurando que el cliente auth esté listo
+    const initClients = async () => {
+      // 1. Si no hay sesión lista, esperar al evento de sesión de Supabase Auth
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!isMounted) return;
+      await loadClients();
+    };
+
+    initClients();
+
+    // 2. Suscribirse a cambios de autenticación para recargar si la sesión se refresca o inicia
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!isMounted) return;
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
+        loadClients();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription?.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -125,8 +148,9 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
 
   if (loading && clients.length === 0) {
     return (
-      <div className="min-h-[400px] flex items-center justify-center text-gray-400">
+      <div className="min-h-[400px] flex flex-col items-center justify-center gap-3 text-gray-400">
         <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-brand"></div>
+        <p className="text-xs font-semibold text-zinc-400 animate-pulse">Sincronizando alumnos con Supabase...</p>
       </div>
     );
   }

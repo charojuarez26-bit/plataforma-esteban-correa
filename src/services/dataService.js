@@ -400,7 +400,7 @@ export const dataService = {
         .from('avatars')
         .upload(fileName, file, {
           cacheControl: '3600',
-          upsert: false
+          upsert: true
         });
 
       if (uploadError) {
@@ -408,11 +408,12 @@ export const dataService = {
         throw uploadError;
       }
 
-      const { data: { publicUrl } } = supabase.storage
+      const uploadPath = uploadData?.path || fileName;
+      const { data: publicUrlData } = supabase.storage
         .from('avatars')
-        .getPublicUrl(fileName);
+        .getPublicUrl(uploadPath);
 
-      return publicUrl;
+      return publicUrlData?.publicUrl || null;
     } catch (err) {
       console.error('[DataService] Error en uploadClientAvatar:', err);
       throw err;

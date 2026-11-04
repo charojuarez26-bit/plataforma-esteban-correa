@@ -103,20 +103,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
       let uploadedFotoUrl = null;
       if (photoFile) {
         try {
-          const fileExt = photoFile.name ? photoFile.name.split('.').pop() : 'jpg';
-          const fileName = `client-${Date.now()}.${fileExt}`;
-          const { data: uploadData, error: uploadError } = await supabase.storage
-            .from('avatars')
-            .upload(fileName, photoFile);
-
-          if (uploadError) {
-            console.error("Error subiendo foto al bucket avatars:", uploadError);
-          } else {
-            const { data: { publicUrl } } = supabase.storage
-              .from('avatars')
-              .getPublicUrl(fileName);
-            uploadedFotoUrl = publicUrl;
-          }
+          uploadedFotoUrl = await dataService.uploadClientAvatar(photoFile);
         } catch (uploadErr) {
           console.warn("Excepción al subir foto:", uploadErr);
         }
