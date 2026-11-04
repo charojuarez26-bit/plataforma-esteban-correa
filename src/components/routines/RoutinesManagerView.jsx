@@ -24,6 +24,14 @@ import {
 import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
 
+// Generador seguro de identificadores únicos para evitar colisiones de keys en React
+const generateUniqueId = (prefix = '') => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return prefix ? `${prefix}-${crypto.randomUUID()}` : crypto.randomUUID();
+  }
+  return `${prefix ? `${prefix}-` : ''}${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+};
+
 export default function RoutinesManagerView({ onNavigateToClient, initialClientId, onClearInitialClientId }) {
   const [routines, setRoutines] = useState([]);
   const [clients, setClients] = useState([]);
@@ -119,7 +127,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     const initialDays = Array.from({ length: defaultDaysCount }, (_, idx) => {
       const dayName = assignedDays[idx] || (idx === 0 ? 'Lunes' : idx === 1 ? 'Miércoles' : idx === 2 ? 'Viernes' : `Día ${idx + 1}`);
       return {
-        id: `d-${idx + 1}-${Date.now()}`,
+        id: generateUniqueId('day'),
         dia_numero: idx + 1,
         dia_nombre: `Día ${idx + 1} (${dayName}): Sesión ${idx + 1}`,
         dia: `Día ${idx + 1} (${dayName}): Sesión ${idx + 1}`,
@@ -159,18 +167,18 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       frecuenciaDias: count
     });
 
-    // Clonar días y ejercicios para edición limpia
+    // Clonar días y ejercicios con IDs únicos garantizados
     const clonedDays = (routine.dias || []).map((d, dIdx) => ({
-      id: d.id || `d-${dIdx + 1}-${Date.now()}`,
+      id: generateUniqueId('day'),
       dia_numero: d.dia_numero || dIdx + 1,
       dia_nombre: d.dia_nombre || d.dia || `Día ${dIdx + 1}`,
       dia: d.dia || d.dia_nombre || `Día ${dIdx + 1}`,
       dia_semana: d.dia_semana || `Día ${dIdx + 1}`,
       ejercicios: (d.ejercicios || []).map((e, eIdx) => ({
-        id: e.id || `item-${dIdx}-${eIdx}-${Date.now()}`,
+        id: generateUniqueId('item'),
         exercise_id: e.exercise?.id || e.exercise_id,
         exercise: e.exercise,
-        series: e.series || 4,
+        series: parseInt(e.series, 10) || 4,
         repeticiones: e.repeticiones || '10-12',
         peso_sugerido: e.peso_raw !== null && e.peso_raw !== undefined ? e.peso_raw : (e.peso_sugerido || ''),
         descanso_seg: e.descanso_seg || e.descanso_segundos || 90
@@ -199,7 +207,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
           const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
           const dayLabel = dayNames[nextIdx] || `Día ${nextIdx + 1}`;
           return {
-            id: `d-${nextIdx + 1}-${Date.now()}`,
+            id: generateUniqueId('day'),
             dia_numero: nextIdx + 1,
             dia_nombre: `Día ${nextIdx + 1} (${dayLabel}): Sesión ${nextIdx + 1}`,
             dia: `Día ${nextIdx + 1} (${dayLabel}): Sesión ${nextIdx + 1}`,
@@ -231,12 +239,12 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     });
   };
 
-  // Agregar ejercicio al día activo
+  // Agregar ejercicio al día activo con ID único seguro
   const handleAddExerciseToCurrentDay = (exercise) => {
     if (routineDays.length === 0) return;
 
     const newItem = {
-      id: `item-${Date.now()}-${Math.random()}`,
+      id: generateUniqueId('item'),
       exercise_id: exercise.id,
       exercise: exercise,
       series: 4,
@@ -303,22 +311,24 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     });
   };
 
-  // Guardar Rutina en Supabase
+  // Guardar Rutina en Supabase con recarga de estado reactiva
   const handleSaveRoutineSubmit = async (e) => {
     e.preventDefault();
     if (!routineForm.nombre.trim()) {
-      alert('Por favor indica un nombre para la rutina');
+      showNotification('Por favor indica un nombre para la rutina', 'error');
       return;
     }
 
-    if (routineForm.destinatarioTipo === 'alumno' && !routineForm.client_id) {
-      alert('Por favor selecciona el alumno destinatario');
-      return;
+    if (routineForm.destinatarioTipo === 'alumno') {
+      if (!routineForm.client_id || routineForm.client_id === '00000000-0000-0000-0000-000000000000') {
+        showNotification('Por favor selecciona un alumno válido para asignar la rutina', 'error');
+        return;
+      }
     }
 
     const totalExercises = routineDays.reduce((acc, d) => acc + (d.ejercicios?.length || 0), 0);
     if (totalExercises === 0) {
-      alert('Por favor agrega al menos un ejercicio a la rutina antes de guardar.');
+      showNotification('Por favor agrega al menos un ejercicio a la rutina antes de guardar.', 'error');
       return;
     }
 
@@ -334,19 +344,20 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
 
       const saved = await dataService.saveRoutine(payload, routineDays, editingRoutineId);
 
-      // Actualizar listado local
-      if (editingRoutineId) {
-        setRoutines(prev => prev.map(r => r.id === editingRoutineId ? saved : r));
-        showNotification(`Rutina "${saved.nombre}" actualizada con éxito en Supabase`);
-      } else {
-        setRoutines(prev => [saved, ...prev]);
-        showNotification(`Rutina "${saved.nombre}" guardada con éxito en Supabase`);
-      }
+      // Recarga reactiva en tiempo real sin recargar página
+      await loadAllData();
 
       setIsEditorOpen(false);
+      showNotification(
+        editingRoutineId
+          ? `Rutina "${saved.nombre}" actualizada con éxito en Supabase`
+          : `Rutina "${saved.nombre}" guardada y sincronizada con éxito`,
+        'success'
+      );
     } catch (err) {
-      console.error('Error guardando rutina:', err);
-      showNotification('Error al guardar la rutina en Supabase', 'error');
+      console.error('Error detallado de Supabase:', err);
+      const errorMsg = err?.message || 'Error al persistir la rutina en Supabase';
+      showNotification(`Error: ${errorMsg}`, 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -363,19 +374,19 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
 
   const handleConfirmAssignRoutine = async () => {
     if (!routineToAssign || !targetClientId) {
-      alert('Por favor selecciona un alumno');
+      showNotification('Por favor selecciona un alumno para asignar la rutina', 'error');
       return;
     }
 
     setIsSubmitting(true);
     try {
       const assigned = await dataService.assignRoutineToClient(routineToAssign.id, targetClientId);
-      setRoutines(prev => [assigned, ...prev]);
+      await loadAllData();
       setIsAssignModalOpen(false);
       showNotification(`¡Rutina asignada exitosamente a ${assigned.client?.nombre_completo || 'Alumno'}!`);
     } catch (err) {
-      console.error('Error asignando rutina:', err);
-      showNotification('Error al asignar la rutina en Supabase', 'error');
+      console.error('Error detallado de Supabase:', err);
+      showNotification(`Error al asignar rutina: ${err?.message || 'Fallo de conexión'}`, 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -392,15 +403,23 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   const handleConfirmDelete = async () => {
     if (!routineToDelete) return;
 
+    const routineId = routineToDelete.id;
+    const routineName = routineToDelete.nombre;
+
     setIsSubmitting(true);
     try {
-      await dataService.deleteRoutine(routineToDelete.id);
-      setRoutines(prev => prev.filter(r => r.id !== routineToDelete.id));
+      // 1. Ejecutar y esperar eliminación confirmada en Supabase directamente sobre la tabla routines
+      await dataService.deleteRoutine(routineId);
+
+      // 2. Solo tras confirmación exitosa de Supabase (!error), actualizar estado local
+      setRoutines(prev => prev.filter(r => r.id !== routineId));
+
       setIsDeleteModalOpen(false);
-      showNotification(`Rutina "${routineToDelete.nombre}" eliminada correctamente.`);
+      setRoutineToDelete(null);
+      showNotification(`Rutina "${routineName}" eliminada correctamente.`);
     } catch (err) {
-      console.error('Error eliminando rutina:', err);
-      showNotification('Error al eliminar la rutina', 'error');
+      console.error('Error detallado de Supabase al eliminar rutina:', err);
+      showNotification(`Error al eliminar: ${err?.message || 'No se pudo eliminar la rutina en Supabase'}`, 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -447,18 +466,22 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
 
   // Grupos musculares para el selector del modal
   const dynamicMuscleGroups = useMemo(() => {
+    const base = ['Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Core / Abdomen', 'Glúteos'];
     const custom = new Set();
     exercises.forEach(ex => {
-      if (ex.grupo_muscular && !['Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Core'].includes(ex.grupo_muscular)) {
+      if (ex.grupo_muscular && !base.includes(ex.grupo_muscular)) {
         custom.add(ex.grupo_muscular);
       }
     });
-    return ['Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Core', ...Array.from(custom)];
+    return [...base, ...Array.from(custom)];
   }, [exercises]);
 
   const filteredExercisesForSelector = exercises.filter(ex => {
     const matchSearch = ex.nombre.toLowerCase().includes(exerciseSearch.toLowerCase());
-    const matchGroup = selectedMuscleFilter === 'Todos' || (ex.grupo_muscular || '').toLowerCase() === selectedMuscleFilter.toLowerCase();
+    const matchGroup = selectedMuscleFilter === 'Todos' || 
+      (ex.grupo_muscular || '').toLowerCase() === selectedMuscleFilter.toLowerCase() ||
+      (selectedMuscleFilter === 'Core / Abdomen' && (ex.grupo_muscular || '').toLowerCase() === 'core') ||
+      (selectedMuscleFilter === 'Core' && (ex.grupo_muscular || '').toLowerCase() === 'core / abdomen');
     return matchSearch && matchGroup;
   });
 
@@ -671,7 +694,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {(routine.dias || []).map((d, dIdx) => (
                       <span
-                        key={dIdx}
+                        key={d.id || `routine-${routine.id}-day-${dIdx}`}
                         className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-dark-800 border border-dark-700 text-zinc-300"
                       >
                         {d.dia_semana || `Día ${dIdx + 1}`} ({d.ejercicios?.length || 0})
@@ -908,7 +931,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                       const count = d.ejercicios?.length || 0;
                       return (
                         <button
-                          key={d.id || idx}
+                          key={d.id || `routine-day-tab-${idx}`}
                           type="button"
                           onClick={() => setActiveDayIndex(idx)}
                           className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 min-h-[40px] ${
@@ -1036,7 +1059,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                         <div className="space-y-2.5 max-h-60 sm:max-h-[380px] overflow-y-auto no-scrollbar pr-1">
                           {(currentActiveDay.ejercicios || []).map((item, idx) => (
                             <div
-                              key={item.id || idx}
+                              key={item.id || `active-day-item-${activeDayIndex}-${idx}`}
                               className="p-3 rounded-xl bg-dark-900 border border-dark-700 space-y-2.5"
                             >
                               <div className="flex items-center justify-between gap-2">

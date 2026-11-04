@@ -1,9 +1,7 @@
 import { supabase } from '../lib/supabase';
 import {
   INITIAL_EXERCISES,
-  INITIAL_ROUTINE,
   INITIAL_EVALUATIONS,
-  INITIAL_APPOINTMENTS,
   INITIAL_PAYMENTS,
   WEEKLY_CHART_DATA,
   MONTHLY_INCOME_DATA
@@ -79,49 +77,83 @@ export function parseWeight(val) {
 export function formatRoutineWithDays(rawRoutine) {
   if (!rawRoutine) return null;
 
-  const rawExercises = (rawRoutine.routine_exercises || []).slice().sort((a, b) => {
-    if ((a.dia_numero || 1) !== (b.dia_numero || 1)) {
-      return (a.dia_numero || 1) - (b.dia_numero || 1);
-    }
-    return (a.orden || 0) - (b.orden || 0);
-  });
+  // 1. Días parseados desde campo jsonb 'dias' o json string
+  let dias = [];
+  if (Array.isArray(rawRoutine.dias) && rawRoutine.dias.length > 0) {
+    dias = rawRoutine.dias;
+  } else if (typeof rawRoutine.dias === 'string') {
+    try {
+      const parsed = JSON.parse(rawRoutine.dias);
+      if (Array.isArray(parsed) && parsed.length > 0) dias = parsed;
+    } catch (e) {}
+  }
 
-  const daysMap = {};
-  const dayKeysInOrder = [];
+  // 2. Días parseados desde campo 'dia_semana' (donde guardamos respaldo JSON seguro)
+  if (dias.length === 0 && rawRoutine.dia_semana) {
+    try {
+      const parsed = JSON.parse(rawRoutine.dia_semana);
+      if (Array.isArray(parsed) && parsed.length > 0) dias = parsed;
+    } catch (e) {}
+  }
 
-  rawExercises.forEach(re => {
-    const dayNum = re.dia_numero || 1;
-    const key = `day-${dayNum}`;
-    if (!daysMap[key]) {
-      const dayTitle = re.dia_nombre || `Día ${dayNum}`;
-      daysMap[key] = {
-        id: `d-${dayNum}`,
-        dia_numero: dayNum,
-        dia_nombre: dayTitle,
-        dia: dayTitle,
-        dia_semana: extractWeekday(dayTitle) || `Día ${dayNum}`,
-        ejercicios: []
-      };
-      dayKeysInOrder.push(key);
-    }
+  // 3. Días en localStorage por ID de rutina
+  if (dias.length === 0 && rawRoutine.id) {
+    try {
+      const local = localStorage.getItem(`ec_routine_days_${rawRoutine.id}`);
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (Array.isArray(parsed) && parsed.length > 0) dias = parsed;
+      }
+    } catch (e) {}
+  }
 
-    daysMap[key].ejercicios.push({
-      id: re.id,
-      routine_id: re.routine_id,
-      exercise_id: re.exercise_id,
-      exercise: re.exercise || null,
-      series: re.series || 4,
-      repeticiones: re.repeticiones || '10-12',
-      peso_sugerido: re.peso_sugerido !== null && re.peso_sugerido !== undefined ? `${re.peso_sugerido} kg` : 'RPE 8',
-      peso_raw: re.peso_sugerido,
-      descanso_seg: re.descanso_segundos || 90,
-      descanso_segundos: re.descanso_segundos || 90,
-      orden: re.orden || 1
+  // 4. Si viene de routine_exercises relacional
+  if (dias.length === 0 && Array.isArray(rawRoutine.routine_exercises) && rawRoutine.routine_exercises.length > 0) {
+    const rawExercises = rawRoutine.routine_exercises.slice().sort((a, b) => {
+      if ((a.dia_numero || 1) !== (b.dia_numero || 1)) {
+        return (a.dia_numero || 1) - (b.dia_numero || 1);
+      }
+      return (a.orden || 0) - (b.orden || 0);
     });
-  });
 
-  let dias = dayKeysInOrder.map(k => daysMap[k]);
+    const daysMap = {};
+    const dayKeysInOrder = [];
 
+    rawExercises.forEach(re => {
+      const dayNum = re.dia_numero || 1;
+      const key = `day-${dayNum}`;
+      if (!daysMap[key]) {
+        const dayTitle = re.dia_nombre || `Día ${dayNum}`;
+        daysMap[key] = {
+          id: `d-${dayNum}`,
+          dia_numero: dayNum,
+          dia_nombre: dayTitle,
+          dia: dayTitle,
+          dia_semana: extractWeekday(dayTitle) || `Día ${dayNum}`,
+          ejercicios: []
+        };
+        dayKeysInOrder.push(key);
+      }
+
+      daysMap[key].ejercicios.push({
+        id: re.id,
+        routine_id: re.routine_id,
+        exercise_id: re.exercise_id,
+        exercise: re.exercise || null,
+        series: re.series || 4,
+        repeticiones: re.repeticiones || '10-12',
+        peso_sugerido: re.peso_sugerido !== null && re.peso_sugerido !== undefined ? `${re.peso_sugerido} kg` : 'RPE 8',
+        peso_raw: re.peso_sugerido,
+        descanso_seg: re.descanso_segundos || 90,
+        descanso_segundos: re.descanso_segundos || 90,
+        orden: re.orden || 1
+      });
+    });
+
+    dias = dayKeysInOrder.map(k => daysMap[k]);
+  }
+
+  // 5. Fallback si todavía no tiene días configurados
   if (dias.length === 0) {
     const totalDays = rawRoutine.dias_por_semana || 3;
     const defaultDayNames = ['Lunes', 'Miércoles', 'Viernes', 'Sábado', 'Martes', 'Jueves'];
@@ -141,6 +173,8 @@ export function formatRoutineWithDays(rawRoutine) {
     rawRoutine.client?.nombre_completo === 'Plantilla General'
   );
 
+  const totalExercisesCount = dias.reduce((acc, d) => acc + (d.ejercicios?.length || 0), 0);
+
   return {
     ...rawRoutine,
     objetivo: rawRoutine.descripcion || 'Sobrecarga progresiva e hipertrofia',
@@ -149,7 +183,7 @@ export function formatRoutineWithDays(rawRoutine) {
     activo: rawRoutine.activa ?? true,
     es_plantilla: isTemplate,
     dias,
-    total_ejercicios: rawExercises.length,
+    total_ejercicios: totalExercisesCount,
     client: isTemplate ? null : rawRoutine.client
   };
 }
@@ -660,32 +694,27 @@ export const dataService = {
     try {
       const { data, error } = await supabase
         .from('routines')
-        .select(`
-          *,
-          client:clients(*),
-          routine_exercises (
-            *,
-            exercise:exercises(*)
-          )
-        `)
+        .select('*')
         .order('creado_el', { ascending: false });
 
-      if (!error && data && data.length > 0) {
-        return data.map(formatRoutineWithDays);
+      if (error) {
+        console.error('Error detallado de Supabase en getAllRoutines:', error);
+        throw error;
       }
 
-      // Si no hay rutinas en Supabase, sembrar plantillas oficiales
-      if (!error && (!data || data.length === 0)) {
-        const seeded = await this.seedInitialRoutines();
-        if (seeded && seeded.length > 0) {
-          return seeded.map(formatRoutineWithDays);
-        }
+      if (!data || data.length === 0) {
+        return [];
       }
+
+      return data.map(formatRoutineWithDays);
     } catch (err) {
-      console.warn('[DataService] Error consultando rutinas en Supabase:', err);
+      console.error('Error detallado de Supabase:', err);
+      return [];
     }
+  },
 
-    return [];
+  async getRoutines() {
+    return this.getAllRoutines();
   },
 
   async seedInitialRoutines() {
@@ -705,38 +734,58 @@ export const dataService = {
         dias_por_semana: 4,
         es_plantilla: true
       };
-      const { data: r1 } = await supabase.from('routines').insert([p1]).select().single();
-
-      if (r1) {
-        const exP1 = [
-          // Día 1: Torso Empuje
-          { routine_id: r1.id, exercise_id: findEx('Press de Banca Plano').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Torso & Empuje', series: 4, repeticiones: '8-10', peso_sugerido: 75, descanso_segundos: 120, orden: 1 },
-          { routine_id: r1.id, exercise_id: findEx('Remo con Barra 45').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Torso & Empuje', series: 4, repeticiones: '8-10', peso_sugerido: 70, descanso_segundos: 90, orden: 2 },
-          { routine_id: r1.id, exercise_id: findEx('Press Inclinado').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Torso & Empuje', series: 3, repeticiones: '10-12', peso_sugerido: 26, descanso_segundos: 90, orden: 3 },
-          { routine_id: r1.id, exercise_id: findEx('Jalón al Pecho').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Torso & Empuje', series: 3, repeticiones: '10-12', peso_sugerido: 65, descanso_segundos: 75, orden: 4 },
-          { routine_id: r1.id, exercise_id: findEx('Laterales en Polea').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Torso & Empuje', series: 4, repeticiones: '15', peso_sugerido: 10, descanso_segundos: 60, orden: 5 },
-          
-          // Día 2: Piernas & Core
-          { routine_id: r1.id, exercise_id: findEx('Sentadilla Trasera').id, dia_numero: 2, dia_nombre: 'Día 2 (Martes): Piernas & Core', series: 4, repeticiones: '8', peso_sugerido: 90, descanso_segundos: 150, orden: 1 },
-          { routine_id: r1.id, exercise_id: findEx('Prensa 45').id, dia_numero: 2, dia_nombre: 'Día 2 (Martes): Piernas & Core', series: 4, repeticiones: '12-15', peso_sugerido: 160, descanso_segundos: 90, orden: 2 },
-          { routine_id: r1.id, exercise_id: findEx('Peso Muerto Rumano').id, dia_numero: 2, dia_nombre: 'Día 2 (Martes): Piernas & Core', series: 3, repeticiones: '10-12', peso_sugerido: 30, descanso_segundos: 90, orden: 3 },
-          { routine_id: r1.id, exercise_id: findEx('Plancha Abdominal').id, dia_numero: 2, dia_nombre: 'Día 2 (Martes): Piernas & Core', series: 3, repeticiones: '45 seg', peso_sugerido: null, descanso_segundos: 60, orden: 4 },
-          
-          // Día 3: Torso Tracción & Brazos
-          { routine_id: r1.id, exercise_id: findEx('Dominadas').id, dia_numero: 3, dia_nombre: 'Día 3 (Jueves): Tracción & Brazos', series: 4, repeticiones: '8', peso_sugerido: null, descanso_segundos: 90, orden: 1 },
-          { routine_id: r1.id, exercise_id: findEx('Press Militar').id, dia_numero: 3, dia_nombre: 'Día 3 (Jueves): Tracción & Brazos', series: 4, repeticiones: '10', peso_sugerido: 22, descanso_segundos: 90, orden: 2 },
-          { routine_id: r1.id, exercise_id: findEx('Cruces en Polea').id, dia_numero: 3, dia_nombre: 'Día 3 (Jueves): Tracción & Brazos', series: 3, repeticiones: '12', peso_sugerido: 15, descanso_segundos: 60, orden: 3 },
-          { routine_id: r1.id, exercise_id: findEx('Curl de Bíceps').id, dia_numero: 3, dia_nombre: 'Día 3 (Jueves): Tracción & Brazos', series: 3, repeticiones: '12', peso_sugerido: 30, descanso_segundos: 60, orden: 4 },
-          { routine_id: r1.id, exercise_id: findEx('Extensiones de Tríceps').id, dia_numero: 3, dia_nombre: 'Día 3 (Jueves): Tracción & Brazos', series: 3, repeticiones: '12', peso_sugerido: 35, descanso_segundos: 60, orden: 5 },
-
-          // Día 4: Piernas & Glúteos
-          { routine_id: r1.id, exercise_id: findEx('Hip Thrust').id, dia_numero: 4, dia_nombre: 'Día 4 (Viernes): Piernas & Glúteos', series: 4, repeticiones: '10', peso_sugerido: 100, descanso_segundos: 120, orden: 1 },
-          { routine_id: r1.id, exercise_id: findEx('Prensa 45').id, dia_numero: 4, dia_nombre: 'Día 4 (Viernes): Piernas & Glúteos', series: 3, repeticiones: '15', peso_sugerido: 140, descanso_segundos: 90, orden: 2 },
-          { routine_id: r1.id, exercise_id: findEx('Peso Muerto Rumano').id, dia_numero: 4, dia_nombre: 'Día 4 (Viernes): Piernas & Glúteos', series: 3, repeticiones: '12', peso_sugerido: 28, descanso_segundos: 90, orden: 3 },
-          { routine_id: r1.id, exercise_id: findEx('Plancha Abdominal').id, dia_numero: 4, dia_nombre: 'Día 4 (Viernes): Piernas & Glúteos', series: 3, repeticiones: '60 seg', peso_sugerido: null, descanso_segundos: 60, orden: 4 }
-        ];
-        await supabase.from('routine_exercises').insert(exP1);
-      }
+      const daysP1 = [
+        {
+          dia_numero: 1,
+          dia_nombre: 'Día 1 (Lunes): Torso & Empuje',
+          dia: 'Día 1 (Lunes): Torso & Empuje',
+          dia_semana: 'Lunes',
+          ejercicios: [
+            { exercise: findEx('Press de Banca Plano'), series: 4, repeticiones: '8-10', peso_sugerido: 75, descanso_seg: 120 },
+            { exercise: findEx('Remo con Barra 45'), series: 4, repeticiones: '8-10', peso_sugerido: 70, descanso_seg: 90 },
+            { exercise: findEx('Press Inclinado'), series: 3, repeticiones: '10-12', peso_sugerido: 26, descanso_seg: 90 },
+            { exercise: findEx('Jalón al Pecho'), series: 3, repeticiones: '10-12', peso_sugerido: 65, descanso_seg: 75 },
+            { exercise: findEx('Laterales en Polea'), series: 4, repeticiones: '15', peso_sugerido: 10, descanso_seg: 60 }
+          ]
+        },
+        {
+          dia_numero: 2,
+          dia_nombre: 'Día 2 (Martes): Piernas & Core',
+          dia: 'Día 2 (Martes): Piernas & Core',
+          dia_semana: 'Martes',
+          ejercicios: [
+            { exercise: findEx('Sentadilla Trasera'), series: 4, repeticiones: '8', peso_sugerido: 90, descanso_seg: 150 },
+            { exercise: findEx('Prensa 45'), series: 4, repeticiones: '12-15', peso_sugerido: 160, descanso_seg: 90 },
+            { exercise: findEx('Peso Muerto Rumano'), series: 3, repeticiones: '10-12', peso_sugerido: 30, descanso_seg: 90 },
+            { exercise: findEx('Plancha Abdominal'), series: 3, repeticiones: '45 seg', peso_sugerido: null, descanso_seg: 60 }
+          ]
+        },
+        {
+          dia_numero: 3,
+          dia_nombre: 'Día 3 (Jueves): Tracción & Brazos',
+          dia: 'Día 3 (Jueves): Tracción & Brazos',
+          dia_semana: 'Jueves',
+          ejercicios: [
+            { exercise: findEx('Dominadas'), series: 4, repeticiones: '8', peso_sugerido: null, descanso_seg: 90 },
+            { exercise: findEx('Press Militar'), series: 4, repeticiones: '10', peso_sugerido: 22, descanso_seg: 90 },
+            { exercise: findEx('Cruces en Polea'), series: 3, repeticiones: '12', peso_sugerido: 15, descanso_seg: 60 },
+            { exercise: findEx('Curl de Bíceps'), series: 3, repeticiones: '12', peso_sugerido: 30, descanso_seg: 60 },
+            { exercise: findEx('Extensiones de Tríceps'), series: 3, repeticiones: '12', peso_sugerido: 35, descanso_seg: 60 }
+          ]
+        },
+        {
+          dia_numero: 4,
+          dia_nombre: 'Día 4 (Viernes): Piernas & Glúteos',
+          dia: 'Día 4 (Viernes): Piernas & Glúteos',
+          dia_semana: 'Viernes',
+          ejercicios: [
+            { exercise: findEx('Hip Thrust'), series: 4, repeticiones: '10', peso_sugerido: 100, descanso_seg: 120 },
+            { exercise: findEx('Prensa 45'), series: 3, repeticiones: '15', peso_sugerido: 140, descanso_seg: 90 },
+            { exercise: findEx('Peso Muerto Rumano'), series: 3, repeticiones: '12', peso_sugerido: 28, descanso_seg: 90 },
+            { exercise: findEx('Plancha Abdominal'), series: 3, repeticiones: '60 seg', peso_sugerido: null, descanso_seg: 60 }
+          ]
+        }
+      ];
 
       // 2. Plantilla 3 Días
       const p2 = {
@@ -747,30 +796,44 @@ export const dataService = {
         dias_por_semana: 3,
         es_plantilla: true
       };
-      const { data: r2 } = await supabase.from('routines').insert([p2]).select().single();
-
-      if (r2) {
-        const exP2 = [
-          // Día 1
-          { routine_id: r2.id, exercise_id: findEx('Sentadilla Trasera').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Full-Body A', series: 4, repeticiones: '6', peso_sugerido: 95, descanso_segundos: 150, orden: 1 },
-          { routine_id: r2.id, exercise_id: findEx('Press de Banca Plano').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Full-Body A', series: 4, repeticiones: '6', peso_sugerido: 80, descanso_segundos: 120, orden: 2 },
-          { routine_id: r2.id, exercise_id: findEx('Remo con Barra 45').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Full-Body A', series: 4, repeticiones: '8', peso_sugerido: 70, descanso_segundos: 90, orden: 3 },
-          { routine_id: r2.id, exercise_id: findEx('Plancha Abdominal').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Full-Body A', series: 3, repeticiones: '45 seg', peso_sugerido: null, descanso_segundos: 60, orden: 4 },
-
-          // Día 2
-          { routine_id: r2.id, exercise_id: findEx('Peso Muerto Rumano').id, dia_numero: 2, dia_nombre: 'Día 2 (Miércoles): Full-Body B', series: 4, repeticiones: '8', peso_sugerido: 34, descanso_segundos: 120, orden: 1 },
-          { routine_id: r2.id, exercise_id: findEx('Press Militar').id, dia_numero: 2, dia_nombre: 'Día 2 (Miércoles): Full-Body B', series: 4, repeticiones: '8', peso_sugerido: 24, descanso_segundos: 90, orden: 2 },
-          { routine_id: r2.id, exercise_id: findEx('Dominadas').id, dia_numero: 2, dia_nombre: 'Día 2 (Miércoles): Full-Body B', series: 4, repeticiones: '8', peso_sugerido: null, descanso_segundos: 90, orden: 3 },
-          { routine_id: r2.id, exercise_id: findEx('Curl de Bíceps').id, dia_numero: 2, dia_nombre: 'Día 2 (Miércoles): Full-Body B', series: 3, repeticiones: '10', peso_sugerido: 32, descanso_segundos: 60, orden: 4 },
-
-          // Día 3
-          { routine_id: r2.id, exercise_id: findEx('Hip Thrust').id, dia_numero: 3, dia_nombre: 'Día 3 (Viernes): Full-Body C', series: 4, repeticiones: '8', peso_sugerido: 110, descanso_segundos: 120, orden: 1 },
-          { routine_id: r2.id, exercise_id: findEx('Press Inclinado').id, dia_numero: 3, dia_nombre: 'Día 3 (Viernes): Full-Body C', series: 4, repeticiones: '10', peso_sugerido: 28, descanso_segundos: 90, orden: 2 },
-          { routine_id: r2.id, exercise_id: findEx('Jalón al Pecho').id, dia_numero: 3, dia_nombre: 'Día 3 (Viernes): Full-Body C', series: 4, repeticiones: '10', peso_sugerido: 70, descanso_segundos: 75, orden: 3 },
-          { routine_id: r2.id, exercise_id: findEx('Extensiones de Tríceps').id, dia_numero: 3, dia_nombre: 'Día 3 (Viernes): Full-Body C', series: 3, repeticiones: '12', peso_sugerido: 35, descanso_segundos: 60, orden: 4 }
-        ];
-        await supabase.from('routine_exercises').insert(exP2);
-      }
+      const daysP2 = [
+        {
+          dia_numero: 1,
+          dia_nombre: 'Día 1 (Lunes): Full-Body A',
+          dia: 'Día 1 (Lunes): Full-Body A',
+          dia_semana: 'Lunes',
+          ejercicios: [
+            { exercise: findEx('Sentadilla Trasera'), series: 4, repeticiones: '6', peso_sugerido: 95, descanso_seg: 150 },
+            { exercise: findEx('Press de Banca Plano'), series: 4, repeticiones: '6', peso_sugerido: 80, descanso_seg: 120 },
+            { exercise: findEx('Remo con Barra 45'), series: 4, repeticiones: '8', peso_sugerido: 70, descanso_seg: 90 },
+            { exercise: findEx('Plancha Abdominal'), series: 3, repeticiones: '45 seg', peso_sugerido: null, descanso_seg: 60 }
+          ]
+        },
+        {
+          dia_numero: 2,
+          dia_nombre: 'Día 2 (Miércoles): Full-Body B',
+          dia: 'Día 2 (Miércoles): Full-Body B',
+          dia_semana: 'Miércoles',
+          ejercicios: [
+            { exercise: findEx('Peso Muerto Rumano'), series: 4, repeticiones: '8', peso_sugerido: 34, descanso_seg: 120 },
+            { exercise: findEx('Press Militar'), series: 4, repeticiones: '8', peso_sugerido: 24, descanso_seg: 90 },
+            { exercise: findEx('Dominadas'), series: 4, repeticiones: '8', peso_sugerido: null, descanso_seg: 90 },
+            { exercise: findEx('Curl de Bíceps'), series: 3, repeticiones: '10', peso_sugerido: 32, descanso_seg: 60 }
+          ]
+        },
+        {
+          dia_numero: 3,
+          dia_nombre: 'Día 3 (Viernes): Full-Body C',
+          dia: 'Día 3 (Viernes): Full-Body C',
+          dia_semana: 'Viernes',
+          ejercicios: [
+            { exercise: findEx('Hip Thrust'), series: 4, repeticiones: '8', peso_sugerido: 110, descanso_seg: 120 },
+            { exercise: findEx('Press Inclinado'), series: 4, repeticiones: '10', peso_sugerido: 28, descanso_seg: 90 },
+            { exercise: findEx('Jalón al Pecho'), series: 4, repeticiones: '10', peso_sugerido: 70, descanso_seg: 75 },
+            { exercise: findEx('Extensiones de Tríceps'), series: 3, repeticiones: '12', peso_sugerido: 35, descanso_seg: 60 }
+          ]
+        }
+      ];
 
       // 3. Plantilla 5 Días
       const p3 = {
@@ -781,53 +844,71 @@ export const dataService = {
         dias_por_semana: 5,
         es_plantilla: true
       };
-      const { data: r3 } = await supabase.from('routines').insert([p3]).select().single();
+      const daysP3 = [
+        {
+          dia_numero: 1,
+          dia_nombre: 'Día 1 (Lunes): Pecho & Core',
+          dia: 'Día 1 (Lunes): Pecho & Core',
+          dia_semana: 'Lunes',
+          ejercicios: [
+            { exercise: findEx('Press de Banca Plano'), series: 4, repeticiones: '10-12', peso_sugerido: 70, descanso_seg: 90 },
+            { exercise: findEx('Press Inclinado'), series: 3, repeticiones: '12', peso_sugerido: 24, descanso_seg: 75 },
+            { exercise: findEx('Cruces en Polea'), series: 3, repeticiones: '15', peso_sugerido: 12, descanso_seg: 60 },
+            { exercise: findEx('Plancha Abdominal'), series: 3, repeticiones: '60 seg', peso_sugerido: null, descanso_seg: 60 }
+          ]
+        },
+        {
+          dia_numero: 2,
+          dia_nombre: 'Día 2 (Martes): Espalda & Tracción',
+          dia: 'Día 2 (Martes): Espalda & Tracción',
+          dia_semana: 'Martes',
+          ejercicios: [
+            { exercise: findEx('Dominadas'), series: 4, repeticiones: '8-10', peso_sugerido: null, descanso_seg: 90 },
+            { exercise: findEx('Remo con Barra 45'), series: 4, repeticiones: '10', peso_sugerido: 65, descanso_seg: 75 },
+            { exercise: findEx('Jalón al Pecho'), series: 3, repeticiones: '12', peso_sugerido: 60, descanso_seg: 60 }
+          ]
+        },
+        {
+          dia_numero: 3,
+          dia_numero: 3,
+          dia_nombre: 'Día 3 (Miércoles): Piernas Enfoque Anterior',
+          dia: 'Día 3 (Miércoles): Piernas Enfoque Anterior',
+          dia_semana: 'Miércoles',
+          ejercicios: [
+            { exercise: findEx('Sentadilla Trasera'), series: 4, repeticiones: '8-10', peso_sugerido: 85, descanso_seg: 120 },
+            { exercise: findEx('Prensa 45'), series: 4, repeticiones: '15', peso_sugerido: 150, descanso_seg: 90 }
+          ]
+        },
+        {
+          dia_numero: 4,
+          dia_nombre: 'Día 4 (Jueves): Hombros & Brazos',
+          dia: 'Día 4 (Jueves): Hombros & Brazos',
+          dia_semana: 'Jueves',
+          ejercicios: [
+            { exercise: findEx('Press Militar'), series: 4, repeticiones: '10', peso_sugerido: 22, descanso_seg: 90 },
+            { exercise: findEx('Laterales en Polea'), series: 4, repeticiones: '15', peso_sugerido: 10, descanso_seg: 60 },
+            { exercise: findEx('Curl de Bíceps'), series: 3, repeticiones: '12', peso_sugerido: 30, descanso_seg: 60 },
+            { exercise: findEx('Extensiones de Tríceps'), series: 3, repeticiones: '12', peso_sugerido: 35, descanso_seg: 60 }
+          ]
+        },
+        {
+          dia_numero: 5,
+          dia_nombre: 'Día 5 (Viernes): Glúteos & Isquios',
+          dia: 'Día 5 (Viernes): Glúteos & Isquios',
+          dia_semana: 'Viernes',
+          ejercicios: [
+            { exercise: findEx('Hip Thrust'), series: 4, repeticiones: '10', peso_sugerido: 105, descanso_seg: 120 },
+            { exercise: findEx('Peso Muerto Rumano'), series: 4, repeticiones: '12', peso_sugerido: 32, descanso_seg: 90 },
+            { exercise: findEx('Plancha Abdominal'), series: 3, repeticiones: '45 seg', peso_sugerido: null, descanso_seg: 60 }
+          ]
+        }
+      ];
 
-      if (r3) {
-        const exP3 = [
-          // Día 1
-          { routine_id: r3.id, exercise_id: findEx('Press de Banca Plano').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Pecho & Core', series: 4, repeticiones: '10-12', peso_sugerido: 70, descanso_segundos: 90, orden: 1 },
-          { routine_id: r3.id, exercise_id: findEx('Press Inclinado').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Pecho & Core', series: 3, repeticiones: '12', peso_sugerido: 24, descanso_segundos: 75, orden: 2 },
-          { routine_id: r3.id, exercise_id: findEx('Cruces en Polea').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Pecho & Core', series: 3, repeticiones: '15', peso_sugerido: 12, descanso_segundos: 60, orden: 3 },
-          { routine_id: r3.id, exercise_id: findEx('Plancha Abdominal').id, dia_numero: 1, dia_nombre: 'Día 1 (Lunes): Pecho & Core', series: 3, repeticiones: '60 seg', peso_sugerido: null, descanso_segundos: 60, orden: 4 },
+      const r1 = await this.saveRoutine(p1, daysP1, null);
+      const r2 = await this.saveRoutine(p2, daysP2, null);
+      const r3 = await this.saveRoutine(p3, daysP3, null);
 
-          // Día 2
-          { routine_id: r3.id, exercise_id: findEx('Dominadas').id, dia_numero: 2, dia_nombre: 'Día 2 (Martes): Espalda & Tracción', series: 4, repeticiones: '8-10', peso_sugerido: null, descanso_segundos: 90, orden: 1 },
-          { routine_id: r3.id, exercise_id: findEx('Remo con Barra 45').id, dia_numero: 2, dia_nombre: 'Día 2 (Martes): Espalda & Tracción', series: 4, repeticiones: '10', peso_sugerido: 65, descanso_segundos: 75, orden: 2 },
-          { routine_id: r3.id, exercise_id: findEx('Jalón al Pecho').id, dia_numero: 2, dia_nombre: 'Día 2 (Martes): Espalda & Tracción', series: 3, repeticiones: '12', peso_sugerido: 60, descanso_segundos: 60, orden: 3 },
-
-          // Día 3
-          { routine_id: r3.id, exercise_id: findEx('Sentadilla Trasera').id, dia_numero: 3, dia_nombre: 'Día 3 (Miércoles): Piernas Enfoque Anterior', series: 4, repeticiones: '8-10', peso_sugerido: 85, descanso_segundos: 120, orden: 1 },
-          { routine_id: r3.id, exercise_id: findEx('Prensa 45').id, dia_numero: 3, dia_nombre: 'Día 3 (Miércoles): Piernas Enfoque Anterior', series: 4, repeticiones: '15', peso_sugerido: 150, descanso_segundos: 90, orden: 2 },
-
-          // Día 4
-          { routine_id: r3.id, exercise_id: findEx('Press Militar').id, dia_numero: 4, dia_nombre: 'Día 4 (Jueves): Hombros & Brazos', series: 4, repeticiones: '10', peso_sugerido: 22, descanso_segundos: 90, orden: 1 },
-          { routine_id: r3.id, exercise_id: findEx('Laterales en Polea').id, dia_numero: 4, dia_nombre: 'Día 4 (Jueves): Hombros & Brazos', series: 4, repeticiones: '15', peso_sugerido: 10, descanso_segundos: 60, orden: 2 },
-          { routine_id: r3.id, exercise_id: findEx('Curl de Bíceps').id, dia_numero: 4, dia_nombre: 'Día 4 (Jueves): Hombros & Brazos', series: 3, repeticiones: '12', peso_sugerido: 30, descanso_segundos: 60, orden: 3 },
-          { routine_id: r3.id, exercise_id: findEx('Extensiones de Tríceps').id, dia_numero: 4, dia_nombre: 'Día 4 (Jueves): Hombros & Brazos', series: 3, repeticiones: '12', peso_sugerido: 35, descanso_segundos: 60, orden: 4 },
-
-          // Día 5
-          { routine_id: r3.id, exercise_id: findEx('Hip Thrust').id, dia_numero: 5, dia_nombre: 'Día 5 (Viernes): Glúteos & Isquios', series: 4, repeticiones: '10', peso_sugerido: 105, descanso_segundos: 120, orden: 1 },
-          { routine_id: r3.id, exercise_id: findEx('Peso Muerto Rumano').id, dia_numero: 5, dia_nombre: 'Día 5 (Viernes): Glúteos & Isquios', series: 4, repeticiones: '12', peso_sugerido: 32, descanso_segundos: 90, orden: 2 },
-          { routine_id: r3.id, exercise_id: findEx('Plancha Abdominal').id, dia_numero: 5, dia_nombre: 'Día 5 (Viernes): Glúteos & Isquios', series: 3, repeticiones: '45 seg', peso_sugerido: null, descanso_segundos: 60, orden: 3 }
-        ];
-        await supabase.from('routine_exercises').insert(exP3);
-      }
-
-      // Devolver rutinas sembradas
-      const { data: finalRoutines } = await supabase
-        .from('routines')
-        .select(`
-          *,
-          client:clients(*),
-          routine_exercises (
-            *,
-            exercise:exercises(*)
-          )
-        `)
-        .order('creado_el', { ascending: false });
-
-      return finalRoutines || [];
+      return [r1, r2, r3].filter(Boolean);
     } catch (err) {
       console.warn('[DataService] Error en seedInitialRoutines:', err);
       return [];
@@ -836,125 +917,204 @@ export const dataService = {
 
   async saveRoutine(routineData, daysList, existingId = null) {
     try {
+      // 1. EXTRAER coach_id DE LA SESIÓN ACTIVA (SUPABASE AUTH)
+      let activeCoachId = null;
+      try {
+        const { data: authData, error: authErr } = await supabase.auth.getUser();
+        if (!authErr && authData?.user?.id) {
+          activeCoachId = authData.user.id;
+        }
+      } catch (e) {
+        console.warn('[DataService] Fallo al consultar usuario de supabase.auth:', e);
+      }
+
+      if (!activeCoachId) {
+        try {
+          const session = JSON.parse(localStorage.getItem('ec_trainer_auth_session') || '{}');
+          if (session?.user?.id) activeCoachId = session.user.id;
+        } catch (e) {}
+      }
+
+      if (!activeCoachId) {
+        activeCoachId = '00000000-0000-0000-0000-000000000001';
+      }
+
+      // 2. VALIDAR client_id SI SE ASIGNA A UN ALUMNO
       const isTemplate = Boolean(
         routineData.es_plantilla || 
-        routineData.is_template || 
+        routineData.destinatarioTipo === 'plantilla' ||
         !routineData.client_id || 
         routineData.client_id === '00000000-0000-0000-0000-000000000000'
       );
 
-      const targetClientId = isTemplate 
-        ? '00000000-0000-0000-0000-000000000000' 
-        : routineData.client_id;
-
-      const daysCount = daysList && daysList.length > 0 ? daysList.length : 3;
-
-      let routineId = existingId;
-
-      if (existingId) {
-        // ACTUALIZAR RUTINA EXISTENTE
-        const updatePayload = {
-          client_id: targetClientId,
-          nombre: (routineData.nombre || 'Rutina Personalizada').trim(),
-          descripcion: (routineData.descripcion || routineData.objetivo || '').trim(),
-          activa: routineData.activa ?? true,
-          dias_por_semana: daysCount,
-          es_plantilla: isTemplate
-        };
-
-        const { error: uErr } = await supabase
-          .from('routines')
-          .update(updatePayload)
-          .eq('id', existingId);
-
-        if (uErr) throw uErr;
-
-        // Borrar ejercicios anteriores para reemplazarlos con la nueva configuración
-        await supabase
-          .from('routine_exercises')
-          .delete()
-          .eq('routine_id', existingId);
-
-      } else {
-        // CREAR NUEVA RUTINA
-        if (!isTemplate && targetClientId) {
-          // Desactivar rutinas previas del alumno si se le asigna una nueva
-          await supabase
-            .from('routines')
-            .update({ activa: false })
-            .eq('client_id', targetClientId);
+      let targetClientId = '00000000-0000-0000-0000-000000000000';
+      if (!isTemplate) {
+        if (!routineData.client_id || typeof routineData.client_id !== 'string' || routineData.client_id.trim() === '') {
+          const clientError = new Error('Debes seleccionar un alumno válido para asignar la rutina.');
+          console.error('Error detallado de Supabase:', clientError);
+          throw clientError;
         }
-
-        const insertPayload = {
-          client_id: targetClientId,
-          nombre: (routineData.nombre || 'Rutina Personalizada').trim(),
-          descripcion: (routineData.descripcion || routineData.objetivo || '').trim(),
-          activa: true,
-          dias_por_semana: daysCount,
-          es_plantilla: isTemplate
-        };
-
-        const { data: inserted, error: iErr } = await supabase
-          .from('routines')
-          .insert([insertPayload])
-          .select()
-          .single();
-
-        if (iErr) throw iErr;
-        routineId = inserted.id;
+        targetClientId = routineData.client_id.trim();
       }
 
-      // Insertar ejercicios de todos los días
-      const exercisesToInsert = [];
-      (daysList || []).forEach((d, dayIndex) => {
-        const dayNum = dayIndex + 1;
+      // 3. ESTRUCTURAR DÍAS, SERIES, REPS Y EJERCICIOS EN FORMATO JSON VÁLIDO (jsonb)
+      const daysCount = (daysList && daysList.length > 0)
+        ? daysList.length
+        : (parseInt(routineData.frecuenciaDias, 10) || 3);
+
+      const cleanedDays = (daysList || []).map((d, dIdx) => {
+        const dayNum = d.dia_numero || dIdx + 1;
         const dayTitle = d.dia || d.dia_nombre || `Día ${dayNum}`;
-        (d.ejercicios || []).forEach((item, exIndex) => {
-          exercisesToInsert.push({
-            routine_id: routineId,
-            exercise_id: item.exercise?.id || item.exercise_id,
-            dia_numero: dayNum,
-            dia_nombre: dayTitle,
+        const dayWeek = d.dia_semana || extractWeekday(dayTitle) || `Día ${dayNum}`;
+
+        const cleanExercises = (d.ejercicios || []).map((item, exIdx) => {
+          const exObj = item.exercise || {};
+          const exId = exObj.id || item.exercise_id;
+          return {
+            id: item.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? `ex-${crypto.randomUUID()}` : `ex-${Date.now()}-${exIdx}`),
+            exercise_id: exId,
+            exercise: {
+              id: exId,
+              nombre: exObj.nombre || 'Ejercicio',
+              grupo_muscular: exObj.grupo_muscular || 'General',
+              imagen_url: exObj.imagen_url || null,
+              instrucciones: exObj.instrucciones || ''
+            },
             series: parseInt(item.series, 10) || 4,
-            repeticiones: String(item.repeticiones || item.reps || '10-12'),
-            peso_sugerido: parseWeight(item.peso_sugerido || item.peso),
-            descanso_segundos: parseInt(item.descanso_seg || item.descanso_segundos || item.descanso || 90, 10),
-            orden: exIndex + 1
-          });
+            repeticiones: String(item.repeticiones || '10-12'),
+            peso_sugerido: parseWeight(item.peso_sugerido !== null && item.peso_sugerido !== undefined ? item.peso_sugerido : item.peso),
+            peso_raw: item.peso_sugerido !== null && item.peso_sugerido !== undefined ? item.peso_sugerido : item.peso,
+            descanso_seg: parseInt(item.descanso_seg || item.descanso_segundos || 90, 10),
+            descanso_segundos: parseInt(item.descanso_seg || item.descanso_segundos || 90, 10),
+            orden: item.orden || exIdx + 1
+          };
         });
+
+        return {
+          id: d.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? `day-${crypto.randomUUID()}` : `day-${Date.now()}-${dIdx}`),
+          dia_numero: dayNum,
+          dia_nombre: dayTitle,
+          dia: dayTitle,
+          dia_semana: dayWeek,
+          ejercicios: cleanExercises
+        };
       });
 
-      if (exercisesToInsert.length > 0) {
-        const { error: insExErr } = await supabase
-          .from('routine_exercises')
-          .insert(exercisesToInsert);
-        if (insExErr) {
-          console.error("[DataService] Error insertando routine_exercises:", insExErr);
-          throw insExErr;
+      // 4. PREPARAR PAYLOADS PARA SUPABASE
+      // basePayload funciona con las columnas existentes en routines
+      const basePayload = {
+        client_id: targetClientId,
+        nombre: (routineData.nombre || 'Rutina Personalizada').trim(),
+        descripcion: (routineData.descripcion || routineData.objetivo || '').trim(),
+        activa: routineData.activa ?? true,
+        dias_por_semana: daysCount,
+        es_plantilla: isTemplate,
+        dia_semana: JSON.stringify(cleanedDays) // Respaldo JSON seguro en columna de texto
+      };
+
+      // fullPayload incluye coach_id y dias (jsonb) si las columnas están disponibles en Supabase
+      const fullPayload = {
+        ...basePayload,
+        coach_id: activeCoachId,
+        dias: cleanedDays
+      };
+
+      let routineId = existingId;
+      let savedRecord = null;
+
+      if (existingId) {
+        // ACTUALIZACIÓN DE RUTINA EXISTENTE
+        let { data: updated, error: uErr } = await supabase
+          .from('routines')
+          .update(fullPayload)
+          .eq('id', existingId)
+          .select('*')
+          .single();
+
+        // Si falla por columna inexistente en el schema cache (PGRST204), reintentar con basePayload
+        if (uErr && (uErr.code === 'PGRST204' || uErr.message?.includes('schema cache') || uErr.message?.includes('coach_id') || uErr.message?.includes('dias'))) {
+          console.warn('[DataService] Columnas coach_id/dias ausentes en routines, reintentando con basePayload...');
+          const { data: retryUpdated, error: retryErr } = await supabase
+            .from('routines')
+            .update(basePayload)
+            .eq('id', existingId)
+            .select('*')
+            .single();
+
+          if (retryErr) {
+            console.error('Error detallado de Supabase:', retryErr);
+            throw retryErr;
+          }
+          savedRecord = retryUpdated;
+        } else if (uErr) {
+          console.error('Error detallado de Supabase:', uErr);
+          throw uErr;
+        } else {
+          savedRecord = updated;
+        }
+      } else {
+        // CREACIÓN DE NUEVA RUTINA
+        // Si es para un alumno, desactivar rutinas anteriores de ese alumno
+        if (!isTemplate && targetClientId && targetClientId !== '00000000-0000-0000-0000-000000000000') {
+          try {
+            await supabase
+              .from('routines')
+              .update({ activa: false })
+              .eq('client_id', targetClientId);
+          } catch (deactErr) {
+            console.warn('[DataService] Error desactivando rutinas previas del alumno:', deactErr);
+          }
+        }
+
+        let { data: inserted, error: iErr } = await supabase
+          .from('routines')
+          .insert([fullPayload])
+          .select('*')
+          .single();
+
+        // Si falla por columna inexistente en schema, reintentar con basePayload
+        if (iErr && (iErr.code === 'PGRST204' || iErr.message?.includes('schema cache') || iErr.message?.includes('coach_id') || iErr.message?.includes('dias'))) {
+          console.warn('[DataService] Columnas coach_id/dias ausentes en routines, reintentando con basePayload...');
+          const { data: retryInserted, error: retryErr } = await supabase
+            .from('routines')
+            .insert([basePayload])
+            .select('*')
+            .single();
+
+          if (retryErr) {
+            console.error('Error detallado de Supabase:', retryErr);
+            throw retryErr;
+          }
+          savedRecord = retryInserted;
+          routineId = retryInserted.id;
+        } else if (iErr) {
+          console.error('Error detallado de Supabase:', iErr);
+          throw iErr;
+        } else {
+          savedRecord = inserted;
+          routineId = inserted.id;
         }
       }
 
-      // Consultar y retornar la rutina guardada completa con sus ejercicios
-      const { data: completeRoutine, error: fetchErr } = await supabase
-        .from('routines')
-        .select(`
-          *,
-          client:clients(*),
-          routine_exercises (
-            *,
-            exercise:exercises(*)
-          )
-        `)
-        .eq('id', routineId)
-        .single();
+      // 5. PERSISTIR RESPALDO LOCAL
+      try {
+        localStorage.setItem(`ec_routine_days_${routineId}`, JSON.stringify(cleanedDays));
+      } catch (e) {}
 
-      if (!fetchErr && completeRoutine) {
-        return formatRoutineWithDays(completeRoutine);
+      // Si es asignada a alumno, actualizar metadata del alumno
+      if (!isTemplate && targetClientId && targetClientId !== '00000000-0000-0000-0000-000000000000') {
+        saveClientMeta(targetClientId, {
+          rutina_activa: savedRecord?.nombre || routineData.nombre,
+          dias_por_semana: daysCount
+        });
       }
 
-      return { id: routineId, ...routineData, dias: daysList };
+      return formatRoutineWithDays({
+        ...savedRecord,
+        dias: cleanedDays
+      });
     } catch (err) {
-      console.error("[DataService] Error en saveRoutine:", err);
+      console.error('Error detallado de Supabase:', err);
       throw err;
     }
   },
@@ -966,6 +1126,7 @@ export const dataService = {
           dia_numero: 1,
           dia: routineData.dia || 'Sesión Asignada',
           dia_nombre: routineData.dia || 'Sesión Asignada',
+          dia_semana: extractWeekday(routineData.dia) || 'Lunes',
           ejercicios: exercisesList || []
         }];
 
@@ -974,106 +1135,103 @@ export const dataService = {
 
   async assignRoutineToClient(routineId, clientId) {
     try {
-      const { data: sourceRoutine, error: fetchErr } = await supabase
-        .from('routines')
-        .select(`
-          *,
-          routine_exercises (
-            *
-          )
-        `)
-        .eq('id', routineId)
-        .single();
+      if (!clientId || clientId === '00000000-0000-0000-0000-000000000000') {
+        const err = new Error('ID de alumno no válido para la asignación');
+        console.error('Error detallado de Supabase:', err);
+        throw err;
+      }
 
-      if (fetchErr || !sourceRoutine) {
-        throw new Error("No se encontró la rutina de origen");
+      // Buscar la rutina origen
+      const allRoutines = await this.getAllRoutines();
+      let sourceRoutine = allRoutines.find(r => r.id === routineId);
+
+      if (!sourceRoutine) {
+        const { data, error } = await supabase
+          .from('routines')
+          .select('*')
+          .eq('id', routineId)
+          .single();
+
+        if (error || !data) {
+          const fetchErr = error || new Error('No se encontró la rutina de origen');
+          console.error('Error detallado de Supabase:', fetchErr);
+          throw fetchErr;
+        }
+        sourceRoutine = formatRoutineWithDays(data);
       }
 
       const client = await this.getClientById(clientId);
       const clientName = client?.nombre_completo || 'Alumno';
 
-      // Desactivar rutinas previas del alumno
-      await supabase
-        .from('routines')
-        .update({ activa: false })
-        .eq('client_id', clientId);
-
-      // Crear copia personalizada para el alumno
-      const newRoutinePayload = {
-        client_id: clientId,
+      const payload = {
         nombre: sourceRoutine.es_plantilla 
           ? `${sourceRoutine.nombre.replace(/ \(Plantilla\)/i, '')} - ${clientName}`
-          : `${sourceRoutine.nombre} (Copia)`,
+          : `${sourceRoutine.nombre} (Asignada)`,
         descripcion: sourceRoutine.descripcion || `Rutina personalizada para ${clientName}`,
+        client_id: clientId,
+        es_plantilla: false,
         activa: true,
-        dias_por_semana: sourceRoutine.dias_por_semana || 3,
-        es_plantilla: false
+        dias_por_semana: sourceRoutine.dias_por_semana || (sourceRoutine.dias?.length || 3)
       };
 
-      const { data: createdRoutine, error: rErr } = await supabase
-        .from('routines')
-        .insert([newRoutinePayload])
-        .select()
-        .single();
-
-      if (rErr || !createdRoutine) {
-        throw rErr;
-      }
-
-      // Clonar ejercicios
-      const exercisesToInsert = (sourceRoutine.routine_exercises || []).map(re => ({
-        routine_id: createdRoutine.id,
-        exercise_id: re.exercise_id,
-        dia_numero: re.dia_numero || 1,
-        dia_nombre: re.dia_nombre || `Día ${re.dia_numero || 1}`,
-        series: re.series || 4,
-        repeticiones: re.repeticiones || '10-12',
-        peso_sugerido: re.peso_sugerido,
-        descanso_segundos: re.descanso_segundos || 90,
-        orden: re.orden || 1
-      }));
-
-      if (exercisesToInsert.length > 0) {
-        await supabase.from('routine_exercises').insert(exercisesToInsert);
-      }
-
-      const { data: completeRoutine } = await supabase
-        .from('routines')
-        .select(`
-          *,
-          client:clients(*),
-          routine_exercises (
-            *,
-            exercise:exercises(*)
-          )
-        `)
-        .eq('id', createdRoutine.id)
-        .single();
-
-      return formatRoutineWithDays(completeRoutine || createdRoutine);
+      return await this.saveRoutine(payload, sourceRoutine.dias || [], null);
     } catch (err) {
-      console.error("[DataService] Error asignando rutina al alumno:", err);
+      console.error('Error detallado de Supabase:', err);
       throw err;
     }
   },
 
   async deleteRoutine(routineId) {
-    try {
-      await supabase
-        .from('routine_exercises')
-        .delete()
-        .eq('routine_id', routineId);
+    if (!routineId) {
+      const err = new Error('ID de rutina requerido para eliminar');
+      console.error('Error detallado de Supabase al eliminar rutina:', err);
+      throw err;
+    }
 
+    try {
+      // 1. Obtener datos previos de la rutina para saber si estaba asignada a un alumno
+      let clientId = null;
+      try {
+        const { data: routineRecord } = await supabase
+          .from('routines')
+          .select('client_id')
+          .eq('id', routineId)
+          .maybeSingle();
+
+        if (routineRecord?.client_id && routineRecord.client_id !== '00000000-0000-0000-0000-000000000000') {
+          clientId = routineRecord.client_id;
+        }
+      } catch (e) {}
+
+      // 2. Ejecutar DELETE directamente sobre la tabla routines
       const { error: rErr } = await supabase
         .from('routines')
         .delete()
         .eq('id', routineId);
 
-      if (rErr) throw rErr;
+      if (rErr) {
+        console.error('Error detallado de Supabase al eliminar rutina:', rErr);
+        throw rErr;
+      }
+
+      // 3. Limpiar caché en localStorage de días de la rutina
+      try {
+        localStorage.removeItem(`ec_routine_days_${routineId}`);
+      } catch (e) {}
+
+      // 4. Si pertenecía a un alumno, limpiar su rutina activa en metadatos
+      if (clientId) {
+        try {
+          saveClientMeta(clientId, {
+            rutina_activa: null,
+            tiene_rutina: false
+          });
+        } catch (e) {}
+      }
 
       return { success: true, id: routineId };
     } catch (err) {
-      console.error("[DataService] Error eliminando rutina en Supabase:", err);
+      console.error('Error detallado de Supabase al eliminar rutina:', err);
       throw err;
     }
   },
@@ -1083,25 +1241,23 @@ export const dataService = {
     try {
       const { data, error } = await supabase
         .from('routines')
-        .select(`
-          *,
-          client:clients(*),
-          routine_exercises (
-            *,
-            exercise:exercises(*)
-          )
-        `)
+        .select('*')
         .eq('client_id', clientId)
         .eq('activa', true)
         .order('creado_el', { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (!error && data) {
+      if (error) {
+        console.error('Error detallado de Supabase en getRoutineForClient:', error);
+        return null;
+      }
+
+      if (data) {
         return formatRoutineWithDays(data);
       }
     } catch (err) {
-      console.warn('[DataService] Error consultando rutina para cliente en Supabase:', err);
+      console.error('Error detallado de Supabase:', err);
     }
 
     return null;
@@ -1114,59 +1270,226 @@ export const dataService = {
         .from('routines')
         .update({ activa: false })
         .eq('client_id', clientId);
-      if (error) throw error;
+
+      if (error) {
+        console.error('Error detallado de Supabase:', error);
+        throw error;
+      }
+
+      saveClientMeta(clientId, {
+        rutina_activa: null
+      });
+
       return true;
     } catch (err) {
-      console.error('[DataService] Error desasignando rutina de cliente:', err);
+      console.error('Error detallado de Supabase:', err);
       return false;
     }
   },
 
   // ==========================================================
-  // 6. AGENDA Y TURNOS
+  // 6. AGENDA Y TURNOS (EXCLUSIVAMENTE SUPABASE)
   // ==========================================================
   async getAppointments() {
     try {
       const { data, error } = await supabase
         .from('appointments')
-        .select('*')
+        .select(`
+          *,
+          client:clients(id, nombre_completo, foto_url, access_code, telefono, modalidad, estado)
+        `)
         .order('fecha_hora_inicio', { ascending: true });
 
-      if (!error && data && data.length > 0) return data;
+      if (error) {
+        console.error('[DataService] Error consultando appointments en Supabase:', error);
+        return [];
+      }
+
+      if (!data || data.length === 0) {
+        return [];
+      }
+
+      const metaMap = getAppointmentsMetaMap();
+      return data.map(apt => {
+        const meta = metaMap[apt.id] || {};
+        return {
+          ...apt,
+          client_name: apt.client?.nombre_completo || 'Alumno',
+          notas: meta.notas || '',
+          tipo_detalle: meta.tipo_detalle || apt.tipo,
+          client: apt.client || null
+        };
+      });
     } catch (err) {
-      console.warn('[DataService] Error en getAppointments Supabase:', err);
+      console.error('[DataService] Excepción en getAppointments:', err);
+      return [];
     }
-    return INITIAL_APPOINTMENTS;
   },
 
   async addAppointment(aptData) {
+    let coachId = '00000000-0000-0000-0000-000000000001';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user?.id) {
+        coachId = session.user.id;
+      }
+    } catch (e) {}
+
+    // Respetar CHECK constraint de Postgres (tipo IN ('Presencial', 'Online'))
+    const dbTipo = (aptData.tipo === 'Online') ? 'Online' : 'Presencial';
+
     const payload = {
+      coach_id: coachId,
       client_id: aptData.client_id,
       fecha_hora_inicio: aptData.fecha_hora_inicio,
       fecha_hora_fin: aptData.fecha_hora_fin,
-      tipo: aptData.tipo || 'Presencial',
-      estado: aptData.estado || 'Confirmado',
-      notas: aptData.notas || ''
+      tipo: dbTipo,
+      estado: aptData.estado || 'Confirmado'
     };
 
-    try {
-      const { data, error } = await supabase
-        .from('appointments')
-        .insert([payload])
-        .select()
-        .single();
+    const { data, error } = await supabase
+      .from('appointments')
+      .insert([payload])
+      .select(`
+        *,
+        client:clients(id, nombre_completo, foto_url, access_code, telefono, modalidad, estado)
+      `)
+      .single();
 
-      if (!error && data) return data;
-    } catch (err) {
-      console.warn('[DataService] Error insertando appointment en Supabase:', err);
+    if (error) {
+      console.error('[DataService] Error insertando appointment en Supabase:', error);
+      throw error;
+    }
+
+    if (aptData.notas || aptData.tipo) {
+      saveAppointmentMeta(data.id, {
+        notas: aptData.notas || '',
+        tipo_detalle: aptData.tipo || dbTipo
+      });
     }
 
     return {
-      id: `apt-${Date.now()}`,
-      ...payload,
-      client_name: aptData.client_name || 'Alumno'
+      ...data,
+      client_name: data.client?.nombre_completo || aptData.client_name || 'Alumno',
+      notas: aptData.notas || '',
+      tipo_detalle: aptData.tipo || dbTipo
     };
+  },
+
+  async updateAppointment(id, updates) {
+    const dbUpdates = {};
+    if (updates.fecha_hora_inicio) dbUpdates.fecha_hora_inicio = updates.fecha_hora_inicio;
+    if (updates.fecha_hora_fin) dbUpdates.fecha_hora_fin = updates.fecha_hora_fin;
+    if (updates.tipo) {
+      dbUpdates.tipo = updates.tipo === 'Online' ? 'Online' : 'Presencial';
+    }
+    if (updates.estado) {
+      dbUpdates.estado = updates.estado;
+    }
+    if (updates.client_id) dbUpdates.client_id = updates.client_id;
+
+    const { data, error } = await supabase
+      .from('appointments')
+      .update(dbUpdates)
+      .eq('id', id)
+      .select(`
+        *,
+        client:clients(id, nombre_completo, foto_url, access_code, telefono, modalidad, estado)
+      `)
+      .single();
+
+    if (error) {
+      console.error('[DataService] Error actualizando appointment en Supabase:', error);
+      throw error;
+    }
+
+    if (updates.notas !== undefined || updates.tipo) {
+      saveAppointmentMeta(id, {
+        notas: updates.notas || '',
+        tipo_detalle: updates.tipo || dbUpdates.tipo
+      });
+    }
+
+    const metaMap = getAppointmentsMetaMap();
+    const meta = metaMap[id] || {};
+    return {
+      ...data,
+      client_name: data.client?.nombre_completo || 'Alumno',
+      notas: meta.notas || '',
+      tipo_detalle: meta.tipo_detalle || data.tipo
+    };
+  },
+
+  async cancelAppointment(id) {
+    const { data, error } = await supabase
+      .from('appointments')
+      .update({ estado: 'Cancelado' })
+      .eq('id', id)
+      .select(`
+        *,
+        client:clients(id, nombre_completo, foto_url, access_code, telefono, modalidad, estado)
+      `)
+      .single();
+
+    if (error) {
+      console.error('[DataService] Error cancelando appointment en Supabase:', error);
+      throw error;
+    }
+
+    const metaMap = getAppointmentsMetaMap();
+    const meta = metaMap[id] || {};
+    return {
+      ...data,
+      client_name: data.client?.nombre_completo || 'Alumno',
+      notas: meta.notas || '',
+      tipo_detalle: meta.tipo_detalle || data.tipo
+    };
+  },
+
+  async deleteAppointment(id) {
+    const { error } = await supabase
+      .from('appointments')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('[DataService] Error eliminando appointment en Supabase:', error);
+      throw error;
+    }
+    removeAppointmentMeta(id);
+    return true;
   }
 };
+
+const APPOINTMENTS_META_KEY = 'ec_appointments_meta_v1';
+
+function getAppointmentsMetaMap() {
+  try {
+    const raw = localStorage.getItem(APPOINTMENTS_META_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveAppointmentMeta(id, meta) {
+  try {
+    const current = getAppointmentsMetaMap();
+    current[id] = { ...(current[id] || {}), ...meta };
+    localStorage.setItem(APPOINTMENTS_META_KEY, JSON.stringify(current));
+  } catch (e) {
+    console.warn('[DataService] Error guardando meta local de turno:', e);
+  }
+}
+
+function removeAppointmentMeta(id) {
+  try {
+    const current = getAppointmentsMetaMap();
+    delete current[id];
+    localStorage.setItem(APPOINTMENTS_META_KEY, JSON.stringify(current));
+  } catch (e) {
+    console.warn('[DataService] Error eliminando meta local de turno:', e);
+  }
+}
 
 export default dataService;

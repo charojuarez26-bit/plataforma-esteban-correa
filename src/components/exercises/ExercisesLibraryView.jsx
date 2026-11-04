@@ -22,7 +22,7 @@ import { dataService } from '../../services/dataService';
 import { authService } from '../../services/authService';
 import ExerciseTechniqueModal, { ExerciseMedia } from './ExerciseTechniqueModal';
 
-const BASE_CATEGORIES = ['Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Core'];
+const BASE_CATEGORIES = ['Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Core / Abdomen', 'Glúteos'];
 
 const DEFAULT_IMAGES = {
   Pecho: 'https://images.unsplash.com/photo-1517838277536-f5f99be501cd?auto=format&fit=crop&w=500&q=80',
@@ -30,7 +30,9 @@ const DEFAULT_IMAGES = {
   Piernas: 'https://images.unsplash.com/photo-1574680096145-d05b474e2155?auto=format&fit=crop&w=500&q=80',
   Hombros: 'https://images.unsplash.com/photo-1532029837206-abbe2b7620e3?auto=format&fit=crop&w=500&q=80',
   Brazos: 'https://images.unsplash.com/photo-1583454110551-21f2fa2afe61?auto=format&fit=crop&w=500&q=80',
+  'Core / Abdomen': 'https://images.unsplash.com/photo-1566241142559-40e1dab266c6?auto=format&fit=crop&w=500&q=80',
   Core: 'https://images.unsplash.com/photo-1566241142559-40e1dab266c6?auto=format&fit=crop&w=500&q=80',
+  Glúteos: 'https://images.unsplash.com/photo-1574680096145-d05b474e2155?auto=format&fit=crop&w=500&q=80',
   General: 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?auto=format&fit=crop&w=500&q=80'
 };
 
@@ -199,7 +201,10 @@ export default function ExercisesLibraryView({ onSelectExerciseForRoutine }) {
       (ex.instrucciones || '').toLowerCase().includes(q) ||
       (ex.errores_comunes || '').toLowerCase().includes(q);
 
-    const matchGroup = filterGroup === 'Todos' || (ex.grupo_muscular || '').toLowerCase() === filterGroup.toLowerCase();
+    const matchGroup = filterGroup === 'Todos' || 
+      (ex.grupo_muscular || '').toLowerCase() === filterGroup.toLowerCase() ||
+      (filterGroup === 'Core / Abdomen' && (ex.grupo_muscular || '').toLowerCase() === 'core') ||
+      (filterGroup === 'Core' && (ex.grupo_muscular || '').toLowerCase() === 'core / abdomen');
     return matchSearch && matchGroup;
   });
 

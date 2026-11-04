@@ -1320,6 +1320,7 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                               setSelectedExForRoutine(selectedExForRoutine.filter(s => s.exercise?.id !== ex.id));
                             } else {
                               setSelectedExForRoutine([...selectedExForRoutine, {
+                                id: (typeof crypto !== 'undefined' && crypto.randomUUID ? `quick-ex-${crypto.randomUUID()}` : `quick-ex-${Date.now()}-${ex.id}`),
                                 exercise: ex,
                                 series: 4,
                                 repeticiones: '10-12',
@@ -1352,7 +1353,7 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                     </span>
                     <div className="space-y-1.5 max-h-40 overflow-y-auto no-scrollbar pr-1">
                       {selectedExForRoutine.map((item, idx) => (
-                        <div key={idx} className="p-2.5 rounded-lg bg-dark-900 border border-dark-700 flex items-center justify-between text-xs">
+                        <div key={item.id || item.exercise?.id || `quick-param-${idx}`} className="p-2.5 rounded-lg bg-dark-900 border border-dark-700 flex items-center justify-between text-xs">
                           <span className="font-bold text-white truncate max-w-[150px]">{item.exercise?.nombre}</span>
                           <div className="flex gap-2">
                             <input

@@ -362,58 +362,7 @@ export const INITIAL_EVALUATIONS = [
   }
 ];
 
-export const INITIAL_APPOINTMENTS = [
-  {
-    id: 'apt-01',
-    client_id: 'cli-001',
-    client_name: 'Martín Gómez',
-    fecha_hora_inicio: '2026-11-04T09:00:00',
-    fecha_hora_fin: '2026-11-04T10:00:00',
-    tipo: 'Presencial',
-    estado: 'Confirmado',
-    notas: 'Día 1: Torso y técnica de press'
-  },
-  {
-    id: 'apt-02',
-    client_id: 'cli-002',
-    client_name: 'Lucía Fernández',
-    fecha_hora_inicio: '2026-11-04T10:30:00',
-    fecha_hora_fin: '2026-11-04T11:30:00',
-    tipo: 'Presencial',
-    estado: 'Confirmado',
-    notas: 'Glúteos & Isquios con sobrecarga progresiva'
-  },
-  {
-    id: 'apt-03',
-    client_id: 'cli-003',
-    client_name: 'Rodrigo Morales',
-    fecha_hora_inicio: '2026-11-04T15:00:00',
-    fecha_hora_fin: '2026-11-04T15:45:00',
-    tipo: 'Online',
-    estado: 'Confirmado',
-    notas: 'Revisión técnica por videollamada y ajuste de pesos'
-  },
-  {
-    id: 'apt-04',
-    client_id: 'cli-004',
-    client_name: 'Camila Vega',
-    fecha_hora_inicio: '2026-11-04T17:00:00',
-    fecha_hora_fin: '2026-11-04T18:00:00',
-    tipo: 'Presencial',
-    estado: 'Confirmado',
-    notas: 'Circuito metabólico de piernas + core'
-  },
-  {
-    id: 'apt-05',
-    client_id: 'cli-001',
-    client_name: 'Martín Gómez',
-    fecha_hora_inicio: '2026-11-06T09:00:00',
-    fecha_hora_fin: '2026-11-06T10:00:00',
-    tipo: 'Presencial',
-    estado: 'Confirmado',
-    notas: 'Día 2: Piernas'
-  }
-];
+export const INITIAL_APPOINTMENTS = [];
 
 export const INITIAL_PAYMENTS = [
   {

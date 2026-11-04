@@ -6,6 +6,7 @@ import {
   AlertTriangle, 
   UserPlus, 
   CalendarPlus, 
+  Calendar,
   Activity, 
   ArrowUpRight, 
   TrendingUp, 
@@ -89,7 +90,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
 
           <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={() => onNavigate('calendar')}
+              onClick={() => onNavigate('agenda')}
               className="px-4 py-2.5 rounded-xl bg-dark-800 hover:bg-dark-700 text-gray-200 border border-dark-700 text-xs sm:text-sm font-semibold transition-all flex items-center gap-2"
             >
               <Clock className="w-4 h-4 text-brand-light" />
@@ -220,7 +221,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
           </button>
 
           <button
-            onClick={() => onNavigate('exercises')}
+            onClick={() => onNavigate('rutinas')}
             className="flex items-center gap-3 p-3 rounded-xl bg-dark-900 hover:bg-dark-800 border border-dark-700/80 transition-all text-left group"
           >
             <div className="w-9 h-9 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 group-hover:scale-110 transition-transform">
@@ -233,7 +234,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
           </button>
 
           <button
-            onClick={() => onNavigate('calendar')}
+            onClick={() => onNavigate('agenda')}
             className="flex items-center gap-3 p-3 rounded-xl bg-dark-900 hover:bg-dark-800 border border-dark-700/80 transition-all text-left group"
           >
             <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 group-hover:scale-110 transition-transform">
@@ -246,7 +247,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
           </button>
 
           <button
-            onClick={() => onNavigate('progress')}
+            onClick={() => onNavigate('evaluaciones')}
             className="flex items-center gap-3 p-3 rounded-xl bg-dark-900 hover:bg-dark-800 border border-dark-700/80 transition-all text-left group"
           >
             <div className="w-9 h-9 rounded-lg bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 group-hover:scale-110 transition-transform">
@@ -326,7 +327,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
                 Turnos de Hoy
               </h2>
               <button
-                onClick={() => onNavigate('calendar')}
+                onClick={() => onNavigate('agenda')}
                 className="text-xs text-brand-light hover:underline font-semibold"
               >
                 Ver todos
@@ -335,39 +336,47 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
             <p className="text-xs text-gray-400 mb-4">Agenda del día confirmada</p>
 
             <div className="space-y-2.5">
-              {appointments.map((apt) => {
-                const aptClient = (metrics.clientsList || []).find(c => c.id === apt.client_id || c.nombre_completo === apt.client_name);
-                return (
-                  <div
-                    key={apt.id}
-                    onClick={() => onNavigateToClient ? onNavigateToClient(apt.client_id) : onNavigate('clientes')}
-                    className="p-3 rounded-xl bg-dark-900 border border-dark-700/70 hover:border-brand/40 transition-all flex items-center justify-between cursor-pointer group"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className={`w-1.5 self-stretch rounded-full shrink-0 ${
-                        apt.tipo === 'Presencial' ? 'bg-brand' : 'bg-blue-500'
-                      }`} />
-                      <ClientAvatar
-                        client={aptClient}
-                        name={apt.client_name}
-                        size="sm"
-                        rounded="rounded-lg"
-                      />
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold text-white group-hover:text-brand-light transition-colors truncate max-w-[130px]">
-                          {apt.client_name}
-                        </p>
-                        <p className="text-[11px] text-gray-400">
-                          {apt.fecha_hora_inicio.split('T')[1].slice(0, 5)} hs • {apt.tipo}
-                        </p>
+              {appointments.length === 0 ? (
+                <div className="py-6 text-center border border-dashed border-dark-700/80 rounded-xl p-4 bg-dark-900/40">
+                  <Calendar className="w-7 h-7 text-gray-500 mx-auto mb-2 opacity-60" />
+                  <p className="text-xs font-semibold text-gray-300">Sin turnos para hoy</p>
+                  <p className="text-[11px] text-gray-400 mt-0.5">Agenda citas desde el módulo de turnos</p>
+                </div>
+              ) : (
+                appointments.map((apt) => {
+                  const aptClient = (metrics.clientsList || []).find(c => c.id === apt.client_id || c.nombre_completo === apt.client_name);
+                  return (
+                    <div
+                      key={apt.id}
+                      onClick={() => onNavigateToClient ? onNavigateToClient(apt.client_id) : onNavigate('clientes')}
+                      className="p-3 rounded-xl bg-dark-900 border border-dark-700/70 hover:border-brand/40 transition-all flex items-center justify-between cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className={`w-1.5 self-stretch rounded-full shrink-0 ${
+                          apt.tipo === 'Presencial' ? 'bg-brand' : 'bg-blue-500'
+                        }`} />
+                        <ClientAvatar
+                          client={aptClient}
+                          name={apt.client_name}
+                          size="sm"
+                          rounded="rounded-lg"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-white group-hover:text-brand-light transition-colors truncate max-w-[130px]">
+                            {apt.client_name}
+                          </p>
+                          <p className="text-[11px] text-gray-400">
+                            {apt.fecha_hora_inicio.split('T')[1].slice(0, 5)} hs • {apt.tipo}
+                          </p>
+                        </div>
                       </div>
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                        {apt.estado}
+                      </span>
                     </div>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
-                      {apt.estado}
-                    </span>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </div>
 

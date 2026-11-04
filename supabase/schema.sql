@@ -61,9 +61,16 @@ CREATE TABLE IF NOT EXISTS routines (
     coach_id UUID REFERENCES coaches(id) ON DELETE CASCADE,
     client_id UUID REFERENCES clients(id) ON DELETE CASCADE,
     nombre VARCHAR(120) NOT NULL,
+    descripcion TEXT,
     objetivo TEXT,
     nivel VARCHAR(30) DEFAULT 'Intermedio',
+    activa BOOLEAN DEFAULT TRUE,
     activo BOOLEAN DEFAULT TRUE,
+    dias_por_semana INT DEFAULT 3,
+    es_plantilla BOOLEAN DEFAULT FALSE,
+    dia_semana TEXT,
+    dias JSONB DEFAULT '[]'::jsonb,
+    creado_el TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
@@ -256,3 +263,53 @@ BEGIN
     RETURN v_result;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ==========================================================
+-- POLÍTICAS RLS Y BORRADO EN CASCADA PARA RUTINAS
+-- ==========================================================
+-- 1. Políticas de eliminación y gestión en la tabla routines
+DROP POLICY IF EXISTS "Coaches can manage routines" ON routines;
+DROP POLICY IF EXISTS "Permitir borrar rutinas propias" ON routines;
+
+CREATE POLICY "Coaches can manage routines"
+ON routines FOR ALL
+USING (
+    coach_id IS NULL
+    OR coach_id = auth.uid()
+    OR coach_id IN (SELECT id FROM coaches WHERE user_id = auth.uid())
+    OR auth.role() = 'authenticated'
+    OR auth.role() = 'anon'
+);
+
+CREATE POLICY "Permitir borrar rutinas propias"
+ON routines FOR DELETE
+USING (
+    coach_id IS NULL
+    OR coach_id = auth.uid()
+    OR coach_id IN (SELECT id FROM coaches WHERE user_id = auth.uid())
+    OR auth.role() = 'authenticated'
+    OR auth.role() = 'anon'
+);
+
+-- 2. Claves foráneas con borrado en cascada (ON DELETE CASCADE)
+ALTER TABLE IF EXISTS routine_exercises
+    DROP CONSTRAINT IF EXISTS routine_exercises_routine_id_fkey,
+    ADD CONSTRAINT routine_exercises_routine_id_fkey
+    FOREIGN KEY (routine_id) REFERENCES routines(id) ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS client_routines
+    DROP CONSTRAINT IF EXISTS client_routines_routine_id_fkey,
+    ADD CONSTRAINT client_routines_routine_id_fkey
+    FOREIGN KEY (routine_id) REFERENCES routines(id) ON DELETE CASCADE;
+
+-- ==========================================================
+-- SENTENCIAS DE MIGRACIÓN SEGURA PARA LA TABLA ROUTINES
+-- Ejecuta en el SQL Editor de Supabase si deseas almacenar directamente en columnas JSONB nativas:
+-- ==========================================================
+-- ALTER TABLE routines ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE CASCADE;
+-- ALTER TABLE routines ADD COLUMN IF NOT EXISTS dias JSONB DEFAULT '[]'::jsonb;
+-- ALTER TABLE routines ADD COLUMN IF NOT EXISTS dia_semana TEXT;
+-- ALTER TABLE routines ADD COLUMN IF NOT EXISTS dias_por_semana INT DEFAULT 3;
+-- ALTER TABLE routines ADD COLUMN IF NOT EXISTS es_plantilla BOOLEAN DEFAULT FALSE;
+-- ALTER TABLE routines ADD COLUMN IF NOT EXISTS activa BOOLEAN DEFAULT TRUE;
+
