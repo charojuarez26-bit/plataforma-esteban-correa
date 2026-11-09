@@ -18,26 +18,28 @@ import { authService } from '../../services/authService';
 import ClientPhotoUploader from '../common/ClientPhotoUploader';
 import ClientAvatar from '../common/ClientAvatar';
 
+const INITIAL_FORM_DATA = {
+  nombre_completo: '',
+  telefono: '',
+  email: '',
+  edad: '',
+  altura: '',
+  modalidad: 'Presencial',
+  objetivo: 'Reducir % de grasa y ganar fuerza',
+  plan_actual: 'Plan 4x Semanal Personalizado',
+  dias_por_semana: 3,
+  dias_asignados: ['Lunes', 'Miércoles', 'Viernes'],
+  tipo_planificacion: 'Semanal',
+  duracion_sesion_min: 60
+};
+
 export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpenProfile }) {
-  const [formData, setFormData] = useState({
-    nombre_completo: '',
-    telefono: '',
-    email: '',
-    edad: '',
-    altura: '',
-    modalidad: 'Presencial',
-    objetivo: 'Reducir % de grasa y ganar fuerza',
-    plan_actual: 'Plan 4x Semanal Personalizado',
-    dias_por_semana: 3,
-    dias_asignados: ['Lunes', 'Miércoles', 'Viernes'],
-    tipo_planificacion: 'Semanal',
-    duracion_sesion_min: 60
-  });
+  const [formData, setFormData] = useState(INITIAL_FORM_DATA);
 
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [createdClient, setCreatedClient] = useState(null); // Si no es null, muestra pantalla de éxito
+  const [createdClient, setCreatedClient] = useState(null);
   const [copied, setCopied] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -132,9 +134,9 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
         .single();
 
       if (error) {
-        console.error("Error al guardar cliente en Supabase:", error);
-        setErrorMessage(error.message || 'Error al guardar cliente en Supabase');
-        alert(`Error al guardar cliente en Supabase: ${error.message}`);
+        console.error("Error al guardar alumno en Supabase:", error);
+        setErrorMessage(error.message || 'Error al guardar alumno en Supabase');
+        alert(`Error al guardar alumno en Supabase: ${error.message}`);
         return;
       }
 
@@ -154,17 +156,24 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
         // ignore
       }
 
-      // Mostrar diálogo de éxito con código generado para WhatsApp
-      setCreatedClient(data);
-
-      // Notificar al componente padre para que refresque la lista real desde Supabase
+      // 1. Notificar al componente padre para que refresque la lista real desde Supabase y muestre notificación
       if (onClientCreated) {
         await onClientCreated(data);
       }
+
+      // 2. Limpiar completamente los campos del formulario para no dejar datos residuales
+      setFormData(INITIAL_FORM_DATA);
+      setPhotoFile(null);
+      setPhotoPreview(null);
+      setCreatedClient(null);
+      setErrorMessage('');
+
+      // 3. Cerrar el modal automáticamente
+      onClose();
     } catch (err) {
-      console.error("Error al guardar cliente en Supabase:", err);
-      setErrorMessage(err.message || 'Error inesperado al guardar cliente');
-      alert(`Error al guardar cliente en Supabase: ${err.message}`);
+      console.error("Error al guardar alumno en Supabase:", err);
+      setErrorMessage(err.message || 'Error inesperado al guardar alumno');
+      alert(`Error al guardar alumno en Supabase: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -191,20 +200,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
     setPhotoFile(null);
     setPhotoPreview(null);
     setErrorMessage('');
-    setFormData({
-      nombre_completo: '',
-      telefono: '',
-      email: '',
-      edad: '',
-      altura: '',
-      modalidad: 'Presencial',
-      objetivo: 'Reducir % de grasa y ganar fuerza',
-      plan_actual: 'Plan 4x Semanal Personalizado',
-      dias_por_semana: 3,
-      dias_asignados: ['Lunes', 'Miércoles', 'Viernes'],
-      tipo_planificacion: 'Semanal',
-      duracion_sesion_min: 60
-    });
+    setFormData(INITIAL_FORM_DATA);
     onClose();
   };
 
@@ -314,7 +310,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                     Registrar Nuevo Alumno
                   </h2>
                   <p className="text-[11px] text-gray-400">
-                    Completa los datos técnicos del atleta
+                    Completa los datos técnicos del alumno
                   </p>
                 </div>
               </div>
@@ -556,7 +552,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                   disabled={loading}
                   className="px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-white bg-brand hover:bg-brand-dark shadow-glow-red transition-all flex items-center gap-1.5 disabled:opacity-50 min-h-[44px]"
                 >
-                  <span>{loading ? 'Guardando...' : 'Guardar y Generar Código'}</span>
+                  <span>{loading ? 'Guardando...' : 'Guardar Alumno'}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>

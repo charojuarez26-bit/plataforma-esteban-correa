@@ -20,7 +20,8 @@ import {
   UserPlus, 
   AlertTriangle, 
   Copy, 
-  ExternalLink 
+  ExternalLink,
+  HeartPulse
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
@@ -31,6 +32,29 @@ const generateUniqueId = (prefix = '') => {
     return prefix ? `${prefix}-${crypto.randomUUID()}` : crypto.randomUUID();
   }
   return `${prefix ? `${prefix}-` : ''}${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+};
+
+// Formatea el nombre genérico del día sin referencias a días de la semana (Lunes, Martes, etc.)
+const formatGenericDayTitle = (dayObj, index) => {
+  const dayNumber = (index !== null && index !== undefined) ? index + 1 : (dayObj?.dia_numero || 1);
+  const basePrefix = `Día ${dayNumber}`;
+  
+  if (!dayObj) return basePrefix;
+
+  let raw = (dayObj.dia || dayObj.dia_nombre || '').trim();
+  if (!raw) return basePrefix;
+
+  // Limpiar cualquier residuo de días de la semana y formato viejo
+  raw = raw.replace(/\((Lunes|Martes|Miércoles|Miercoles|Jueves|Viernes|Sábado|Sabado|Domingo)\)/gi, '').trim();
+  raw = raw.replace(/:\s*Sesión\s*\d+/gi, '').trim();
+
+  // Quitar prefijo "Día \d+:" o "Dia \d+ -" inicial para obtener únicamente el detalle/enfoque muscular
+  const cleanDetail = raw.replace(/^(Día|Dia)\s*\d+[\s:–-]*/i, '').trim();
+
+  if (cleanDetail && cleanDetail !== `Día ${dayNumber}` && cleanDetail !== `Sesión ${dayNumber}`) {
+    return `${basePrefix} - ${cleanDetail}`;
+  }
+  return basePrefix;
 };
 
 export default function RoutinesManagerView({ onNavigateToClient, initialClientId, onClearInitialClientId }) {
@@ -75,6 +99,9 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [notification, setNotification] = useState(null); // { type: 'success' | 'error', text: '' }
 
+  // Ficha médica del alumno seleccionado
+  const [selectedStudentMedical, setSelectedStudentMedical] = useState(null);
+
   useEffect(() => {
     loadAllData();
   }, []);
@@ -88,6 +115,26 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       if (onClearInitialClientId) onClearInitialClientId();
     }
   }, [initialClientId, clients]);
+
+  useEffect(() => {
+    const fetchMedical = async () => {
+      const targetId = (isAssignModalOpen && targetClientId) 
+        ? targetClientId 
+        : (routineForm.destinatarioTipo === 'alumno' ? routineForm.client_id : null);
+
+      if (targetId) {
+        try {
+          const med = await dataService.getMedicalRecord(targetId);
+          setSelectedStudentMedical(med);
+        } catch {
+          setSelectedStudentMedical(null);
+        }
+      } else {
+        setSelectedStudentMedical(null);
+      }
+    };
+    fetchMedical();
+  }, [routineForm.client_id, routineForm.destinatarioTipo, targetClientId, isAssignModalOpen]);
 
   const showNotification = (text, type = 'success') => {
     setNotification({ text, type });
@@ -125,16 +172,16 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     setSelectedMuscleFilter('Todos');
 
     const defaultDaysCount = targetClient?.dias_por_semana || 3;
-    const assignedDays = targetClient?.dias_asignados || ['Lunes', 'Miércoles', 'Viernes'];
 
+    // Generación de nombres genéricos agnósticos al calendario (Día 1, Día 2, etc.)
     const initialDays = Array.from({ length: defaultDaysCount }, (_, idx) => {
-      const dayName = assignedDays[idx] || (idx === 0 ? 'Lunes' : idx === 1 ? 'Miércoles' : idx === 2 ? 'Viernes' : `Día ${idx + 1}`);
+      const defaultName = `Día ${idx + 1}`;
       return {
         id: generateUniqueId('day'),
         dia_numero: idx + 1,
-        dia_nombre: `Día ${idx + 1} (${dayName}): Sesión ${idx + 1}`,
-        dia: `Día ${idx + 1} (${dayName}): Sesión ${idx + 1}`,
-        dia_semana: dayName,
+        dia_nombre: defaultName,
+        dia: defaultName,
+        dia_semana: defaultName,
         ejercicios: []
       };
     });
@@ -172,23 +219,33 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       frecuenciaDias: count
     });
 
-    // Clonar días y ejercicios con IDs únicos garantizados
-    const clonedDays = (routine.dias || []).map((d, dIdx) => ({
-      id: generateUniqueId('day'),
-      dia_numero: d.dia_numero || dIdx + 1,
-      dia_nombre: d.dia_nombre || d.dia || `Día ${dIdx + 1}`,
-      dia: d.dia || d.dia_nombre || `Día ${dIdx + 1}`,
-      dia_semana: d.dia_semana || `Día ${dIdx + 1}`,
-      ejercicios: (d.ejercicios || []).map((e, eIdx) => ({
-        id: generateUniqueId('item'),
-        exercise_id: e.exercise?.id || e.exercise_id,
-        exercise: e.exercise,
-        series: parseInt(e.series, 10) || 4,
-        repeticiones: e.repeticiones || '10-12',
-        peso_sugerido: e.peso_raw !== null && e.peso_raw !== undefined ? e.peso_raw : (e.peso_sugerido || ''),
-        descanso_seg: e.descanso_seg || e.descanso_segundos || 90
-      }))
-    }));
+    // Clonar días y ejercicios con IDs únicos garantizados y nombres limpios sin días de la semana
+    const clonedDays = (routine.dias || []).map((d, dIdx) => {
+      const defaultName = `Día ${dIdx + 1}`;
+      let cleanDia = (d.dia || d.dia_nombre || defaultName).trim();
+      cleanDia = cleanDia.replace(/\((Lunes|Martes|Miércoles|Miercoles|Jueves|Viernes|Sábado|Sabado|Domingo)\)/gi, '').trim();
+      cleanDia = cleanDia.replace(/:\s*Sesión\s*\d+/gi, '').trim();
+      if (!cleanDia || cleanDia === `Día ${dIdx + 1}`) {
+        cleanDia = defaultName;
+      }
+
+      return {
+        id: generateUniqueId('day'),
+        dia_numero: d.dia_numero || dIdx + 1,
+        dia_nombre: cleanDia,
+        dia: cleanDia,
+        dia_semana: defaultName,
+        ejercicios: (d.ejercicios || []).map((e, eIdx) => ({
+          id: generateUniqueId('item'),
+          exercise_id: e.exercise?.id || e.exercise_id,
+          exercise: e.exercise,
+          series: parseInt(e.series, 10) || 4,
+          repeticiones: e.repeticiones || '10-12',
+          peso_sugerido: e.peso_raw !== null && e.peso_raw !== undefined ? e.peso_raw : (e.peso_sugerido || ''),
+          descanso_seg: e.descanso_seg || e.descanso_segundos || 90
+        }))
+      };
+    });
 
     setRoutineDays(clonedDays);
     setActiveDayIndex(null);
@@ -197,7 +254,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     setIsEditorOpen(true);
   };
 
-  // Ajustar frecuencia de días en el editor (3, 4 o 5 días, o añadir/quitar)
+  // Ajustar frecuencia de días en el editor (generación estrictamente genérica: Día 1, Día 2, etc.)
   const handleSetFrequency = (newCount) => {
     if (newCount < 1 || newCount > 7) return;
 
@@ -208,17 +265,16 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       if (newCount === currentLength) return prevDays;
 
       if (newCount > currentLength) {
-        // Añadir días adicionales preservando los anteriores
+        // Añadir días adicionales con nombres genéricos
         const addedDays = Array.from({ length: newCount - currentLength }, (_, i) => {
           const nextIdx = currentLength + i;
-          const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
-          const dayLabel = dayNames[nextIdx] || `Día ${nextIdx + 1}`;
+          const defaultName = `Día ${nextIdx + 1}`;
           return {
             id: generateUniqueId('day'),
             dia_numero: nextIdx + 1,
-            dia_nombre: `Día ${nextIdx + 1} (${dayLabel}): Sesión ${nextIdx + 1}`,
-            dia: `Día ${nextIdx + 1} (${dayLabel}): Sesión ${nextIdx + 1}`,
-            dia_semana: dayLabel,
+            dia_nombre: defaultName,
+            dia: defaultName,
+            dia_semana: defaultName,
             ejercicios: []
           };
         });
@@ -712,7 +768,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                         key={d.id || `routine-${routine.id}-day-${dIdx}`}
                         className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-dark-800 border border-dark-700 text-zinc-300"
                       >
-                        {d.dia_semana || `Día ${dIdx + 1}`} ({d.ejercicios?.length || 0})
+                        {formatGenericDayTitle(d, dIdx)} ({d.ejercicios?.length || 0})
                       </span>
                     ))}
                   </div>
@@ -892,7 +948,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                       </div>
 
                       {routineForm.destinatarioTipo === 'alumno' && (
-                        <div className="pt-2">
+                        <div className="pt-2 space-y-2">
                           <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
                             Seleccionar Alumno del Directorio:
                           </label>
@@ -909,6 +965,79 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                               </option>
                             ))}
                           </select>
+
+                          {/* BARRA DE ALERTAS DE SALUD EN VIVO */}
+                          {routineForm.client_id && (
+                            selectedStudentMedical ? (
+                              <div className="p-3.5 rounded-xl bg-gray-950/90 border border-dark-700 space-y-2 text-xs animate-in fade-in">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-black uppercase text-gray-400 tracking-wider flex items-center gap-1.5">
+                                    <HeartPulse className="w-3.5 h-3.5 text-red-500" />
+                                    Ficha de Salud del Alumno
+                                  </span>
+                                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                                    Ficha Completa
+                                  </span>
+                                </div>
+
+                                {/* Chips destacados de lesiones */}
+                                {(() => {
+                                  const lesionesValidas = Array.isArray(selectedStudentMedical.lesiones)
+                                    ? selectedStudentMedical.lesiones.filter(z => z && z !== 'Ninguna')
+                                    : [];
+
+                                  if (lesionesValidas.length > 0) {
+                                    return (
+                                      <div className="space-y-1">
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {lesionesValidas.map((zona, idx) => (
+                                            <span 
+                                              key={idx}
+                                              className="px-2 py-0.5 rounded-lg text-xs font-black bg-red-950/80 text-red-300 border border-red-500/50 flex items-center gap-1 shadow-sm"
+                                            >
+                                              <AlertTriangle className="w-3 h-3 text-amber-400" />
+                                              <span>⚠️ Lesión: {zona}</span>
+                                            </span>
+                                          ))}
+                                        </div>
+                                        {selectedStudentMedical.detalle_lesiones && (
+                                          <p className="text-[11px] text-red-200/90 font-medium pt-0.5">
+                                            <b>Detalle:</b> {selectedStudentMedical.detalle_lesiones}
+                                          </p>
+                                        )}
+                                      </div>
+                                    );
+                                  }
+
+                                  return (
+                                    <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs px-3 py-2 rounded-xl">
+                                      <span>✅ Sin lesiones ni molestias reportadas por el alumno.</span>
+                                    </div>
+                                  );
+                                })()}
+
+                                {/* Condiciones o alergias en amarillo */}
+                                {(selectedStudentMedical.condiciones_cronicas || selectedStudentMedical.alergias || selectedStudentMedical.medicamentos) && (
+                                  <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] space-y-0.5">
+                                    {selectedStudentMedical.condiciones_cronicas && (
+                                      <p><b>Condición:</b> {selectedStudentMedical.condiciones_cronicas}</p>
+                                    )}
+                                    {selectedStudentMedical.alergias && (
+                                      <p><b>Alergias:</b> {selectedStudentMedical.alergias}</p>
+                                    )}
+                                    {selectedStudentMedical.medicamentos && (
+                                      <p><b>Medicación:</b> {selectedStudentMedical.medicamentos}</p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-center gap-2">
+                                <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+                                <span>El alumno aún no completó su ficha médica inicial.</span>
+                              </div>
+                            )
+                          )}
                         </div>
                       )}
                     </div>
@@ -998,7 +1127,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                               </span>
                               <div className="min-w-0">
                                 <p className="text-sm font-bold text-white truncate">
-                                  {d.dia || d.dia_nombre || `Día ${idx + 1}`}
+                                  {formatGenericDayTitle(d, idx)}
                                 </p>
                                 <p className={`text-xs font-semibold flex items-center gap-1 mt-0.5 ${count > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
                                   <Dumbbell className="w-3.5 h-3.5" />
@@ -1116,7 +1245,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                       Editor de Día • {currentActiveDay.ejercicios?.length || 0} ej.
                     </span>
                     <h2 className="text-base sm:text-lg font-black text-white leading-tight mt-0.5 truncate">
-                      {currentActiveDay.dia || currentActiveDay.dia_nombre || `Día ${activeDayIndex + 1}`}
+                      {formatGenericDayTitle(currentActiveDay, activeDayIndex)}
                     </h2>
                   </div>
                 </div>
@@ -1131,6 +1260,47 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                   <X className="w-5 h-5" />
                 </button>
               </div>
+
+              {/* BARRA DE ALERTAS DE SALUD EN LA CABECERA DEL EDITOR DE DÍA */}
+              {selectedStudentMedical && (
+                <div className="mx-4 mb-3 p-2.5 rounded-xl bg-gray-950/90 border border-dark-700 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                    <span className="text-[10px] uppercase font-black text-gray-400 tracking-wider flex items-center gap-1 mr-1">
+                      <HeartPulse className="w-3.5 h-3.5 text-red-500" />
+                      Alertas de Salud:
+                    </span>
+                    {(() => {
+                      const lesionesValidas = Array.isArray(selectedStudentMedical.lesiones)
+                        ? selectedStudentMedical.lesiones.filter(z => z && z !== 'Ninguna')
+                        : [];
+
+                      if (lesionesValidas.length > 0) {
+                        return lesionesValidas.map((zona, idx) => (
+                          <span 
+                            key={idx}
+                            className="px-2 py-0.5 rounded-md text-[11px] font-black bg-red-950/80 text-red-200 border border-red-500/50 flex items-center gap-1"
+                          >
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span>⚠️ Lesión: {zona}</span>
+                          </span>
+                        ));
+                      }
+
+                      return (
+                        <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[11px] px-2.5 py-1 rounded-lg">
+                          <span>✅ Sin lesiones ni molestias reportadas</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {(selectedStudentMedical.condiciones_cronicas || selectedStudentMedical.alergias) && (
+                    <span className="text-amber-300 font-bold text-[11px] bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-md">
+                      ⚠️ {[selectedStudentMedical.condiciones_cronicas, selectedStudentMedical.alergias].filter(Boolean).join(' • ')}
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* Selector de Pestañas Móviles (Fijo dentro del bloque superior, fondo coincidente y márgenes limpios p-4) */}
               <div className="px-4 pb-4 md:hidden">
@@ -1176,7 +1346,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                   type="text"
                   value={currentActiveDay.dia}
                   onChange={(e) => handleUpdateDayName(activeDayIndex, e.target.value)}
-                  placeholder="Ej: Día 1: Empuje / Pecho & Tríceps"
+                  placeholder={`Ej: Día ${activeDayIndex + 1} - Pecho y Tríceps`}
                   className="w-full bg-dark-850 border border-dark-700 rounded-lg px-3 py-2 text-base sm:text-sm font-bold text-white focus:outline-none focus:border-brand min-h-[44px]"
                 />
               </div>
@@ -1282,7 +1452,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                 <div className={`${mobileTab === 'sequence' ? 'block' : 'hidden'} md:block md:col-span-7 space-y-2.5`}>
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">
-                      Secuencia de {currentActiveDay.dia_semana || `Día ${activeDayIndex + 1}`} ({currentActiveDay.ejercicios?.length || 0} ej.)
+                      Secuencia de {formatGenericDayTitle(currentActiveDay, activeDayIndex)} ({currentActiveDay.ejercicios?.length || 0} ej.)
                     </span>
                     <span className="text-[10px] text-zinc-400">Series, repes y descansos</span>
                   </div>
@@ -1460,6 +1630,50 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
               <p className="text-[11px] text-zinc-400 mt-1">
                 💡 Se clonará la rutina completa para este alumno y se activará inmediatamente en su portal.
               </p>
+
+              {/* Alertas médicas en modal de asignación */}
+              {targetClientId && (
+                selectedStudentMedical ? (
+                  <div className="p-3 rounded-xl bg-gray-950 border border-dark-750 text-xs space-y-1.5 mt-2">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 flex items-center gap-1">
+                      <HeartPulse className="w-3.5 h-3.5 text-red-500" />
+                      Ficha de Salud del Alumno:
+                    </span>
+                    {(() => {
+                      const lesionesValidas = Array.isArray(selectedStudentMedical.lesiones)
+                        ? selectedStudentMedical.lesiones.filter(z => z && z !== 'Ninguna')
+                        : [];
+
+                      if (lesionesValidas.length > 0) {
+                        return (
+                          <div className="flex flex-wrap gap-1">
+                            {lesionesValidas.map((zona, idx) => (
+                              <span key={idx} className="px-2 py-0.5 rounded text-[11px] font-bold bg-red-950/80 text-red-300 border border-red-500/40">
+                                ⚠️ Lesión: {zona}
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs px-2.5 py-1.5 rounded-lg">
+                          <span>✅ Sin lesiones ni molestias reportadas por el alumno.</span>
+                        </div>
+                      );
+                    })()}
+                    {(selectedStudentMedical.condiciones_cronicas || selectedStudentMedical.alergias) && (
+                      <p className="text-amber-300 text-[11px]">
+                        <b>Condiciones:</b> {[selectedStudentMedical.condiciones_cronicas, selectedStudentMedical.alergias].filter(Boolean).join(' • ')}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs mt-2">
+                    ⚠️ El alumno aún no completó su ficha médica.
+                  </div>
+                )
+              )}
             </div>
 
             {/* Botones de acción */}

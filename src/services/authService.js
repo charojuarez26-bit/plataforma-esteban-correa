@@ -1,20 +1,20 @@
-import { supabase } from '../lib/supabase';
+import { supabase, withAuthRetry, isAuthError } from '../lib/supabase';
 
 const SESSION_KEY = 'ec_trainer_auth_session';
 
-// Si la tabla `coaches` no existe o la consulta falla (400/404/RLS), se deja de
-// consultar durante la sesión de la página para no repetir errores en consola.
-let coachesTableUnavailable = false;
-
 /**
  * Construye el perfil del entrenador. Parte de los datos de Supabase Auth
- * (nombre, email, metadatos) y los enriquece con la tabla `coaches` si responde.
+ * (nombre, email, metadatos) y los enriquece con la tabla `coaches` de manera proactiva.
  */
 export async function resolveCoachProfile(authUser) {
   let user = authUser;
   if (!user) {
     try {
-      const { data } = await supabase.auth.getUser();
+      const { data, error } = await withAuthRetry(() => supabase.auth.getUser());
+      if (error) {
+        console.warn('[Auth] Error obteniendo usuario:', error.message);
+        return null;
+      }
       user = data?.user;
     } catch {
       user = null;
@@ -44,18 +44,18 @@ export async function resolveCoachProfile(authUser) {
     } catch { /* ignorar */ }
   }
 
-  if (coachesTableUnavailable) return profile;
-
+  // Consulta a la tabla coaches con reintento automático si el JWT expiró
   try {
-    const { data, error } = await supabase
-      .from('coaches')
-      .select('*')
-      .eq('user_id', user.id)
-      .maybeSingle();
+    const { data, error } = await withAuthRetry(() =>
+      supabase
+        .from('coaches')
+        .select('*')
+        .eq('user_id', user.id)
+        .maybeSingle()
+    );
 
     if (error) {
-      coachesTableUnavailable = true;
-      console.info('[Auth] Tabla coaches no disponible, usando metadatos de Auth:', error.message);
+      console.warn('[Auth] Error consultando tabla coaches:', error.message);
     } else if (data) {
       profile = {
         ...profile,
@@ -65,9 +65,9 @@ export async function resolveCoachProfile(authUser) {
       };
     }
   } catch (e) {
-    coachesTableUnavailable = true;
-    console.info('[Auth] Error consultando coaches, usando metadatos de Auth:', e?.message);
+    console.warn('[Auth] Excepción consultando tabla coaches:', e?.message);
   }
+
   return profile;
 }
 
@@ -269,24 +269,24 @@ export async function saveCoachProfile(current, form) {
     if (error) warnings.push(error.message);
   } catch (e) { warnings.push(e?.message); }
 
-  if (!coachesTableUnavailable) {
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const uid = auth?.user?.id;
-      if (uid) {
-        const row = {
-          nombre: form.nombre, email: form.email, telefono: form.telefono,
-          avatar_url: form.avatar_url?.startsWith('data:') ? null : form.avatar_url,
-          bio: form.biografia, slogan: form.slogan, estudios: form.estudios
-        };
-        const { data: existing } = await supabase.from('coaches').select('id').eq('user_id', uid).maybeSingle();
-        const { error } = existing
-          ? await supabase.from('coaches').update(row).eq('id', existing.id)
-          : await supabase.from('coaches').insert({ ...row, user_id: uid });
-        if (error) warnings.push('Tabla coaches: ' + error.message);
-      }
-    } catch (e) { warnings.push(e?.message); }
-  }
+  try {
+    const { data: auth } = await withAuthRetry(() => supabase.auth.getUser());
+    const uid = auth?.user?.id;
+    if (uid) {
+      const row = {
+        nombre: form.nombre, email: form.email, telefono: form.telefono,
+        avatar_url: form.avatar_url?.startsWith('data:') ? null : form.avatar_url,
+        bio: form.biografia, slogan: form.slogan, estudios: form.estudios
+      };
+      const { data: existing } = await withAuthRetry(() =>
+        supabase.from('coaches').select('id').eq('user_id', uid).maybeSingle()
+      );
+      const { error } = existing
+        ? await withAuthRetry(() => supabase.from('coaches').update(row).eq('id', existing.id))
+        : await withAuthRetry(() => supabase.from('coaches').insert({ ...row, user_id: uid }));
+      if (error) warnings.push('Tabla coaches: ' + error.message);
+    }
+  } catch (e) { warnings.push(e?.message); }
 
   const local = authService.getCurrentSession();
   if (local?.role === 'coach') authService.saveSession({ ...local, user: updated });

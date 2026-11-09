@@ -39,6 +39,37 @@ CREATE TABLE IF NOT EXISTS clients (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
+-- Personalización de marca/slogan y datos bancarios del entrenador
+ALTER TABLE coaches ADD COLUMN IF NOT EXISTS branding JSONB;
+ALTER TABLE coaches ADD COLUMN IF NOT EXISTS bank_details JSONB;
+
+-- Control de membresía y vencimientos de alumnos
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS fecha_vencimiento DATE;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS plan_actual VARCHAR(100) DEFAULT 'Plan Personalizado';
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS estado_pago VARCHAR(20) DEFAULT 'al_dia';
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS fecha_inicio_rutina DATE;
+
+-- 2.1 TABLA PLANES DE MEMBRESÍA (MEMBERSHIP_PLANS)
+CREATE TABLE IF NOT EXISTS membership_plans (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tipo VARCHAR(50) UNIQUE NOT NULL, -- 'Presencial', 'Personalizado', 'A distancia'
+    nombre VARCHAR(100) NOT NULL,
+    precio NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    dias_vigencia INT DEFAULT 30,
+    descripcion TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS membership_plan_id UUID REFERENCES membership_plans(id);
+
+-- Sembrar planes base de Esteban Correa si no existen
+INSERT INTO membership_plans (tipo, nombre, precio, dias_vigencia, descripcion)
+VALUES 
+    ('Presencial', 'Plan Presencial', 38000, 30, 'Entrenamiento presencial guiado en sala'),
+    ('Personalizado', 'Plan Personalizado', 45000, 30, 'Planificación integral y seguimiento antropométrico'),
+    ('A distancia', 'Plan A Distancia (Online)', 28000, 30, 'Planificación virtual con seguimiento por WhatsApp')
+ON CONFLICT (tipo) DO NOTHING;
+
 -- Índice para acelerar login de alumnos por código único
 CREATE INDEX IF NOT EXISTS idx_clients_access_code ON clients(access_code);
 CREATE INDEX IF NOT EXISTS idx_clients_coach ON clients(coach_id);
@@ -108,7 +139,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
 
 CREATE INDEX IF NOT EXISTS idx_evaluations_client_date ON evaluations(client_id, fecha DESC);
 
--- 7. PAGOS Y PLANES (PAYMENTS)
+-- 7. PAGOS Y PLANES (PAYMENTS / CLIENT_PAYMENTS)
 CREATE TABLE IF NOT EXISTS payments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     coach_id UUID REFERENCES coaches(id) ON DELETE CASCADE,
@@ -119,6 +150,20 @@ CREATE TABLE IF NOT EXISTS payments (
     fecha_vencimiento DATE NOT NULL,
     metodo VARCHAR(50) DEFAULT 'Transferencia' CHECK (metodo IN ('Transferencia', 'Efectivo', 'MercadoPago', 'Tarjeta')),
     estado VARCHAR(20) DEFAULT 'Pagado' CHECK (estado IN ('Pagado', 'Pendiente', 'Vencido')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
+-- Tabla o alias para registro de cobros directos de alumnos
+CREATE TABLE IF NOT EXISTS client_payments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    coach_id UUID REFERENCES coaches(id) ON DELETE CASCADE,
+    client_id UUID REFERENCES clients(id) ON DELETE CASCADE,
+    plan_nombre VARCHAR(100) NOT NULL,
+    monto NUMERIC(10, 2) NOT NULL,
+    fecha_pago DATE NOT NULL DEFAULT CURRENT_DATE,
+    fecha_vencimiento DATE NOT NULL,
+    metodo VARCHAR(50) DEFAULT 'Transferencia',
+    estado VARCHAR(20) DEFAULT 'Pagado',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 

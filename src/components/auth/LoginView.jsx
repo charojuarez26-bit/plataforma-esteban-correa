@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import BrandLogo from '../common/BrandLogo';
+import React, { useState, useEffect } from 'react';
+import BrandLogo, { MotivationalSlogan } from '../common/BrandLogo';
 import { authService } from '../../services/authService';
-import { User, Lock, KeyRound, ArrowRight, ShieldCheck, AlertCircle } from 'lucide-react';
+import { User, Lock, KeyRound, ArrowRight, ShieldCheck, AlertCircle, MessageCircle } from 'lucide-react';
 
 export default function LoginView({ onLoginSuccess }) {
   const [activeTab, setActiveTab] = useState('student'); // 'student' | 'coach'
@@ -13,6 +13,20 @@ export default function LoginView({ onLoginSuccess }) {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    try {
+      const notice = sessionStorage.getItem('auth_expired_notice') || 
+        (window.location.search.includes('expired=true') ? 'Tu sesión ha expirado. Por favor, ingresa nuevamente.' : null);
+      if (notice) {
+        setError(notice);
+        setActiveTab('coach');
+        sessionStorage.removeItem('auth_expired_notice');
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, []);
 
   const handleStudentSubmit = async (e) => {
     e.preventDefault();
@@ -55,19 +69,25 @@ export default function LoginView({ onLoginSuccess }) {
   };
 
   return (
-    <div className="min-h-screen bg-dark-950 flex flex-col justify-between items-center p-4 sm:p-6 lg:p-8 relative overflow-hidden">
+    <div className="min-h-screen bg-dark-950 bg-[radial-gradient(circle_at_top_right,_var(--tw-gradient-stops))] from-red-900/10 via-transparent to-transparent flex flex-col justify-between items-center p-4 sm:p-6 lg:p-8 pb-8 sm:pb-12 relative overflow-hidden">
       {/* Luces de fondo ambientación gym premium */}
       <div className="absolute top-0 -left-40 w-96 h-96 bg-brand opacity-15 rounded-full blur-[120px] pointer-events-none"></div>
       <div className="absolute bottom-0 -right-40 w-96 h-96 bg-brand-dark opacity-10 rounded-full blur-[140px] pointer-events-none"></div>
 
       {/* Header con Logo */}
-      <header className="w-full max-w-md flex justify-center py-4 z-10">
-        <BrandLogo size="lg" showSlogan={true} />
+      <header className="w-full max-w-md flex justify-start py-4 z-10">
+        <BrandLogo size="md" />
       </header>
 
       {/* Tarjeta Principal de Login */}
       <div className="w-full max-w-md bg-dark-850 border border-dark-700/80 rounded-2xl shadow-2xl p-6 sm:p-8 z-10">
-        
+
+        {/* Bienvenida */}
+        <div className="mb-6 text-center">
+          <h1 className="text-xl font-semibold text-white">¡Hola, de nuevo!</h1>
+          <MotivationalSlogan className="mt-1" />
+        </div>
+
         {/* Selector de Rol */}
         <div className="grid grid-cols-2 p-1 bg-dark-900 border border-dark-700 rounded-xl mb-6">
           <button
@@ -213,8 +233,24 @@ export default function LoginView({ onLoginSuccess }) {
 
       </div>
 
+      {/* Leyenda de autoría y contacto con acceso a WhatsApp */}
+      <div className="mt-6 mb-2 text-center z-10">
+        <a
+          href="https://wa.me/5493816096311"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-gray-500 hover:text-gray-300 transition-colors inline-flex items-center gap-1.5 py-1 px-3 rounded-lg hover:bg-dark-800/60 active:scale-95 group"
+          title="Contactar por WhatsApp a PM Soluciones Digitales"
+        >
+          <MessageCircle className="w-3.5 h-3.5 text-emerald-500/70 group-hover:text-emerald-400 shrink-0 transition-transform group-hover:scale-110" />
+          <span>
+            Desarrollado por <span className="font-semibold text-gray-400 group-hover:text-gray-200">PM Soluciones Digitales</span> • 3816096311
+          </span>
+        </a>
+      </div>
+
       {/* Footer Branding Deportivo */}
-      <footer className="w-full max-w-md text-center py-5 z-10">
+      <footer className="w-full max-w-md text-center py-4 z-10">
         <p className="text-xs tracking-[0.25em] font-extrabold text-gray-300 uppercase select-none">
           DISCIPLINA • CONSTANCIA • RESULTADOS
         </p>

@@ -1,4 +1,11 @@
-import { supabase } from '../lib/supabase';
+import { supabase, withAuthRetry, isAuthError } from '../lib/supabaseClient';
+import {
+  calcularEstadoPago,
+  calcularNuevaFechaVencimiento,
+  DEFAULT_BANK_DETAILS,
+  DEFAULT_PLANS,
+  DEFAULT_MEMBERSHIP_PLANS
+} from '../utils/paymentUtils';
 import {
   INITIAL_EXERCISES,
   INITIAL_EVALUATIONS,
@@ -6,6 +13,12 @@ import {
   WEEKLY_CHART_DATA,
   MONTHLY_INCOME_DATA
 } from '../data/mockData';
+
+export const MEMBERSHIP_PLAN_IDS = {
+  'Presencial': '12dc754e-4262-4171-9f6c-6669b853af70',
+  'Personalizado': 'b89bd142-8dd2-4a60-8436-fe069f7aeb83',
+  'A distancia': 'e2f87a8f-3ff0-4cd7-9e2b-35737861a172'
+};
 
 const CLIENT_DB_COLUMNS = [
   'id',
@@ -20,7 +33,13 @@ const CLIENT_DB_COLUMNS = [
   'estado',
   'access_code',
   'creado_el',
-  'foto_url'
+  'foto_url',
+  'fecha_vencimiento',
+  'fecha_inicio',
+  'fecha_inicio_rutina',
+  'plan_id',
+  'plan_actual',
+  'estado_pago'
 ];
 
 function enrichClient(c) {
@@ -35,6 +54,10 @@ function enrichClient(c) {
   const photo = c.foto_url || meta.foto_url || meta.avatar_url || null;
   const activeRoutine = (c.routines || []).find(r => r.activa);
   const routineName = activeRoutine ? activeRoutine.nombre : (c.rutina_activa || null);
+  const fechaVenc = c.fecha_vencimiento || meta.fecha_vencimiento || null;
+  const estadoPago = c.estado_pago || meta.estado_pago || calcularEstadoPago(fechaVenc);
+  const fechaIni = c.fecha_inicio || meta.fecha_inicio || null;
+  const fechaIniRut = c.fecha_inicio_rutina || meta.fecha_inicio_rutina || fechaIni;
 
   return {
     ...c,
@@ -43,11 +66,17 @@ function enrichClient(c) {
     rutina_activa: routineName,
     tiene_rutina: Boolean(routineName),
     notas: meta.notas || c.notas || '',
-    plan_actual: meta.plan_actual || c.plan_actual || 'Plan Personalizado',
+    plan_actual: c.plan_actual || meta.plan_actual || 'Presencial',
+    plan_id: c.plan_id || meta.plan_id || null,
+    fecha_inicio: fechaIni,
+    fecha_inicio_rutina: fechaIniRut,
+    fecha_vencimiento: fechaVenc,
+    estado_pago: estadoPago,
     dias_por_semana: meta.dias_por_semana || c.dias_por_semana || 3,
     dias_asignados: meta.dias_asignados || c.dias_asignados || ['Lunes', 'Miércoles', 'Viernes'],
     tipo_planificacion: meta.tipo_planificacion || c.tipo_planificacion || 'Semanal',
-    duracion_sesion_min: meta.duracion_sesion_min || c.duracion_sesion_min || 60
+    duracion_sesion_min: meta.duracion_sesion_min || c.duracion_sesion_min || 60,
+    access_code: c.access_code || meta.access_code || ''
   };
 }
 
@@ -194,30 +223,22 @@ export const dataService = {
   // ==========================================================
   async getDashboardMetrics() {
     try {
-      // SELECT directo a la tabla 'clients' ordenado por creado_el DESC
-      const { data: clientsData, error: clientsError } = await supabase
-        .from('clients')
-        .select('*')
-        .order('creado_el', { ascending: false });
+      // Consultas protegidas con reintento automático y verificación de sesión
+      const [
+        { data: clientsData, error: clientsError },
+        { data: evaluationsData, error: evalError },
+        { data: paymentsData, error: paymentsError },
+        { data: aptsData }
+      ] = await Promise.all([
+        withAuthRetry(() => supabase.from('clients').select('*').order('creado_el', { ascending: false })),
+        withAuthRetry(() => supabase.from('evaluations').select('*')),
+        withAuthRetry(() => supabase.from('client_payments').select('*')),
+        withAuthRetry(() => supabase.from('appointments').select('*'))
+      ]);
 
       if (clientsError) {
         console.error('[DataService] Error consultando clients en Supabase:', clientsError);
       }
-
-      // SELECT directo a la tabla 'evaluations'
-      const { data: evaluationsData, error: evalError } = await supabase
-        .from('evaluations')
-        .select('*');
-
-      // SELECT directo a la tabla 'payments'
-      const { data: paymentsData, error: paymentsError } = await supabase
-        .from('payments')
-        .select('*');
-
-      // SELECT a la tabla 'appointments'
-      const { data: aptsData } = await supabase
-        .from('appointments')
-        .select('*');
 
       // Clientes provienen EXCLUSIVAMENTE de Supabase (sin mocks y excluyendo cliente de plantillas)
       const rawClients = (!clientsError && clientsData)
@@ -247,10 +268,10 @@ export const dataService = {
       // Evaluaciones pendientes
       const pendingEvaluationsCount = Math.max(0, clients.length - evaluations.length);
 
-      // Planes por vencer o pendientes en pagos
-      const expiringPlansCount = payments.filter(p => {
-        const estado = (p.estado || '').toLowerCase();
-        return estado === 'pendiente' || estado === 'vencido';
+      // Planes por vencer o vencidos en tiempo real según fecha_vencimiento de los alumnos
+      const expiringPlansCount = clients.filter(c => {
+        const est = c.estado_pago || calcularEstadoPago(c.fecha_vencimiento);
+        return est === 'por_vencer' || est === 'vencido';
       }).length;
 
       return {
@@ -299,11 +320,13 @@ export const dataService = {
 
     let source = 'none';
     try {
-      const { data: apts, error } = await supabase
-        .from('appointments')
-        .select('id, fecha_hora_inicio, estado')
-        .gte('fecha_hora_inicio', start.toISOString())
-        .lt('fecha_hora_inicio', end.toISOString());
+      const { data: apts, error } = await withAuthRetry(() =>
+        supabase
+          .from('appointments')
+          .select('id, fecha_hora_inicio, estado')
+          .gte('fecha_hora_inicio', start.toISOString())
+          .lt('fecha_hora_inicio', end.toISOString())
+      );
 
       if (error) throw error;
 
@@ -354,17 +377,24 @@ export const dataService = {
   // ==========================================================
   async getClients() {
     try {
-      const { data, error } = await supabase
-        .from('clients')
-        .select('*, routines(id, nombre, activa)')
-        .neq('id', '00000000-0000-0000-0000-000000000000')
-        .order('creado_el', { ascending: false });
+      const { data, error, isAuthError: hadAuthError } = await withAuthRetry(() =>
+        supabase
+          .from('clients')
+          .select('*, routines(id, nombre, activa)')
+          .neq('id', '00000000-0000-0000-0000-000000000000')
+          .order('creado_el', { ascending: false })
+      );
 
-      if (error) {
+      if (error || hadAuthError) {
         console.error('[DataService] Error consultando clients en Supabase:', error);
         return [];
       }
-      return (data || []).map(enrichClient);
+      return (data || [])
+        .filter(c => {
+          const nombre = (c.nombre_completo || `${c.nombre || ''} ${c.apellido || ''}`).toLowerCase();
+          return c.id !== '00000000-0000-0000-0000-000000000000' && !nombre.includes('plantilla') && !c.es_plantilla && !c.is_template;
+        })
+        .map(enrichClient);
     } catch (err) {
       console.error('[DataService] Error en getClients:', err);
       return [];
@@ -373,11 +403,13 @@ export const dataService = {
 
   async getClientById(id) {
     try {
-      const { data, error } = await supabase
-        .from('clients')
-        .select('*, routines(id, nombre, activa)')
-        .eq('id', id)
-        .single();
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('clients')
+          .select('*, routines(id, nombre, activa)')
+          .eq('id', id)
+          .single()
+      );
 
       if (error) {
         console.error('[DataService] Error en getClientById Supabase:', error);
@@ -474,12 +506,52 @@ export const dataService = {
       const dbPayload = {};
       const metaPayload = {};
 
+      // Lista explícita de campos que NUNCA deben enviarse directamente a columnas de clients en Supabase
+      const EXCLUDED_FROM_DB = new Set([
+        'notas',
+        'rutina_activa',
+        'tiene_rutina',
+        'routines',
+        'total_sesiones',
+        'asistencia_pct',
+        'asistencia',
+        'id',
+        'creado_el',
+        'created_at',
+        'avatar_url',
+        'dias_por_semana',
+        'dias_asignados',
+        'tipo_planificacion',
+        'duracion_sesion_min'
+      ]);
+
+      // Mapeo automático de plan_id si se envía plan_actual
+      if (updates.plan_actual && !updates.plan_id) {
+        const pLower = updates.plan_actual.toLowerCase();
+        if (pLower.includes('presencial')) {
+          updates.plan_id = MEMBERSHIP_PLAN_IDS['Presencial'];
+        } else if (pLower.includes('distancia') || pLower.includes('online')) {
+          updates.plan_id = MEMBERSHIP_PLAN_IDS['A distancia'];
+        } else if (pLower.includes('personalizado')) {
+          updates.plan_id = MEMBERSHIP_PLAN_IDS['Personalizado'];
+        }
+      }
+
       Object.keys(updates).forEach((key) => {
+        if (EXCLUDED_FROM_DB.has(key)) {
+          metaPayload[key] = updates[key];
+          return;
+        }
+
         if (CLIENT_DB_COLUMNS.includes(key)) {
           if (key === 'edad') {
-            dbPayload[key] = updates[key] ? parseInt(updates[key], 10) : null;
+            dbPayload[key] = (updates[key] !== '' && updates[key] !== null && updates[key] !== undefined)
+              ? parseInt(updates[key], 10)
+              : null;
           } else if (key === 'altura') {
-            dbPayload[key] = updates[key] ? parseFloat(updates[key]) : null;
+            dbPayload[key] = (updates[key] !== '' && updates[key] !== null && updates[key] !== undefined)
+              ? parseFloat(updates[key])
+              : null;
           } else {
             dbPayload[key] = updates[key];
           }
@@ -495,22 +567,67 @@ export const dataService = {
         metaPayload.foto_url = dbPayload.foto_url;
         metaPayload.avatar_url = dbPayload.foto_url;
       }
+      if (updates.plan_actual !== undefined) {
+        metaPayload.plan_actual = updates.plan_actual;
+      }
+      if (updates.plan_id !== undefined) {
+        metaPayload.plan_id = updates.plan_id;
+      }
+      if (updates.estado_pago !== undefined) {
+        metaPayload.estado_pago = updates.estado_pago;
+      }
+      if (updates.notas !== undefined) {
+        metaPayload.notas = updates.notas;
+      }
 
       saveClientMeta(id, metaPayload);
 
       if (Object.keys(dbPayload).length > 0) {
-        const { data, error } = await supabase
-          .from('clients')
-          .update(dbPayload)
-          .eq('id', id)
-          .select()
-          .single();
+        let currentPayload = { ...dbPayload };
+        let updatedData = null;
+        let lastError = null;
 
-        if (error) {
-          console.error('[DataService] Error actualizando cliente en Supabase:', error);
-          throw error;
+        // Auto-recuperación ante columnas no existentes en Supabase (código PGRST204)
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const { data, error } = await supabase
+            .from('clients')
+            .update(currentPayload)
+            .eq('id', id)
+            .select()
+            .single();
+
+          if (!error) {
+            updatedData = data;
+            lastError = null;
+            break;
+          }
+
+          lastError = error;
+          if (error.code === 'PGRST204' || error.message?.includes('column')) {
+            const match = error.message.match(/'([^']+)' column/) ||
+                          error.message.match(/column ['"]?([a-zA-Z0-9_]+)['"]?/i) ||
+                          error.message.match(/Could not find the '([^']+)'/i);
+            const missingCol = match ? match[1] : null;
+            if (missingCol && currentPayload[missingCol] !== undefined) {
+              console.warn(`[DataService] Columna '${missingCol}' no existe en clients de Supabase. Aislándola en metadatos.`);
+              metaPayload[missingCol] = currentPayload[missingCol];
+              saveClientMeta(id, { [missingCol]: currentPayload[missingCol] });
+              delete currentPayload[missingCol];
+              if (Object.keys(currentPayload).length === 0) {
+                break;
+              }
+              continue;
+            }
+          }
+          break;
         }
-        return enrichClient(data);
+
+        if (lastError && !updatedData && Object.keys(currentPayload).length > 0) {
+          console.error('[DataService] Error actualizando cliente en Supabase:', lastError);
+        }
+
+        const fresh = updatedData || (await this.getClientById(id));
+        return enrichClient({ ...fresh, ...metaPayload });
       }
 
       return enrichClient(await this.getClientById(id));
@@ -523,18 +640,22 @@ export const dataService = {
   // ==========================================================
   // 3. EVALUACIONES (SELECT E INSERT EN SUPABASE)
   // ==========================================================
+  // 3. EVALUACIONES (SELECT E INSERT EN SUPABASE)
+  // ==========================================================
   async getEvaluations(clientId = null) {
     try {
-      let query = supabase
-        .from('evaluations')
-        .select('*')
-        .order('fecha', { ascending: true });
+      const { data, error } = await withAuthRetry(() => {
+        let query = supabase
+          .from('evaluations')
+          .select('*')
+          .order('fecha', { ascending: true });
 
-      if (clientId) {
-        query = query.eq('client_id', clientId);
-      }
+        if (clientId) {
+          query = query.eq('client_id', clientId);
+        }
+        return query;
+      });
 
-      const { data, error } = await query;
       if (!error && data && data.length > 0) {
         return data;
       }
@@ -562,11 +683,13 @@ export const dataService = {
     };
 
     try {
-      const { data, error } = await supabase
-        .from('evaluations')
-        .insert([payload])
-        .select()
-        .single();
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('evaluations')
+          .insert([payload])
+          .select()
+          .single()
+      );
 
       if (!error && data) {
         return data;
@@ -582,44 +705,99 @@ export const dataService = {
   },
 
   // ==========================================================
-  // 4. PAGOS (SELECT E INSERT EN SUPABASE)
+  // 4. PAGOS (SELECT E INSERT EN CLIENT_PAYMENTS DE SUPABASE)
   // ==========================================================
-  async getPayments() {
+  async getPayments(clientId = null) {
     try {
-      const { data, error } = await supabase
-        .from('payments')
-        .select('*')
-        .order('fecha_vencimiento', { ascending: false });
+      // Columnas reales de la tabla client_payments en Supabase:
+      // id, client_id, monto, fecha_pago, metodo_pago, periodo_desde, periodo_hasta, fecha_vencimiento, notas
+      let query = supabase
+        .from('client_payments')
+        .select(`
+          id,
+          client_id,
+          monto,
+          fecha_pago,
+          metodo_pago,
+          periodo_desde,
+          periodo_hasta,
+          fecha_vencimiento,
+          notas,
+          clients (
+            id,
+            nombre_completo,
+            plan_actual,
+            fecha_vencimiento
+          )
+        `);
 
-      if (!error && data && data.length > 0) {
-        return data;
+      if (clientId) {
+        query = query.eq('client_id', clientId);
+      }
+
+      // Ordenar preferentemente por fecha_pago DESC
+      query = query.order('fecha_pago', { ascending: false });
+
+      const { data, error } = await withAuthRetry(() => query);
+
+      if (!error && Array.isArray(data)) {
+        // Mapear y normalizar propiedades para compatibilidad total con la UI
+        return data.map(item => {
+          const clientObj = item.clients || {};
+          const vto = item.fecha_vencimiento || item.periodo_hasta || clientObj.fecha_vencimiento || null;
+          return {
+            ...item,
+            plan_nombre: item.notas || clientObj.plan_actual || 'Plan Personalizado',
+            metodo: item.metodo_pago || 'Transferencia',
+            estado: 'Pagado',
+            fecha_vencimiento: vto,
+            client_name: clientObj.nombre_completo || 'Alumno'
+          };
+        });
+      }
+
+      if (error) {
+        console.warn('[DataService] Error consultando client_payments:', error);
       }
     } catch (err) {
       console.warn('[DataService] Error en getPayments Supabase:', err);
     }
-    return INITIAL_PAYMENTS;
+
+    // Fallback seguro: array vacío para evitar romper la interfaz
+    return [];
   },
 
   async addPayment(payData) {
     const payload = {
       client_id: payData.client_id,
-      plan_nombre: payData.plan_nombre,
-      monto: parseFloat(payData.monto),
+      monto: parseFloat(payData.monto) || 0,
       fecha_pago: payData.fecha_pago || new Date().toISOString().split('T')[0],
-      fecha_vencimiento: payData.fecha_vencimiento,
-      metodo: payData.metodo || 'Transferencia',
-      estado: payData.estado || 'Pagado'
+      metodo_pago: payData.metodo || payData.metodo_pago || 'Transferencia',
+      periodo_desde: payData.periodo_desde || payData.fecha_pago || new Date().toISOString().split('T')[0],
+      periodo_hasta: payData.periodo_hasta || payData.fecha_vencimiento || null,
+      fecha_vencimiento: payData.fecha_vencimiento || payData.periodo_hasta || null,
+      notas: payData.plan_nombre || payData.notas || 'Plan de Entrenamiento'
     };
 
     try {
-      const { data, error } = await supabase
-        .from('payments')
-        .insert([payload])
-        .select()
-        .single();
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('client_payments')
+          .insert([payload])
+          .select()
+          .single()
+      );
 
       if (!error && data) {
-        return data;
+        return {
+          ...data,
+          plan_nombre: data.notas || payload.notas,
+          metodo: data.metodo_pago || payload.metodo_pago,
+          estado: 'Pagado'
+        };
+      }
+      if (error) {
+        console.warn('[DataService] Error insertando en client_payments:', error);
       }
     } catch (err) {
       console.warn('[DataService] Error insertando pago en Supabase:', err);
@@ -628,7 +806,399 @@ export const dataService = {
     return {
       id: `pay-${Date.now()}`,
       ...payload,
+      plan_nombre: payload.notas,
+      metodo: payload.metodo_pago,
+      estado: 'Pagado',
       client_name: payData.client_name || 'Alumno'
+    };
+  },
+
+  /**
+   * Registra el cobro de un alumno:
+   * 1. Guardia de integridad: valida que el alumno no cuente ya con una cuota vigente.
+   * 2. Inserta el registro en client_payments con columnas reales.
+   * 3. Actualiza en clients la nueva fecha_vencimiento (+30 días por defecto o días del plan).
+   * 4. Actualiza el estado a 'al_dia'.
+   */
+  async recordClientPayment({ clientId, planNombre, monto, metodo = 'Transferencia', diasVigencia = 30, fechaPago = null }) {
+    if (!clientId) throw new Error('El ID del alumno es obligatorio');
+
+    const client = await this.getClientById(clientId);
+
+    // Guardia en el servicio: prevenir pagos duplicados (solo permitir si faltan 3 días o menos, o ya venció)
+    if (client?.fecha_vencimiento) {
+      const hoy = new Date();
+      hoy.setHours(0, 0, 0, 0);
+      const venc = new Date(client.fecha_vencimiento);
+      venc.setHours(0, 0, 0, 0);
+      const diasRestantes = Math.ceil((venc - hoy) / (1000 * 60 * 60 * 24));
+
+      if (diasRestantes > 3) {
+        throw new Error(`El alumno ya cuenta con un pago vigente (faltan ${diasRestantes} días para el vencimiento). El cobro se habilitará 3 días antes de vencer.`);
+      }
+    }
+
+    const fechaPagoFinal = fechaPago || new Date().toISOString().split('T')[0];
+    const nuevaFechaVencimiento = calcularNuevaFechaVencimiento(client?.fecha_vencimiento, diasVigencia);
+
+    const paymentPayload = {
+      client_id: clientId,
+      monto: parseFloat(monto) || 0,
+      fecha_pago: fechaPagoFinal,
+      metodo_pago: metodo,
+      periodo_desde: fechaPagoFinal,
+      periodo_hasta: nuevaFechaVencimiento,
+      fecha_vencimiento: nuevaFechaVencimiento,
+      notas: planNombre || client?.plan_actual || 'Plan 3x Semanal Personalizado'
+    };
+
+    let createdPayment = null;
+
+    // Insertar exclusivamente en 'client_payments'
+    try {
+      const { data: cpData, error: cpError } = await withAuthRetry(() =>
+        supabase
+          .from('client_payments')
+          .insert([paymentPayload])
+          .select()
+          .single()
+      );
+
+      if (!cpError && cpData) {
+        createdPayment = {
+          ...cpData,
+          plan_nombre: cpData.notas || paymentPayload.notas,
+          metodo: cpData.metodo_pago || paymentPayload.metodo_pago,
+          estado: 'Pagado',
+          client_name: client?.nombre_completo || 'Alumno'
+        };
+      } else if (cpError) {
+        console.warn('[DataService] Error insertando en client_payments:', cpError);
+      }
+    } catch (e) {
+      console.warn('[DataService] Excepción registrando en client_payments:', e);
+    }
+
+    if (!createdPayment) {
+      createdPayment = {
+        id: `pay-${Date.now()}`,
+        ...paymentPayload,
+        plan_nombre: paymentPayload.notas,
+        metodo: paymentPayload.metodo_pago,
+        estado: 'Pagado',
+        client_name: client?.nombre_completo || 'Alumno'
+      };
+    }
+
+    // 3. Actualizar en clients la nueva fecha_vencimiento, plan_actual y estado a 'al_dia'
+    await this.updateClient(clientId, {
+      fecha_vencimiento: nuevaFechaVencimiento,
+      plan_actual: paymentPayload.notas,
+      estado_pago: 'al_dia'
+    });
+
+    // Guardar respaldo local por alumno
+    try {
+      const key = `ec_payments_${clientId}`;
+      const prev = JSON.parse(localStorage.getItem(key) || '[]');
+      prev.unshift(createdPayment);
+      localStorage.setItem(key, JSON.stringify(prev));
+    } catch {}
+
+    return {
+      success: true,
+      payment: createdPayment,
+      nuevaFechaVencimiento,
+      estadoPago: 'al_dia'
+    };
+  },
+
+  // ==========================================
+  // GESTIÓN DE FICHA MÉDICA / SALUD (medical_records)
+  // ==========================================
+  async getMedicalRecord(clientId) {
+    if (!clientId) return null;
+    try {
+      const cleanId = String(clientId).trim();
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('medical_records')
+          .select('*')
+          .eq('client_id', cleanId)
+          .maybeSingle()
+      );
+      if (!error) {
+        // La verdad absoluta proviene de la base de datos
+        return data || null;
+      }
+      if (error) {
+        console.warn('[DataService] Error consultando medical_records en Supabase:', error);
+      }
+    } catch (e) {
+      console.warn('[DataService] Excepción cargando medical_records:', e);
+    }
+
+    return null;
+  },
+
+  async saveMedicalRecord({ clientId, lesiones = [], detalleLesiones = '', condicionesCronicas = '', alergias = '', medicamentos = '', declaracionJurada = true, completada = true, permitirEdicion = false }) {
+    if (!clientId || typeof clientId !== 'string' || clientId.includes('00000000')) {
+      throw new Error('Error: Sesión no válida o ID de alumno inexistente.');
+    }
+
+    const cleanId = String(clientId).trim();
+
+    const payload = {
+      client_id: cleanId,
+      lesiones: Array.isArray(lesiones) ? lesiones : [],
+      detalle_lesiones: detalleLesiones || '',
+      condiciones_cronicas: condicionesCronicas || '',
+      alergias: alergias || '',
+      medicamentos: medicamentos || '',
+      declaracion_jurada: Boolean(declaracionJurada),
+      completada: Boolean(completada),
+      permitir_edicion: Boolean(permitirEdicion),
+      actualizado_el: new Date().toISOString()
+    };
+
+    // Upsert atómico por client_id en Supabase
+    const { data, error } = await withAuthRetry(() =>
+      supabase
+        .from('medical_records')
+        .upsert([payload], { onConflict: 'client_id' })
+        .select()
+        .single()
+    );
+
+    if (error) {
+      console.error('[DataService] Error crítico al guardar ficha médica en Supabase:', error);
+      throw error;
+    }
+
+    if (!data) {
+      throw new Error('No se recibió confirmación del registro guardado en la base de datos.');
+    }
+
+    return data;
+  },
+
+  async setMedicalRecordEditPermission(clientId, permitirEdicion = true) {
+    if (!clientId) throw new Error('El ID del alumno es obligatorio');
+    try {
+      const existing = await this.getMedicalRecord(clientId);
+      if (existing?.id) {
+        const { data, error } = await withAuthRetry(() =>
+          supabase
+            .from('medical_records')
+            .update({ permitir_edicion: permitirEdicion, actualizado_el: new Date().toISOString() })
+            .eq('id', existing.id)
+            .select()
+            .single()
+        );
+        if (!error && data) {
+          localStorage.setItem(`ec_medical_${clientId}`, JSON.stringify(data));
+          return data;
+        }
+      }
+    } catch (e) {
+      console.warn('[DataService] Error actualizando permiso de edición médica:', e);
+    }
+
+    // Fallback local
+    try {
+      const local = localStorage.getItem(`ec_medical_${clientId}`);
+      if (local) {
+        const parsed = JSON.parse(local);
+        parsed.permitir_edicion = permitirEdicion;
+        localStorage.setItem(`ec_medical_${clientId}`, JSON.stringify(parsed));
+        return parsed;
+      }
+    } catch {}
+
+    return { client_id: clientId, permitir_edicion: permitirEdicion };
+  },
+
+  getBankDetails() {
+    try {
+      const raw = localStorage.getItem('ec_bank_details');
+      if (raw) return { ...DEFAULT_BANK_DETAILS, ...JSON.parse(raw) };
+    } catch {}
+    return DEFAULT_BANK_DETAILS;
+  },
+
+  async saveBankDetails(details) {
+    try {
+      const merged = { ...DEFAULT_BANK_DETAILS, ...details };
+      localStorage.setItem('ec_bank_details', JSON.stringify(merged));
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user?.id) {
+          await supabase
+            .from('coaches')
+            .update({ bank_details: merged })
+            .eq('user_id', session.user.id);
+        }
+      } catch {}
+      return merged;
+    } catch (e) {
+      console.warn('Error guardando datos bancarios:', e);
+      return details;
+    }
+  },
+
+  getTrainingPlans() {
+    try {
+      const raw = localStorage.getItem('ec_training_plans');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return DEFAULT_PLANS;
+  },
+
+  saveTrainingPlans(plans) {
+    try {
+      localStorage.setItem('ec_training_plans', JSON.stringify(plans));
+    } catch (e) {
+      console.warn('Error guardando planes:', e);
+    }
+    return plans;
+  },
+
+  // ==========================================================
+  // 4.1 PLANES DE MEMBRESÍA (Presencial, Personalizado, A distancia)
+  // ==========================================================
+  async getMembershipPlans() {
+    let list = [];
+    try {
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('membership_plans')
+          .select('*')
+          .order('precio', { ascending: false })
+      );
+
+      if (!error && data && data.length > 0) {
+        list = data;
+      }
+    } catch (e) {
+      console.warn('[DataService] Error consultando membership_plans:', e);
+    }
+
+    // Fallback a localStorage y defaults
+    if (list.length === 0) {
+      try {
+        const local = localStorage.getItem('ec_membership_plans');
+        if (local) {
+          const parsed = JSON.parse(local);
+          if (Array.isArray(parsed) && parsed.length > 0) list = parsed;
+        }
+      } catch (e) {}
+    }
+
+    if (list.length === 0) {
+      list = DEFAULT_MEMBERSHIP_PLANS;
+    }
+
+    // Asegurar que siempre contenga los 3 planes clave
+    const tipos = ['Presencial', 'Personalizado', 'A distancia'];
+    const complete = tipos.map(tipo => {
+      const found = list.find(p => (p.tipo || '').toLowerCase() === tipo.toLowerCase()) ||
+                    DEFAULT_MEMBERSHIP_PLANS.find(p => p.tipo === tipo);
+      return found;
+    });
+
+    return complete;
+  },
+
+  async saveMembershipPlanPrices(plansToUpdate) {
+    if (!Array.isArray(plansToUpdate)) return { success: false };
+
+    // 1. Guardar en localStorage de inmediato para respuesta offline/resiliente
+    try {
+      localStorage.setItem('ec_membership_plans', JSON.stringify(plansToUpdate));
+    } catch (e) {}
+
+    // 2. Actualizar en Supabase
+    const errors = [];
+    for (const p of plansToUpdate) {
+      try {
+        const precioNum = parseFloat(p.precio) || 0;
+        const { error } = await withAuthRetry(() =>
+          supabase
+            .from('membership_plans')
+            .upsert({
+              tipo: p.tipo,
+              nombre: p.nombre,
+              precio: precioNum,
+              dias_vigencia: p.dias_vigencia || 30,
+              descripcion: p.descripcion || ''
+            }, { onConflict: 'tipo' })
+        );
+        if (error) {
+          console.warn(`[DataService] Error actualizando plan ${p.tipo}:`, error);
+          errors.push(error.message);
+        }
+      } catch (err) {
+        console.warn(`[DataService] Excepción actualizando plan ${p.tipo}:`, err);
+        errors.push(err.message);
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      plans: plansToUpdate,
+      errors
+    };
+  },
+
+  async getClientWithMembershipPlan(alumnoId) {
+    if (!alumnoId) return null;
+
+    let client = null;
+    let plan = null;
+
+    // 1. Intento de consulta solicitada: .from('clients').select('*, membership_plans(*)').eq('id', alumnoId).single()
+    try {
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('clients')
+          .select('*, membership_plans(*)')
+          .eq('id', alumnoId)
+          .single()
+      );
+
+      if (!error && data) {
+        client = data;
+        if (data.membership_plans) {
+          plan = Array.isArray(data.membership_plans) ? data.membership_plans[0] : data.membership_plans;
+        }
+      }
+    } catch (e) {
+      console.warn('[DataService] Error en select con join membership_plans:', e);
+    }
+
+    // 2. Si no trajo el plan o falló el join, resolver client y plan por separado
+    if (!client) {
+      client = await this.getClientById(alumnoId);
+    }
+
+    if (client && !plan) {
+      const allPlans = await this.getMembershipPlans();
+      const planName = (client.plan_actual || '').toLowerCase();
+      const modName = (client.modalidad || '').toLowerCase();
+
+      plan = allPlans.find(p => p.id === client.membership_plan_id) ||
+             allPlans.find(p => planName.includes(p.tipo.toLowerCase())) ||
+             allPlans.find(p => modName.includes(p.tipo.toLowerCase())) ||
+             allPlans.find(p => p.tipo === 'Personalizado') ||
+             allPlans[0];
+    }
+
+    return {
+      client: enrichClient(client),
+      membershipPlan: plan
     };
   },
 
@@ -637,11 +1207,14 @@ export const dataService = {
   // ==========================================================
   async getExercises(filterGroup = 'Todos') {
     try {
-      let query = supabase.from('exercises').select('*').order('nombre', { ascending: true });
-      if (filterGroup !== 'Todos') {
-        query = query.eq('grupo_muscular', filterGroup);
-      }
-      const { data, error } = await query;
+      const { data, error } = await withAuthRetry(() => {
+        let query = supabase.from('exercises').select('*').order('nombre', { ascending: true });
+        if (filterGroup !== 'Todos') {
+          query = query.eq('grupo_muscular', filterGroup);
+        }
+        return query;
+      });
+
       if (!error && data && data.length > 0) {
         return data;
       }
@@ -762,10 +1335,12 @@ export const dataService = {
   // ==========================================================
   async getAllRoutines() {
     try {
-      const { data, error } = await supabase
-        .from('routines')
-        .select('*')
-        .order('creado_el', { ascending: false });
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('routines')
+          .select('*')
+          .order('creado_el', { ascending: false })
+      );
 
       if (error) {
         console.error('Error detallado de Supabase en getAllRoutines:', error);
@@ -1233,6 +1808,21 @@ export const dataService = {
       const client = await this.getClientById(clientId);
       const clientName = client?.nombre_completo || 'Alumno';
 
+      // Deep clone de días y ejercicios con nuevos identificadores únicos
+      // Garantiza 100% de independencia: modificar series/peso del alumno no altera la plantilla base
+      const clonedDays = (sourceRoutine.dias || []).map((d, dIdx) => ({
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? `day-${crypto.randomUUID()}` : `day-${Date.now()}-${dIdx}`,
+        dia_numero: d.dia_numero || dIdx + 1,
+        dia_nombre: d.dia_nombre || d.dia || `Día ${dIdx + 1}`,
+        dia: d.dia || d.dia_nombre || `Día ${dIdx + 1}`,
+        dia_semana: d.dia_semana || `Día ${dIdx + 1}`,
+        ejercicios: (d.ejercicios || []).map((item, exIdx) => ({
+          ...item,
+          id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? `ex-${crypto.randomUUID()}` : `ex-${Date.now()}-${dIdx}-${exIdx}`,
+          exercise: item.exercise ? { ...item.exercise } : {}
+        }))
+      }));
+
       const payload = {
         nombre: sourceRoutine.es_plantilla 
           ? `${sourceRoutine.nombre.replace(/ \(Plantilla\)/i, '')} - ${clientName}`
@@ -1241,10 +1831,11 @@ export const dataService = {
         client_id: clientId,
         es_plantilla: false,
         activa: true,
-        dias_por_semana: sourceRoutine.dias_por_semana || (sourceRoutine.dias?.length || 3)
+        dias_por_semana: sourceRoutine.dias_por_semana || (clonedDays.length || 3)
       };
 
-      return await this.saveRoutine(payload, sourceRoutine.dias || [], null);
+      // existingId = null fuerza un INSERT completamente nuevo en Supabase routines
+      return await this.saveRoutine(payload, clonedDays, null);
     } catch (err) {
       console.error('Error detallado de Supabase:', err);
       throw err;
@@ -1309,14 +1900,16 @@ export const dataService = {
   async getRoutineForClient(clientId) {
     if (!clientId) return null;
     try {
-      const { data, error } = await supabase
-        .from('routines')
-        .select('*')
-        .eq('client_id', clientId)
-        .eq('activa', true)
-        .order('creado_el', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('routines')
+          .select('*')
+          .eq('client_id', clientId)
+          .eq('activa', true)
+          .order('creado_el', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      );
 
       if (error) {
         console.error('Error detallado de Supabase en getRoutineForClient:', error);
@@ -1362,13 +1955,15 @@ export const dataService = {
   // ==========================================================
   async getAppointments() {
     try {
-      const { data, error } = await supabase
-        .from('appointments')
-        .select(`
-          *,
-          client:clients(id, nombre_completo, foto_url, access_code, telefono, modalidad, estado)
-        `)
-        .order('fecha_hora_inicio', { ascending: true });
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('appointments')
+          .select(`
+            *,
+            client:clients(id, nombre_completo, foto_url, access_code, telefono, modalidad, estado)
+          `)
+          .order('fecha_hora_inicio', { ascending: true })
+      );
 
       if (error) {
         console.error('[DataService] Error consultando appointments en Supabase:', error);
@@ -1528,6 +2123,274 @@ export const dataService = {
     }
     removeAppointmentMeta(id);
     return true;
+  },
+
+  // ==========================================================
+  // SEGUIMIENTO DE RUTINAS: FECHA DE INICIO & SESIONES DE ENTRENO
+  // ==========================================================
+
+  async getRoutineStartDate(clientId) {
+    if (!clientId) return null;
+
+    // 1. Consultar clients en Supabase (fecha_inicio o fecha_inicio_rutina)
+    try {
+      const { data, error } = await supabase
+        .from('clients')
+        .select('fecha_inicio, fecha_inicio_rutina')
+        .eq('id', clientId)
+        .maybeSingle();
+
+      if (!error && data) {
+        if (data.fecha_inicio) return String(data.fecha_inicio).split('T')[0];
+        if (data.fecha_inicio_rutina) return String(data.fecha_inicio_rutina).split('T')[0];
+      }
+    } catch (e) {
+      console.warn('[DataService] Error consultando fecha_inicio en clients:', e);
+    }
+
+    // 2. Fallback a metadatos locales persistentes
+    try {
+      const clientStored = localStorage.getItem(`ec_routine_start_${clientId}`);
+      if (clientStored) return clientStored.split('T')[0];
+
+      const raw = localStorage.getItem(`ec_client_meta_${clientId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const stored = parsed.fecha_inicio || parsed.fecha_inicio_rutina;
+        if (stored) return String(stored).split('T')[0];
+      }
+
+      const alumnoRaw = localStorage.getItem('alumno_session');
+      if (alumnoRaw) {
+        const parsed = JSON.parse(alumnoRaw);
+        if (parsed.id === clientId && (parsed.fecha_inicio || parsed.fecha_inicio_rutina)) {
+          return String(parsed.fecha_inicio || parsed.fecha_inicio_rutina).split('T')[0];
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return null;
+  },
+
+  async updateRoutineStartDate(clientId, startDate) {
+    if (!clientId || !startDate) return false;
+
+    // Normalizar estrictamente a formato ISO YYYY-MM-DD
+    let isoDate;
+    try {
+      if (typeof startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(startDate.trim())) {
+        isoDate = startDate.trim();
+      } else if (typeof startDate === 'string' && startDate.includes('T')) {
+        isoDate = startDate.split('T')[0];
+      } else {
+        const d = new Date(startDate);
+        isoDate = !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+      }
+    } catch {
+      isoDate = new Date().toISOString().split('T')[0];
+    }
+
+    // 1. Persistir inmediatamente en localStorage y sincronizar sesión
+    try {
+      localStorage.setItem(`ec_routine_start_${clientId}`, isoDate);
+      const raw = localStorage.getItem(`ec_client_meta_${clientId}`);
+      const current = raw ? JSON.parse(raw) : {};
+      localStorage.setItem(`ec_client_meta_${clientId}`, JSON.stringify({
+        ...current,
+        fecha_inicio: isoDate,
+        fecha_inicio_rutina: isoDate
+      }));
+
+      // Sincronizar también alumno_session si pertenece al alumno activo
+      const alumnoRaw = localStorage.getItem('alumno_session');
+      if (alumnoRaw) {
+        const parsed = JSON.parse(alumnoRaw);
+        if (parsed.id === clientId) {
+          parsed.fecha_inicio = isoDate;
+          parsed.fecha_inicio_rutina = isoDate;
+          localStorage.setItem('alumno_session', JSON.stringify(parsed));
+        }
+      }
+    } catch (e) {
+      console.warn('[DataService] Error guardando fecha en storage local:', e);
+    }
+
+    // 2. Actualizar tabla clients en Supabase: actualizar fecha_inicio y fecha_inicio_rutina
+    try {
+      const { data, error } = await supabase
+        .from('clients')
+        .update({ fecha_inicio: isoDate, fecha_inicio_rutina: isoDate })
+        .eq('id', clientId)
+        .select();
+
+      if (!error && data) return true;
+
+      // Si falla por columna no existente (PGRST204), intentar columna por columna
+      if (error && (error.code === 'PGRST204' || error.message?.includes('column'))) {
+        try {
+          await supabase.from('clients').update({ fecha_inicio: isoDate }).eq('id', clientId);
+        } catch {}
+        try {
+          await supabase.from('clients').update({ fecha_inicio_rutina: isoDate }).eq('id', clientId);
+        } catch {}
+      }
+    } catch (err) {
+      console.warn('[DataService] Excepción actualizando clients fecha_inicio:', err);
+    }
+
+    return true;
+  },
+
+  async recordTrainingSession({ clientId, nombreDia = 'Día 1', diaRutina = null, fecha = null, completada = true }) {
+    if (!clientId) throw new Error('clientId es requerido');
+
+    const dayName = nombreDia || diaRutina || 'Día 1';
+    const sessionDate = fecha || new Date().toISOString().split('T')[0];
+    const newSessionLocal = {
+      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `ts-${Date.now()}`,
+      client_id: clientId,
+      nombre_dia: dayName,
+      dia_rutina: dayName,
+      fecha: sessionDate,
+      completada: Boolean(completada),
+      created_at: new Date().toISOString()
+    };
+
+    // 1. Guardar en Supabase (tabla training_sessions)
+    try {
+      const { data, error } = await supabase
+        .from('training_sessions')
+        .insert([{
+          client_id: clientId,
+          nombre_dia: dayName,
+          fecha: sessionDate,
+          completada: Boolean(completada)
+        }])
+        .select()
+        .single();
+
+      if (!error && data) {
+        const fullSaved = { ...newSessionLocal, ...data, nombre_dia: dayName, dia_rutina: dayName };
+        this.saveLocalTrainingSession(clientId, fullSaved);
+        return fullSaved;
+      }
+
+      // Si falla por PGRST204 o constraint, reintentar con columnas base
+      if (error) {
+        console.warn('[DataService] Falló insert con nombre_dia, intentando columnas base:', error);
+        const { data: baseData, error: baseError } = await supabase
+          .from('training_sessions')
+          .insert([{
+            client_id: clientId,
+            fecha: sessionDate,
+            completada: Boolean(completada)
+          }])
+          .select()
+          .single();
+
+        if (!baseError && baseData) {
+          const fullSaved = { ...newSessionLocal, ...baseData, nombre_dia: dayName, dia_rutina: dayName };
+          this.saveLocalTrainingSession(clientId, fullSaved);
+          return fullSaved;
+        }
+      }
+    } catch (err) {
+      console.warn('[DataService] Excepción registrando sesión en Supabase:', err);
+    }
+
+    // 2. Respaldo en storage local
+    this.saveLocalTrainingSession(clientId, newSessionLocal);
+    return newSessionLocal;
+  },
+
+  saveLocalTrainingSession(clientId, sessionObj) {
+    try {
+      const key = `ec_sessions_${clientId}`;
+      const raw = localStorage.getItem(key);
+      const list = raw ? JSON.parse(raw) : [];
+      const filtered = list.filter(s => s.id !== sessionObj.id);
+      filtered.unshift(sessionObj);
+      localStorage.setItem(key, JSON.stringify(filtered));
+    } catch (e) {
+      console.warn('[DataService] Error guardando sesión local:', e);
+    }
+  },
+
+  async getTrainingSessionsForClient(clientId) {
+    if (!clientId) return [];
+
+    let supabaseSessions = [];
+    try {
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('training_sessions')
+          .select('*')
+          .eq('client_id', clientId)
+          .order('fecha', { ascending: false })
+      );
+
+      if (!error && data) {
+        supabaseSessions = data;
+      }
+    } catch (err) {
+      console.warn('[DataService] Error consultando training_sessions:', err);
+    }
+
+    // Cargar sesiones locales
+    let localSessions = [];
+    try {
+      const raw = localStorage.getItem(`ec_sessions_${clientId}`);
+      if (raw) localSessions = JSON.parse(raw);
+    } catch {
+      // ignore
+    }
+
+    // Combinar sesiones garantizando los campos dia_rutina
+    const sessionMap = new Map();
+    localSessions.forEach(s => sessionMap.set(`${s.fecha}_${s.dia_rutina || 'd'}`, s));
+    supabaseSessions.forEach(s => {
+      const key = `${s.fecha}_${s.dia_rutina || 'd'}`;
+      if (sessionMap.has(key)) {
+        sessionMap.set(key, { ...s, ...sessionMap.get(key) });
+      } else {
+        sessionMap.set(s.id || key, s);
+      }
+    });
+
+    return Array.from(sessionMap.values()).sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  },
+
+  async getWeeklySessionsForClient(clientId, refDate = new Date()) {
+    if (!clientId) return { sessions: [], count: 0, mondayStr: '', sundayStr: '' };
+
+    const d = new Date(refDate);
+    const day = d.getDay();
+    const diffToMonday = d.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(d.setDate(diffToMonday));
+    monday.setHours(0, 0, 0, 0);
+
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 999);
+
+    const mondayStr = monday.toISOString().split('T')[0];
+    const sundayStr = sunday.toISOString().split('T')[0];
+
+    const allSessions = await this.getTrainingSessionsForClient(clientId);
+    const weeklySessions = allSessions.filter(s => {
+      if (!s.completada && s.completada !== undefined) return false;
+      const sDate = (s.fecha || '').split('T')[0];
+      return sDate >= mondayStr && sDate <= sundayStr;
+    });
+
+    const result = [...weeklySessions];
+    result.sessions = weeklySessions;
+    result.count = weeklySessions.length;
+    result.mondayStr = mondayStr;
+    result.sundayStr = sundayStr;
+    return result;
   }
 };
 

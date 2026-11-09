@@ -12,7 +12,7 @@ export default function ClientAvatar({
   fotoUrl,
   name,
   size = 'md', // 'xs' (24), 'sm' (32), 'md' (40), 'lg' (48), 'xl' (64), '2xl' (80), '3xl' (96)
-  rounded = 'rounded-2xl', // 'rounded-full' or 'rounded-2xl' or 'rounded-xl'
+  rounded = 'rounded-full', // Circular por defecto
   className = '',
   showStatus = false,
   status = 'Activo'
@@ -49,11 +49,11 @@ export default function ClientAvatar({
           src={photo}
           alt={clientName}
           onError={() => setImageError(true)}
-          className={`w-full h-full object-cover ${rounded} border border-dark-700 shadow-md transition-transform`}
+          className={`w-full h-full object-cover ${rounded} overflow-hidden border border-dark-700 shadow-md transition-transform`}
         />
       ) : (
         <div
-          className={`w-full h-full ${rounded} bg-gradient-to-br from-brand/25 via-dark-850 to-dark-900 border border-brand/35 text-brand-light font-display font-black flex items-center justify-center tracking-wider shadow-md select-none`}
+          className={`w-full h-full ${rounded} overflow-hidden bg-gradient-to-br from-brand/25 via-dark-850 to-dark-900 border border-brand/35 text-brand-light font-display font-black flex items-center justify-center tracking-wider shadow-md select-none`}
           title={clientName}
         >
           <span>{initials}</span>
@@ -62,7 +62,7 @@ export default function ClientAvatar({
 
       {showStatus && (
         <span
-          className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-dark-900 shadow-sm ${
+          className={`absolute bottom-0.5 right-0.5 w-3.5 h-3.5 rounded-full border-2 border-dark-900 shadow-sm ${
             clientStatus === 'Activo' ? 'bg-emerald-500' : 'bg-amber-500'
           }`}
           title={`Estado: ${clientStatus}`}

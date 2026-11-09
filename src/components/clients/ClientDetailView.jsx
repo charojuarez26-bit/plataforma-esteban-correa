@@ -25,7 +25,8 @@ import {
   ChevronRight,
   AlertCircle,
   Trash2,
-  ExternalLink 
+  ExternalLink,
+  HeartPulse
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -39,14 +40,28 @@ import {
 import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
 import ClientPhotoUploader from '../common/ClientPhotoUploader';
+import MedicalRecordViewOnly from '../medical/MedicalRecordViewOnly';
 
-export default function ClientDetailView({ client, onBack, onUpdateClient, onCreateRoutine }) {
-  const [activeTab, setActiveTab] = useState('resumen'); // 'resumen' | 'rutinas' | 'progreso' | 'pagos' | 'notas'
+export default function ClientDetailView({ client: initialClient, onBack, onUpdateClient, onCreateRoutine }) {
+  const [client, setClient] = useState(initialClient);
+  const [profileSuccessMsg, setProfileSuccessMsg] = useState(null);
+
+  useEffect(() => {
+    setClient(initialClient);
+  }, [initialClient]);
+
+  const [activeTab, setActiveTab] = useState('resumen'); // 'resumen' | 'rutinas' | 'progreso' | 'pagos' | 'salud' | 'notas'
   const [evaluations, setEvaluations] = useState([]);
   const [routine, setRoutine] = useState(null);
   const [libraryRoutines, setLibraryRoutines] = useState([]);
+  const [medicalRecord, setMedicalRecord] = useState(null);
+  const [isAuthorizingMedicalEdit, setIsAuthorizingMedicalEdit] = useState(false);
   const [isAssignExistingModalOpen, setIsAssignExistingModalOpen] = useState(false);
   const [isAssigningRoutine, setIsAssigningRoutine] = useState(false);
+  const [routineStartDate, setRoutineStartDate] = useState(null);
+  const [weeklySessions, setWeeklySessions] = useState([]);
+  const [totalSessions, setTotalSessions] = useState([]);
+  const [clientAppointments, setClientAppointments] = useState([]);
   const [payments, setPayments] = useState([]);
   const [notesText, setNotesText] = useState(client?.notas || '');
   const [isSavingNotes, setIsSavingNotes] = useState(false);
@@ -72,7 +87,7 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
     modalidad: client?.modalidad || 'Presencial',
     objetivo: client?.objetivo || '',
     estado: client?.estado || 'Activo',
-    plan_actual: client?.plan_actual || 'Plan 4x Semanal Personalizado',
+    plan_actual: client?.plan_actual || 'Presencial',
     dias_por_semana: client?.dias_por_semana || 3,
     dias_asignados: client?.dias_asignados || ['Lunes', 'Miércoles', 'Viernes'],
     tipo_planificacion: client?.tipo_planificacion || 'Semanal',
@@ -100,6 +115,7 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
 
   // Modal Registrar Medición desde Progreso
   const [isNewEvalModalOpen, setIsNewEvalModalOpen] = useState(false);
+  const [isSavingEval, setIsSavingEval] = useState(false);
   const [newEvalData, setNewEvalData] = useState({
     fecha: new Date().toISOString().split('T')[0],
     peso: '',
@@ -127,7 +143,7 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
         modalidad: client.modalidad || 'Presencial',
         objetivo: client.objetivo || '',
         estado: client.estado || 'Activo',
-        plan_actual: client.plan_actual || 'Plan 4x Semanal Personalizado',
+        plan_actual: client.plan_actual || 'Presencial',
         dias_por_semana: client.dias_por_semana || 3,
         dias_asignados: client.dias_asignados || ['Lunes', 'Miércoles', 'Viernes'],
         tipo_planificacion: client.tipo_planificacion || 'Semanal',
@@ -138,23 +154,58 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
 
   const loadClientData = async (clientId) => {
     try {
-      const [evals, rout, pays, exList, allRoutines] = await Promise.all([
+      const [evals, rout, pays, exList, allRoutines, weekSessions, sessionsList, appointmentsList, medRec] = await Promise.all([
         dataService.getEvaluations(clientId),
         dataService.getRoutineForClient(clientId),
-        dataService.getPayments(),
+        dataService.getPayments(clientId),
         dataService.getExercises('Todos'),
-        dataService.getRoutines()
+        dataService.getRoutines(),
+        dataService.getWeeklySessionsForClient(clientId, new Date()),
+        dataService.getTrainingSessionsForClient(clientId),
+        dataService.getAppointments(),
+        dataService.getMedicalRecord(clientId)
       ]);
 
       setEvaluations(evals || []);
       setRoutine(rout || null);
       setCatalogExercises(exList || []);
       setLibraryRoutines(allRoutines || []);
+      setWeeklySessions(Array.isArray(weekSessions) ? weekSessions : (weekSessions?.sessions || []));
+      setTotalSessions(sessionsList || []);
+      setMedicalRecord(medRec || null);
+
+      const clientApts = (appointmentsList || []).filter(apt =>
+        apt.client_id === clientId ||
+        apt.client?.id === clientId ||
+        (apt.client_name && client?.nombre_completo && apt.client_name.toLowerCase() === client.nombre_completo.toLowerCase())
+      );
+      setClientAppointments(clientApts);
+
+      const sDate = client?.fecha_inicio_rutina || (await dataService.getRoutineStartDate(clientId));
+      setRoutineStartDate(sDate);
       
-      const clientPays = pays.filter(p => p.client_id === clientId || p.client_name === client.nombre_completo);
-      setPayments(clientPays);
+      setPayments(pays || []);
     } catch (err) {
       console.error('Error cargando detalles del cliente:', err);
+    }
+  };
+
+  const formatFriendlyDate = (dateStr) => {
+    if (!dateStr) return null;
+    try {
+      const parts = dateStr.split('T')[0].split('-');
+      if (parts.length === 3) {
+        const months = [
+          'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+          'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+        ];
+        const day = parseInt(parts[2], 10);
+        const monthIndex = parseInt(parts[1], 10) - 1;
+        return `${day} de ${months[monthIndex]}`;
+      }
+      return dateStr;
+    } catch {
+      return dateStr;
     }
   };
 
@@ -225,32 +276,108 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
     }
   };
 
+  const handleOpenEditModal = () => {
+    setEditPhotoFile(null);
+    setEditPhotoPreview(client?.foto_url || client?.avatar_url || null);
+    setEditPhotoRemoved(false);
+    setEditFormData({
+      nombre_completo: client?.nombre_completo || '',
+      telefono: client?.telefono || '',
+      email: client?.email || '',
+      edad: (client?.edad !== null && client?.edad !== undefined) ? client.edad : '',
+      altura: (client?.altura !== null && client?.altura !== undefined) ? client.altura : '',
+      modalidad: client?.modalidad || 'Presencial',
+      objetivo: client?.objetivo || '',
+      estado: client?.estado || 'Activo',
+      plan_actual: client?.plan_actual || 'Presencial',
+      dias_por_semana: client?.dias_por_semana || 3,
+      dias_asignados: client?.dias_asignados || ['Lunes', 'Miércoles', 'Viernes'],
+      tipo_planificacion: client?.tipo_planificacion || 'Semanal',
+      duracion_sesion_min: client?.duracion_sesion_min || 60
+    });
+    setIsEditModalOpen(true);
+  };
+
   const handleUpdateProfile = async (e) => {
     e.preventDefault();
     setIsSavingProfile(true);
     try {
       let photoUrl = client?.foto_url || client?.avatar_url || null;
+      let isPhotoChanged = false;
+
       if (editPhotoRemoved) {
         photoUrl = null;
+        isPhotoChanged = true;
       }
       if (editPhotoFile) {
         const uploadedUrl = await dataService.uploadClientAvatar(editPhotoFile);
         if (uploadedUrl) {
           photoUrl = uploadedUrl;
+          isPhotoChanged = true;
         }
       }
 
+      // Mapear el ID de plan oficial de membresía
+      const planName = editFormData.plan_actual || client?.plan_actual || 'Presencial';
+      let planId = client?.plan_id || null;
+      const lower = planName.toLowerCase();
+      if (lower.includes('presencial')) {
+        planId = '12dc754e-4262-4171-9f6c-6669b853af70';
+      } else if (lower.includes('distancia') || lower.includes('online')) {
+        planId = 'e2f87a8f-3ff0-4cd7-9e2b-35737861a172';
+      } else if (lower.includes('personalizado')) {
+        planId = 'b89bd142-8dd2-4a60-8436-fe069f7aeb83';
+      }
+
+      // Sanitizar el payload limpiando campos calculados y aislando metadatos
       const payload = {
-        ...editFormData,
+        nombre_completo: editFormData.nombre_completo?.trim(),
+        telefono: editFormData.telefono?.trim(),
+        email: editFormData.email ? editFormData.email.trim() : null,
+        edad: (editFormData.edad !== '' && editFormData.edad !== null && editFormData.edad !== undefined) ? parseInt(editFormData.edad, 10) : null,
+        altura: (editFormData.altura !== '' && editFormData.altura !== null && editFormData.altura !== undefined) ? parseFloat(editFormData.altura) : null,
+        modalidad: editFormData.modalidad,
+        objetivo: editFormData.objetivo?.trim(),
+        estado: editFormData.estado,
+        plan_actual: planName,
+        plan_id: planId,
+        dias_por_semana: editFormData.dias_por_semana,
+        dias_asignados: editFormData.dias_asignados,
+        tipo_planificacion: editFormData.tipo_planificacion,
+        duracion_sesion_min: editFormData.duracion_sesion_min,
         foto_url: photoUrl,
         avatar_url: photoUrl
       };
 
       const updated = await dataService.updateClient(client.id, payload);
+      const updatedClient = {
+        ...client,
+        ...updated,
+        ...payload,
+        foto_url: photoUrl,
+        avatar_url: photoUrl,
+        plan_actual: planName,
+        plan_id: planId
+      };
+
+      // Inmediatamente actualizar estado local
+      setClient(updatedClient);
+      setEditPhotoPreview(photoUrl);
+      setEditPhotoFile(null);
+      setEditPhotoRemoved(false);
       setIsEditModalOpen(false);
+
       if (onUpdateClient) {
-        onUpdateClient({ ...client, ...updated, foto_url: photoUrl, avatar_url: photoUrl });
+        onUpdateClient(updatedClient);
       }
+
+      setProfileSuccessMsg(isPhotoChanged ? 'Foto de perfil actualizada correctamente' : 'Perfil actualizado correctamente');
+      setTimeout(() => {
+        setProfileSuccessMsg(null);
+      }, 3500);
+
+      // Recargar datos frescos del cliente
+      loadClientData(client.id);
     } catch (err) {
       console.error('Error actualizando perfil del cliente:', err);
     } finally {
@@ -261,20 +388,27 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
   const handleCreateEvaluation = async (e) => {
     e.preventDefault();
     if (!newEvalData.peso) return;
+    setIsSavingEval(true);
+    try {
+      await dataService.addEvaluation({
+        ...newEvalData,
+        client_id: client.id,
+        peso: parseFloat(newEvalData.peso),
+        porcentaje_grasa: parseFloat(newEvalData.porcentaje_grasa || 0),
+        cintura: parseFloat(newEvalData.cintura || 0),
+        cadera: parseFloat(newEvalData.cadera || 0),
+        brazo: parseFloat(newEvalData.brazo || 0),
+        muslo: parseFloat(newEvalData.muslo || 0)
+      });
 
-    await dataService.addEvaluation({
-      ...newEvalData,
-      client_id: client.id,
-      peso: parseFloat(newEvalData.peso),
-      porcentaje_grasa: parseFloat(newEvalData.porcentaje_grasa || 0),
-      cintura: parseFloat(newEvalData.cintura || 0),
-      cadera: parseFloat(newEvalData.cadera || 0),
-      brazo: parseFloat(newEvalData.brazo || 0),
-      muslo: parseFloat(newEvalData.muslo || 0)
-    });
-
-    setIsNewEvalModalOpen(false);
-    loadClientData(client.id);
+      setIsNewEvalModalOpen(false);
+      loadClientData(client.id);
+    } catch (err) {
+      console.error('Error guardando evaluación:', err);
+      alert('Hubo un error al guardar la medición. Intenta de nuevo.');
+    } finally {
+      setIsSavingEval(false);
+    }
   };
 
   const renderDelta = (diff, isReductionGood = true) => {
@@ -296,19 +430,102 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
     );
   };
 
-  // Última evaluación y comparativas
+  // 1. Total Sesiones y Asistencia Real
+  const completedSessionsCount = totalSessions.filter(s => s.completada === true || s.completada === 1 || s.completada === 'true').length;
+  const scheduledCount = Math.max(
+    totalSessions.length,
+    clientAppointments.filter(a => a.estado !== 'Cancelado').length
+  );
+  const attendancePercent = scheduledCount > 0
+    ? Math.min(100, Math.round((completedSessionsCount / scheduledCount) * 100))
+    : 0;
+
+  // 2. Evaluaciones y comparativas dinámicas
   const lastEval = evaluations.length > 0 ? evaluations[evaluations.length - 1] : null;
   const firstEval = evaluations.length > 0 ? evaluations[0] : null;
-  const weightDelta = firstEval && lastEval ? (lastEval.peso - firstEval.peso).toFixed(1) : 0;
-  const waistDelta = firstEval && lastEval ? (lastEval.cintura - firstEval.cintura).toFixed(1) : 0;
-  const armDelta = firstEval && lastEval ? (lastEval.brazo - firstEval.brazo).toFixed(1) : 0;
-  const currentWeight = lastEval ? lastEval.peso : (client.peso_actual || 81.5);
+  const hasMultipleEvals = evaluations.length >= 2;
+
+  const rawWeightDelta = hasMultipleEvals && firstEval?.peso != null && lastEval?.peso != null
+    ? Number((Number(lastEval.peso) - Number(firstEval.peso)).toFixed(1))
+    : null;
+  const rawWaistDelta = hasMultipleEvals && firstEval?.cintura != null && lastEval?.cintura != null
+    ? Number((Number(lastEval.cintura) - Number(firstEval.cintura)).toFixed(1))
+    : null;
+  const armDelta = firstEval && lastEval && firstEval.brazo != null && lastEval.brazo != null
+    ? (lastEval.brazo - firstEval.brazo).toFixed(1)
+    : null;
+  const currentWeight = lastEval?.peso != null ? lastEval.peso : (client?.peso_actual || client?.peso || '-');
+
+  // 3. Próximo Turno Agendado
+  const now = new Date();
+  const upcomingAppointments = clientAppointments
+    .filter(a => {
+      if (a.estado === 'Cancelado') return false;
+      const aptDate = new Date(a.fecha_hora_inicio);
+      return aptDate >= now;
+    })
+    .sort((a, b) => new Date(a.fecha_hora_inicio) - new Date(b.fecha_hora_inicio));
+
+  const nextAppointment = upcomingAppointments[0] || null;
+
+  const formatNextAptText = (apt) => {
+    if (!apt?.fecha_hora_inicio) return '-';
+    try {
+      const d = new Date(apt.fecha_hora_inicio);
+      const today = new Date();
+      const tomorrow = new Date();
+      tomorrow.setDate(today.getDate() + 1);
+
+      const isToday = d.toDateString() === today.toDateString();
+      const isTomorrow = d.toDateString() === tomorrow.toDateString();
+      const timeStr = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+      if (isToday) return `Hoy ${timeStr}`;
+      if (isTomorrow) return `Mañana ${timeStr}`;
+
+      const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+      const dayNum = d.getDate();
+      const monthStr = months[d.getMonth()];
+      return `${dayNum} ${monthStr} ${timeStr}`;
+    } catch {
+      return '-';
+    }
+  };
 
   const cleanPhone = (client?.telefono || '').replace(/[^0-9]/g, '');
   const whatsappUrl = `https://wa.me/${cleanPhone}?text=Hola%20${encodeURIComponent(client?.nombre_completo || '')},%20te%20escribo%20desde%20Esteban%20Correa%20Personal%20Trainer.`;
 
+  const targetFrequency = routine?.dias_por_semana || (routine?.dias ? routine.dias.length : null) || client?.dias_por_semana || 3;
+  const completedThisWeek = Array.isArray(weeklySessions) ? weeklySessions.length : 0;
+  const progressPercent = Math.min(100, Math.round((completedThisWeek / (targetFrequency || 1)) * 100));
+  const completedDaysNames = Array.isArray(weeklySessions)
+    ? [...new Set(weeklySessions.map(s => s.nombre_dia || s.dia_rutina).filter(Boolean))]
+    : [];
+
+  const getProgressBarColor = () => {
+    if (completedThisWeek >= targetFrequency && targetFrequency > 0) return 'bg-emerald-500';
+    if (completedThisWeek > 0) return 'bg-amber-500';
+    return 'bg-gray-600';
+  };
+
   return (
-    <div className="space-y-6 pb-20 md:pb-6">
+    <div className="space-y-6 pb-20 md:pb-6 relative">
+      {/* Toast de confirmación de actualización de perfil */}
+      {profileSuccessMsg && (
+        <div className="fixed top-6 right-6 z-50 flex items-center gap-3 px-4 py-3 bg-emerald-600 text-white rounded-2xl shadow-2xl border border-emerald-400/40 text-sm font-semibold animate-in fade-in slide-in-from-top-4 duration-300">
+          <div className="w-7 h-7 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+            <CheckCircle2 className="w-4 h-4 text-white" />
+          </div>
+          <span className="pr-1">{profileSuccessMsg}</span>
+          <button
+            type="button"
+            onClick={() => setProfileSuccessMsg(null)}
+            className="text-white/70 hover:text-white ml-2 p-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
       
       {/* 1. CABECERA CON BREADCRUMB */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -318,10 +535,10 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
             className="hover:text-white transition-colors flex items-center gap-1 font-semibold text-gray-400"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span>Clientes</span>
+            <span>Alumnos</span>
           </button>
           <span>/</span>
-          <span className="text-white font-bold truncate">Perfil del Cliente</span>
+          <span className="text-white font-bold truncate">Perfil del Alumno</span>
         </div>
 
         <div className="flex items-center gap-2">
@@ -336,7 +553,7 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
           </a>
 
           <button
-            onClick={() => setIsEditModalOpen(true)}
+            onClick={handleOpenEditModal}
             className="px-3.5 py-2 rounded-xl bg-brand hover:bg-brand-dark text-white font-bold text-xs shadow-glow-red transition-all flex items-center gap-1.5"
           >
             <Edit3 className="w-4 h-4" />
@@ -353,10 +570,10 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
           <div className="flex items-start sm:items-center gap-4">
             <ClientAvatar
               client={client}
-              size="2xl"
+              rounded="rounded-full"
               showStatus={true}
               status={client?.estado}
-              className="border-2 border-brand shadow-glow-red/30"
+              className="w-20 h-20 md:w-24 md:h-24 rounded-full overflow-hidden border-2 border-red-500 relative shrink-0 shadow-lg"
             />
 
             <div>
@@ -390,11 +607,11 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
 
               {/* Datos rápidos en línea */}
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-gray-400">
-                <span>{client?.edad || 28} años</span>
+                <span>{client?.edad ? `${client.edad} años` : '-'}</span>
                 <span>•</span>
-                <span>{client?.altura || 178} cm</span>
+                <span>{client?.altura ? `${client.altura} cm` : '-'}</span>
                 <span>•</span>
-                <span className="text-white font-bold">{currentWeight} kg</span>
+                <span className="text-white font-bold">{currentWeight !== '-' ? `${currentWeight} kg` : '-'}</span>
                 <span>•</span>
                 <span className="text-gray-300 font-semibold">{client?.modalidad || 'Presencial'}</span>
               </div>
@@ -442,7 +659,7 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
               <CreditCard className="w-4 h-4 text-emerald-400" /> Plan Actual
             </span>
             <p className="text-sm font-bold text-white">
-              {client?.plan_actual || 'Plan 4x Semanal Personalizado'}
+              {client?.plan_actual || 'Plan Presencial'}
             </p>
             <div className="flex items-center justify-between pt-1">
               <span className="text-[11px] text-gray-400">Vto: 28/11/2026</span>
@@ -487,6 +704,13 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
             { id: 'rutinas', label: 'Rutinas', icon: Dumbbell },
             { id: 'progreso', label: 'Progreso', icon: TrendingUp },
             { id: 'pagos', label: 'Pagos', icon: CreditCard },
+            { 
+              id: 'salud', 
+              label: 'Ficha de Salud', 
+              icon: HeartPulse,
+              badge: medicalRecord?.completada ? 'Completa' : 'Pendiente',
+              badgeColor: medicalRecord?.completada ? 'emerald' : 'amber'
+            },
             { id: 'notas', label: 'Notas', icon: FileText }
           ].map((tab) => {
             const Icon = tab.icon;
@@ -503,6 +727,15 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
               >
                 <Icon className="w-4 h-4" />
                 <span>{tab.label}</span>
+                {tab.badge && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+                    tab.badgeColor === 'emerald'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  }`}>
+                    {tab.badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -512,25 +745,66 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
         {activeTab === 'resumen' && (
           <div className="space-y-6">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              {/* Tarjeta 1: Total Sesiones Real */}
               <div className="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
                 <span className="text-[10px] uppercase font-bold text-gray-400">Total Sesiones</span>
-                <p className="text-2xl font-black text-white mt-1">36</p>
-                <span className="text-[10px] text-emerald-400 font-semibold">98% asistencia</span>
+                <p className="text-2xl font-black text-white mt-1">{completedSessionsCount}</p>
+                <span className={`text-[10px] font-semibold ${
+                  scheduledCount > 0 
+                    ? (attendancePercent >= 80 ? 'text-emerald-400' : attendancePercent >= 50 ? 'text-amber-400' : 'text-rose-400')
+                    : 'text-gray-400'
+                }`}>
+                  {scheduledCount > 0 ? `${attendancePercent}% asistencia` : 'Sin registros'}
+                </span>
               </div>
+
+              {/* Tarjeta 2: Variación Peso */}
               <div className="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
                 <span className="text-[10px] uppercase font-bold text-gray-400">Variación Peso</span>
-                <p className="text-2xl font-black text-emerald-400 mt-1">{weightDelta} kg</p>
-                <span className="text-[10px] text-gray-400">Desde inicio</span>
+                <p className={`text-2xl font-black mt-1 ${
+                  rawWeightDelta !== null
+                    ? (rawWeightDelta < 0 ? 'text-emerald-400' : rawWeightDelta > 0 ? 'text-amber-400' : 'text-white')
+                    : (lastEval?.peso ? 'text-white' : 'text-gray-400')
+                }`}>
+                  {rawWeightDelta !== null
+                    ? `${rawWeightDelta > 0 ? `+${rawWeightDelta}` : rawWeightDelta} kg`
+                    : (lastEval?.peso ? `${lastEval.peso} kg` : '-')}
+                </p>
+                <span className="text-[10px] text-gray-400">
+                  {rawWeightDelta !== null
+                    ? 'Desde inicio'
+                    : (lastEval?.peso ? 'Peso inicial' : 'Sin mediciones')}
+                </span>
               </div>
+
+              {/* Tarjeta 3: Reducción Cintura */}
               <div className="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
                 <span className="text-[10px] uppercase font-bold text-gray-400">Reducción Cintura</span>
-                <p className="text-2xl font-black text-blue-400 mt-1">{waistDelta} cm</p>
-                <span className="text-[10px] text-gray-400">Grasa visceral</span>
+                <p className={`text-2xl font-black mt-1 ${
+                  rawWaistDelta !== null
+                    ? (rawWaistDelta <= 0 ? 'text-blue-400' : 'text-amber-400')
+                    : (lastEval?.cintura ? 'text-blue-400' : 'text-gray-400')
+                }`}>
+                  {rawWaistDelta !== null
+                    ? `${rawWaistDelta > 0 ? `+${rawWaistDelta}` : rawWaistDelta} cm`
+                    : (lastEval?.cintura ? `${lastEval.cintura} cm` : '-')}
+                </p>
+                <span className="text-[10px] text-gray-400">
+                  {rawWaistDelta !== null
+                    ? 'Desde inicio'
+                    : (lastEval?.cintura ? 'Cintura actual' : 'Sin mediciones')}
+                </span>
               </div>
+
+              {/* Tarjeta 4: Próximo Turno */}
               <div className="p-4 rounded-xl bg-dark-900 border border-dark-700 text-center">
                 <span className="text-[10px] uppercase font-bold text-gray-400">Próximo Turno</span>
-                <p className="text-sm font-black text-brand-light mt-2 truncate">Mañana 09:00</p>
-                <span className="text-[10px] text-gray-400">Presencial</span>
+                <p className={`text-sm font-black mt-2 truncate ${nextAppointment ? 'text-brand-light' : 'text-gray-400'}`}>
+                  {nextAppointment ? formatNextAptText(nextAppointment) : '-'}
+                </p>
+                <span className="text-[10px] text-gray-400 truncate block">
+                  {nextAppointment ? (nextAppointment.tipo_detalle || nextAppointment.tipo || 'Presencial') : 'Sin turnos agendados'}
+                </span>
               </div>
             </div>
 
@@ -539,11 +813,11 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs text-gray-300">
                 <div>
                   <p><strong className="text-white">Código Móvil de Acceso:</strong> <span className="font-mono text-brand-light font-bold">{client?.access_code}</span></p>
-                  <p className="mt-1"><strong className="text-white">Modalidad:</strong> {client?.modalidad}</p>
-                  <p className="mt-1"><strong className="text-white">Fecha de Alta:</strong> {client?.fecha_inicio || '2024-03-10'}</p>
+                  <p className="mt-1"><strong className="text-white">Modalidad:</strong> {client?.modalidad || 'Presencial'}</p>
+                  <p className="mt-1"><strong className="text-white">Fecha de Alta:</strong> {client?.fecha_inicio || client?.created_at?.split('T')[0] || client?.creado_el?.split('T')[0] || '-'}</p>
                 </div>
                 <div>
-                  <p><strong className="text-white">Estado de Salud / Lesiones:</strong> Sin contraindicaciones activas.</p>
+                  <p><strong className="text-white">Estado de Salud / Lesiones:</strong> {client?.lesiones || client?.estado_salud || client?.notas || 'Sin contraindicaciones registradas.'}</p>
                   <p className="mt-1"><strong className="text-white">Frecuencia Pactada:</strong> {client?.dias_por_semana || client?.dias_asignados?.length || 3} días por semana.</p>
                 </div>
               </div>
@@ -568,6 +842,64 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                     {d}
                   </span>
                 ))}
+              </div>
+            </div>
+
+            {/* BLOQUE PROGRESO DE RUTINA (RESUMEN) */}
+            <div className="p-4 rounded-xl bg-dark-900 border border-dark-700 space-y-3.5 shadow-md">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-dark-750 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-brand/10 border border-brand/25 flex items-center justify-center text-brand-light">
+                    <TrendingUp className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-gray-300">Progreso de Rutina</h4>
+                    <p className="text-xs text-gray-400">
+                      {routineStartDate ? (
+                        <span className="text-emerald-400 font-semibold">
+                          Inició el plan: {formatFriendlyDate(routineStartDate)}
+                        </span>
+                      ) : (
+                        <span className="text-amber-400 font-semibold">
+                          Pendiente de inicio
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="text-left sm:text-right">
+                  <span className="text-xs font-bold text-white">
+                    Plan semanal: {completedThisWeek} / {targetFrequency} días
+                  </span>
+                  <span className="text-[11px] text-gray-400 block">
+                    Semana en curso ({progressPercent}%)
+                  </span>
+                </div>
+              </div>
+
+              {/* Barra de Progreso */}
+              <div className="space-y-1.5">
+                <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                  <div
+                    className={`h-2.5 rounded-full transition-all duration-500 ${getProgressBarColor()}`}
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Lista rápida de días específicos completados esta semana */}
+              <div className="pt-1 text-xs">
+                {completedDaysNames.length > 0 ? (
+                  <p className="text-gray-300">
+                    <strong className="text-gray-400 font-semibold">Completó: </strong>
+                    <span className="text-emerald-400 font-bold">{completedDaysNames.join(', ')}</span>
+                  </p>
+                ) : (
+                  <p className="text-gray-400 italic">
+                    Completó: Sin sesiones registradas esta semana (lunes a domingo).
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -693,6 +1025,78 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
+                </div>
+              </div>
+
+              {/* BLOQUE PROGRESO DE RUTINA */}
+              <div className="p-4 rounded-xl bg-dark-900 border border-dark-700 space-y-3.5 shadow-md">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-dark-750 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-brand/10 border border-brand/25 flex items-center justify-center text-brand-light">
+                      <TrendingUp className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-gray-300">Progreso de Rutina</h4>
+                      <p className="text-xs text-gray-400">
+                        {routineStartDate ? (
+                          <span className="text-emerald-400 font-semibold">
+                            Inició el plan: {formatFriendlyDate(routineStartDate)}
+                          </span>
+                        ) : (
+                          <span className="text-amber-400 font-semibold">
+                            Pendiente de inicio
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="text-left sm:text-right">
+                    <span className="text-xs font-bold text-white">
+                      Plan semanal: {completedThisWeek} / {targetFrequency} días
+                    </span>
+                    <span className="text-[11px] text-gray-400 block">
+                      Semana en curso ({progressPercent}%)
+                    </span>
+                  </div>
+                </div>
+
+                {/* Barra de Progreso */}
+                <div className="space-y-1.5">
+                  <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                    <div
+                      className={`h-2.5 rounded-full transition-all duration-500 ${getProgressBarColor()}`}
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Lista rápida de días específicos completados esta semana */}
+                <div className="pt-1 text-xs space-y-2">
+                  {completedDaysNames.length > 0 ? (
+                    <>
+                      <p className="text-gray-300">
+                        <strong className="text-gray-400 font-semibold">Completó: </strong>
+                        <span className="text-emerald-400 font-bold">{completedDaysNames.join(', ')}</span>
+                      </p>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {weeklySessions.map((s, idx) => (
+                          <span
+                            key={s.id || idx}
+                            className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold text-[11px] flex items-center gap-1"
+                          >
+                            <span>✓</span>
+                            <span>{s.nombre_dia || s.dia_rutina || `Día ${idx + 1}`}</span>
+                            <span className="text-[10px] text-emerald-400/80">({(s.fecha || '').split('T')[0]})</span>
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-gray-400 italic">
+                      Completó: Sin sesiones registradas esta semana (lunes a domingo).
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -851,7 +1255,7 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                   <CreditCard className="w-4 h-4 text-brand-light" />
                   Historial de Pagos del Alumno
                 </h3>
-                <p className="text-xs text-gray-400">Registros sincronizados con la tabla payments de Supabase</p>
+                <p className="text-xs text-gray-400">Registros sincronizados con la tabla client_payments de Supabase</p>
               </div>
             </div>
 
@@ -883,6 +1287,47 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* PESTAÑA: FICHA DE SALUD */}
+        {activeTab === 'salud' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between pb-1">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <HeartPulse className="w-5 h-5 text-red-500" />
+                  Ficha Médica y de Salud del Alumno
+                </h3>
+                <p className="text-xs text-gray-400">
+                  Zonas con molestias, cirugías previas, condiciones crónicas y medicación.
+                </p>
+              </div>
+            </div>
+
+            <MedicalRecordViewOnly
+              record={medicalRecord}
+              isStudentView={false}
+              isAuthorizing={isAuthorizingMedicalEdit}
+              onAuthorizeEdit={async (nuevoPermiso) => {
+                if (!client?.id) return;
+                try {
+                  setIsAuthorizingMedicalEdit(true);
+                  const updated = await dataService.setMedicalRecordEditPermission(client.id, nuevoPermiso);
+                  setMedicalRecord(prev => prev ? { ...prev, permitir_edicion: nuevoPermiso } : updated);
+                  if (nuevoPermiso) {
+                    setProfileSuccessMsg('El alumno ahora puede modificar sus datos médicos desde su aplicación.');
+                  } else {
+                    setProfileSuccessMsg('Se ha revocado el permiso de edición. La ficha vuelve a estar bloqueada.');
+                  }
+                  setTimeout(() => setProfileSuccessMsg(null), 4000);
+                } catch (err) {
+                  console.error('Error actualizando permiso de edición:', err);
+                } finally {
+                  setIsAuthorizingMedicalEdit(false);
+                }
+              }}
+            />
           </div>
         )}
 
@@ -954,12 +1399,23 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                 {/* Selector de Foto / Cámara */}
                 <div className="flex justify-center pb-2">
                   <ClientPhotoUploader
+                    initialUrl={editPhotoPreview}
                     currentPhoto={editPhotoPreview}
                     name={editFormData.nombre_completo}
+                    onPhotoSelected={(file, previewUrl) => {
+                      setEditPhotoFile(file);
+                      setEditPhotoPreview(previewUrl);
+                      setEditPhotoRemoved(false);
+                    }}
                     onPhotoSelect={(file, previewUrl) => {
                       setEditPhotoFile(file);
                       setEditPhotoPreview(previewUrl);
                       setEditPhotoRemoved(false);
+                    }}
+                    onPhotoRemoved={() => {
+                      setEditPhotoFile(null);
+                      setEditPhotoPreview(null);
+                      setEditPhotoRemoved(true);
                     }}
                     onPhotoRemove={() => {
                       setEditPhotoFile(null);
@@ -1002,7 +1458,7 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Edad</label>
                     <input
@@ -1021,7 +1477,10 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                       className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
                     />
                   </div>
-                  <div className="col-span-2 sm:col-span-1">
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
                     <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Modalidad</label>
                     <select
                       value={editFormData.modalidad}
@@ -1031,6 +1490,18 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                       <option value="Presencial">Presencial</option>
                       <option value="Online">Online</option>
                       <option value="Híbrido">Híbrido</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Plan de Membresía</label>
+                    <select
+                      value={editFormData.plan_actual || 'Presencial'}
+                      onChange={(e) => setEditFormData({ ...editFormData, plan_actual: e.target.value })}
+                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
+                    >
+                      <option value="Presencial">Plan Presencial</option>
+                      <option value="Personalizado">Plan Personalizado</option>
+                      <option value="A distancia">Plan A Distancia (Online)</option>
                     </select>
                   </div>
                 </div>
@@ -1259,9 +1730,17 @@ export default function ClientDetailView({ client, onBack, onUpdateClient, onCre
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-brand hover:bg-brand-dark shadow-glow-red min-h-[44px]"
+                  disabled={isSavingEval}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-brand hover:bg-brand-dark shadow-glow-red min-h-[44px] disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  Guardar Medición
+                  {isSavingEval ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Guardando...</span>
+                    </>
+                  ) : (
+                    <span>Guardar Medición</span>
+                  )}
                 </button>
               </div>
             </form>

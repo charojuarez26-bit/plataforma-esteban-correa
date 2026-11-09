@@ -3,17 +3,20 @@ import { Camera, Image as ImageIcon, X, RefreshCw, UploadCloud } from 'lucide-re
 
 export default function ClientPhotoUploader({
   initialUrl = null,
+  currentPhoto = null,
   onPhotoSelected,
+  onPhotoSelect,
   onPhotoRemoved,
+  onPhotoRemove,
   className = ''
 }) {
-  const [previewUrl, setPreviewUrl] = useState(initialUrl);
+  const [previewUrl, setPreviewUrl] = useState(initialUrl || currentPhoto || null);
   const fileInputCameraRef = useRef(null);
   const fileInputGalleryRef = useRef(null);
 
   useEffect(() => {
-    setPreviewUrl(initialUrl);
-  }, [initialUrl]);
+    setPreviewUrl(initialUrl || currentPhoto || null);
+  }, [initialUrl, currentPhoto]);
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -26,6 +29,9 @@ export default function ClientPhotoUploader({
     if (onPhotoSelected) {
       onPhotoSelected(file, objectUrl);
     }
+    if (onPhotoSelect) {
+      onPhotoSelect(file, objectUrl);
+    }
   };
 
   const handleRemove = (e) => {
@@ -36,6 +42,9 @@ export default function ClientPhotoUploader({
 
     if (onPhotoRemoved) {
       onPhotoRemoved();
+    }
+    if (onPhotoRemove) {
+      onPhotoRemove();
     }
   };
 

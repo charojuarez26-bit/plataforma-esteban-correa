@@ -13,12 +13,14 @@ import {
   Dumbbell, 
   Target, 
   CreditCard,
+  DollarSign,
   MessageSquare,
   AlertCircle,
   Pencil,
   Trash2
 } from 'lucide-react';
 import ClientAvatar from '../common/ClientAvatar';
+import { formatearFechaPago } from '../../utils/paymentUtils';
 
 export default function ClientsListView({ 
   clients, 
@@ -27,6 +29,7 @@ export default function ClientsListView({
   onOpenModal, 
   onEditClient,
   onDeleteClient,
+  onRegisterPayment,
   onCloseModal, 
   onCreateClient 
 }) {
@@ -76,8 +79,13 @@ export default function ClientsListView({
     .toUpperCase() || 'EC';
 
   const filteredClients = clients.filter((c) => {
+    if (!c) return false;
+    if (c.id === '00000000-0000-0000-0000-000000000000') return false;
+    const fullName = (c.nombre_completo || '').toLowerCase();
+    if (fullName.includes('plantilla') || c.es_plantilla) return false;
+
     const matchesSearch = 
-      c.nombre_completo.toLowerCase().includes(search.toLowerCase()) ||
+      fullName.includes(search.toLowerCase()) ||
       (c.access_code && c.access_code.toLowerCase().includes(search.toLowerCase())) ||
       (c.objetivo && c.objetivo.toLowerCase().includes(search.toLowerCase()));
 
@@ -97,10 +105,10 @@ export default function ClientsListView({
         <div>
           <h1 className="text-2xl font-display font-black text-white flex items-center gap-2">
             <Users className="w-6 h-6 text-brand" />
-            Directorio de Clientes & Alumnos
+            Directorio de Alumnos
           </h1>
           <p className="text-xs sm:text-sm text-gray-400">
-            Base de datos sincronizada con Supabase • {clients.length} atletas registrados
+            Base de datos sincronizada con Supabase • {clients.length} alumnos registrados
           </p>
         </div>
 
@@ -109,7 +117,7 @@ export default function ClientsListView({
           className="px-4 py-2.5 rounded-xl bg-brand hover:bg-brand-dark text-white font-bold text-xs sm:text-sm shadow-glow-red transition-all flex items-center justify-center gap-2 shrink-0"
         >
           <UserPlus className="w-4 h-4" />
-          <span>+ Nuevo Cliente</span>
+          <span>+ Nuevo Alumno</span>
         </button>
       </div>
 
@@ -180,7 +188,7 @@ export default function ClientsListView({
               Aún no tienes alumnos registrados.
             </h3>
             <p className="text-xs sm:text-sm text-gray-400 max-w-md mx-auto">
-              Haz clic en '+ Nuevo Cliente' para comenzar a cargar tu base de atletas.
+              Haz clic en '+ Nuevo Alumno' para comenzar a cargar tu base de alumnos.
             </p>
           </div>
           <div className="pt-2">
@@ -189,7 +197,7 @@ export default function ClientsListView({
               className="px-5 py-3 rounded-xl bg-brand hover:bg-brand-dark text-white font-bold text-xs sm:text-sm shadow-glow-red transition-all inline-flex items-center gap-2"
             >
               <UserPlus className="w-4 h-4" />
-              <span>+ Nuevo Cliente</span>
+              <span>+ Nuevo Alumno</span>
             </button>
           </div>
         </div>
@@ -207,15 +215,26 @@ export default function ClientsListView({
                     className="card-dark rounded-2xl p-5 card-dark-hover cursor-pointer flex flex-col justify-between space-y-4 group relative overflow-hidden transition-all duration-200 border border-white/5 hover:border-brand/40 shadow-lg"
                   >
                     {/* Badge de estado en la esquina superior derecha */}
-                    <span
-                      className={`absolute top-4 right-4 sm:top-5 sm:right-5 text-[11px] font-bold px-2.5 py-0.5 rounded-full border shadow-sm transition-colors z-10 ${
-                        client.estado === 'Activo'
-                          ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                          : 'bg-amber-500/15 text-amber-400 border-amber-500/30'
-                      }`}
-                    >
-                      {client.estado || 'Activo'}
-                    </span>
+                    <div className="absolute top-4 right-4 sm:top-5 sm:right-5 flex flex-col items-end gap-1.5 z-10">
+                      <span
+                        className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border shadow-sm transition-colors ${
+                          client.estado === 'Activo'
+                            ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                            : 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                        }`}
+                      >
+                        {client.estado || 'Activo'}
+                      </span>
+                      {!client.fecha_vencimiento ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm flex items-center gap-1">
+                          <span>⚠️</span> Sin cuota activa
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-dark-900/90 text-zinc-300 border border-dark-700 shadow-sm">
+                          Vence: {formatearFechaPago(client.fecha_vencimiento)}
+                        </span>
+                      )}
+                    </div>
 
                     <div>
                       {/* Fila superior: Foto fija + Datos personales con espacio holgado */}
@@ -284,6 +303,23 @@ export default function ClientsListView({
                             {client.modalidad || 'Presencial'}
                           </span>
                         </div>
+
+                        {/* Botón Acción Rápida: Registrar Primer Cobro */}
+                        {!client.fecha_vencimiento && onRegisterPayment && (
+                          <div className="pt-2">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onRegisterPayment(client);
+                              }}
+                              className="w-full py-2 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500 text-emerald-400 hover:text-white border border-emerald-500/30 text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm group/btn"
+                            >
+                              <DollarSign className="w-3.5 h-3.5 group-hover/btn:scale-110 transition-transform" />
+                              <span>Registrar Primer Cobro</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -348,7 +384,7 @@ export default function ClientsListView({
                     <th className="py-3 px-3">Modalidad</th>
                     <th className="py-3 px-3">Objetivo</th>
                     <th className="py-3 px-3">Rutina Asignada</th>
-                    <th className="py-3 px-3">Estado</th>
+                    <th className="py-3 px-3">Estado / Cuota</th>
                     <th className="py-3 px-3 text-right">Acción</th>
                   </tr>
                 </thead>
@@ -363,7 +399,6 @@ export default function ClientsListView({
                         <ClientAvatar 
                           client={c}
                           size="sm"
-                          rounded="rounded-lg"
                         />
                         <span>{c.nombre_completo}</span>
                       </td>
@@ -397,16 +432,41 @@ export default function ClientsListView({
                         )}
                       </td>
                       <td className="py-3 px-3">
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                          c.estado === 'Activo'
-                            ? 'bg-emerald-500/15 text-emerald-400'
-                            : 'bg-amber-500/15 text-amber-400'
-                        }`}>
-                          {c.estado}
-                        </span>
+                        <div className="flex flex-col items-start gap-1">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                            c.estado === 'Activo'
+                              ? 'bg-emerald-500/15 text-emerald-400'
+                              : 'bg-amber-500/15 text-amber-400'
+                          }`}>
+                            {c.estado}
+                          </span>
+                          {!c.fecha_vencimiento ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap flex items-center gap-1">
+                              <span>⚠️</span> Sin cuota activa
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-medium text-emerald-400/90 whitespace-nowrap">
+                              Al día ({formatearFechaPago(c.fecha_vencimiento)})
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3 px-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {!c.fecha_vencimiento && onRegisterPayment && (
+                            <button
+                              type="button"
+                              title="Registrar primer cobro"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onRegisterPayment(c);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-white border border-emerald-500/40 font-bold text-[11px] transition-all flex items-center gap-1 whitespace-nowrap shadow-sm"
+                            >
+                              <DollarSign className="w-3 h-3" />
+                              <span>Cobrar</span>
+                            </button>
+                          )}
                           {onEditClient && (
                             <button type="button" title="Editar alumno" aria-label={`Editar a ${c.nombre_completo}`}
                               onClick={(e) => { e.stopPropagation(); onEditClient(c); }}
@@ -436,7 +496,7 @@ export default function ClientsListView({
           {filteredClients.length === 0 && (
             <div className="card-dark rounded-2xl p-12 text-center text-gray-500 text-sm space-y-2">
               <Users className="w-10 h-10 mx-auto text-dark-600 mb-1" />
-              <p className="text-white font-bold">No se encontraron clientes con esos filtros.</p>
+              <p className="text-white font-bold">No se encontraron alumnos con esos filtros.</p>
               <p className="text-xs text-gray-400">Intenta buscar por otro nombre o código.</p>
             </div>
           )}

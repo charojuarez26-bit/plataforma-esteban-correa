@@ -1,3 +1,4 @@
+import { MotivationalSlogan } from '../common/BrandLogo';
 import React, { useState, useEffect } from 'react';
 import { 
   Users, 
@@ -13,8 +14,6 @@ import {
   CheckCircle2, 
   Clock, 
   ChevronRight,
-  Flame,
-  Cloud,
   DollarSign
 } from 'lucide-react';
 import { 
@@ -28,7 +27,6 @@ import {
   Legend 
 } from 'recharts';
 import { dataService } from '../../services/dataService';
-import { isSupabaseConfigured } from '../../lib/supabase';
 import ClientAvatar from '../common/ClientAvatar';
 
 export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavigateToClient }) {
@@ -101,27 +99,15 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
   return (
     <div className="space-y-6 pb-20 md:pb-6">
       
-      {/* BANNER SUPERIOR CON SLOGAN Y ESTADO SUPABASE */}
+      {/* BANNER SUPERIOR CON SLOGAN */}
       <div className="relative rounded-2xl bg-gradient-to-r from-dark-850 via-dark-900 to-dark-850 border border-dark-700/80 p-5 sm:p-6 overflow-hidden">
         <div className="absolute top-0 right-0 w-80 h-full bg-brand/10 blur-3xl pointer-events-none"></div>
         <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-brand/20 text-brand-light border border-brand/30">
-                <Flame className="w-3.5 h-3.5" /> Temporada 2026
-              </span>
-              {isSupabaseConfigured && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                  <Cloud className="w-3 h-3" /> Supabase Conectado
-                </span>
-              )}
-            </div>
             <h1 className="text-2xl sm:text-3xl font-display font-black text-white tracking-tight">
               Bienvenido, Esteban Correa
             </h1>
-            <p className="font-script text-xl sm:text-2xl text-red-500 font-bold mt-1 tracking-wide drop-shadow-[0_2px_8px_rgba(239,68,68,0.35)]">
-              "Construí tu mejor versión"
-            </p>
+            <MotivationalSlogan className="mt-1" />
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
@@ -137,7 +123,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
               className="px-4 py-2.5 rounded-xl bg-brand hover:bg-brand-dark text-white text-xs sm:text-sm font-bold shadow-glow-red transition-all flex items-center gap-2"
             >
               <UserPlus className="w-4 h-4" />
-              <span>Nuevo Cliente</span>
+              <span>Nuevo Alumno</span>
             </button>
           </div>
         </div>
@@ -146,11 +132,11 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
       {/* 1. CUATRO TARJETAS DE MÉTRICAS SUPERIORES (CONECTADAS A SUPABASE) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         
-        {/* Métrica 1: Clientes Activos (SELECT FROM clients) */}
+        {/* Métrica 1: Alumnos Activos (SELECT FROM clients) */}
         <div className="card-dark rounded-2xl p-5 card-dark-hover relative overflow-hidden group">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-              Clientes Activos
+              Alumnos Activos
             </span>
             <div className="w-10 h-10 rounded-xl bg-brand/10 border border-brand/30 flex items-center justify-center text-brand-light group-hover:scale-110 transition-transform">
               <Users className="w-5 h-5" />
@@ -164,7 +150,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
               <ArrowUpRight className="w-3.5 h-3.5" /> +8% este mes
             </span>
           </div>
-          <p className="text-[11px] text-gray-400 mt-2">Base de alumnos en Supabase</p>
+          <p className="text-[11px] text-gray-400 mt-2">Alumnos registrados</p>
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-brand to-brand-dark"></div>
         </div>
 
@@ -212,8 +198,12 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-amber-500"></div>
         </div>
 
-        {/* Métrica 4: Planes por Vencer (SELECT FROM payments) */}
-        <div className="card-dark rounded-2xl p-5 card-dark-hover relative overflow-hidden group">
+        {/* Métrica 4: Planes por Vencer (SELECT FROM clients y cuotas) */}
+        <div 
+          onClick={() => onNavigate && onNavigate('finanzas')}
+          className="card-dark rounded-2xl p-5 card-dark-hover relative overflow-hidden group cursor-pointer"
+          title="Ver Planes y Pagos de alumnos"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
               Planes por Vencer
@@ -226,11 +216,11 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
             <span className="text-3xl font-display font-black text-brand-light">
               {metrics.expiringPlans}
             </span>
-            <span className="text-xs font-semibold text-red-400">
-              Pendientes
+            <span className="text-xs font-semibold text-amber-400">
+              {metrics.expiringPlans === 1 ? '1 cuota a gestionar' : `${metrics.expiringPlans} cuotas a gestionar`}
             </span>
           </div>
-          <p className="text-[11px] text-gray-400 mt-2">Control de cobros y cuotas</p>
+          <p className="text-[11px] text-gray-400 mt-2">Alumnos por vencer o con cuota vencida</p>
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-brand"></div>
         </div>
 
@@ -251,7 +241,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
               <UserPlus className="w-4 h-4" />
             </div>
             <div>
-              <span className="block text-xs sm:text-sm font-bold text-white group-hover:text-brand-light">Nuevo Cliente</span>
+              <span className="block text-xs sm:text-sm font-bold text-white group-hover:text-brand-light">Nuevo Alumno</span>
               <span className="text-[10px] text-gray-400">Generar código</span>
             </div>
           </button>
@@ -420,7 +410,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
             onClick={() => onNavigate('clientes')}
             className="w-full mt-4 py-2.5 px-3 rounded-xl bg-dark-800 hover:bg-dark-700 text-xs font-bold text-gray-200 border border-dark-700 transition-all flex items-center justify-center gap-1.5"
           >
-            <span>Gestionar Alumnos en Supabase</span>
+            <span>Gestionar Alumnos</span>
             <ChevronRight className="w-3.5 h-3.5 text-brand" />
           </button>
         </div>
