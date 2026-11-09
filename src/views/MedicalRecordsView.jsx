@@ -15,11 +15,13 @@ import {
   X, 
   ChevronRight, 
   ExternalLink,
-  Filter
+  Filter,
+  Pencil
 } from 'lucide-react';
 import { supabase, withAuthRetry } from '../lib/supabaseClient';
 import { dataService } from '../services/dataService';
 import ClientAvatar from '../components/common/ClientAvatar';
+import EditClientModal from '../components/clients/EditClientModal';
 
 export default function MedicalRecordsView() {
   const [clientsWithRecords, setClientsWithRecords] = useState([]);
@@ -30,6 +32,10 @@ export default function MedicalRecordsView() {
   // Modal de Detalle
   const [selectedRecordClient, setSelectedRecordClient] = useState(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+
+  // Modal Editar Alumno Unificado
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [clientToEdit, setClientToEdit] = useState(null);
 
   // Estados de acción (toggle permiso)
   const [togglingId, setTogglingId] = useState(null);
@@ -459,6 +465,19 @@ export default function MedicalRecordsView() {
                       {/* 5. Acciones */}
                       <td className="py-3.5 px-4 sm:px-5 text-right">
                         <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setClientToEdit(client);
+                              setIsEditModalOpen(true);
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-dark-800 hover:bg-dark-750 text-gray-300 hover:text-white text-xs font-semibold border border-dark-700 transition-all flex items-center gap-1 active:scale-95 shadow-sm"
+                            title={`Editar alumno ${client.nombre_completo}`}
+                          >
+                            <Pencil className="w-3.5 h-3.5 text-brand-light" />
+                            <span className="hidden md:inline">Editar</span>
+                          </button>
+
                           {isCompletada ? (
                             <button
                               type="button"
@@ -659,6 +678,26 @@ export default function MedicalRecordsView() {
 
           </div>
         </div>
+      )}
+
+      {/* ========================================================== */}
+      {/* 6. MODAL EDITAR ALUMNO (UNIFICADO)                        */}
+      {/* ========================================================== */}
+      {isEditModalOpen && clientToEdit && (
+        <EditClientModal
+          isOpen={isEditModalOpen}
+          clienteAEditar={clientToEdit}
+          onClose={() => {
+            setIsEditModalOpen(false);
+            setClientToEdit(null);
+          }}
+          onSuccess={() => {
+            setIsEditModalOpen(false);
+            setClientToEdit(null);
+            loadMedicalRecords();
+            showToast('Alumno actualizado correctamente');
+          }}
+        />
       )}
 
     </div>

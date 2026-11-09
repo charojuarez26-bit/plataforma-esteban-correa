@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
+import AssignRoutineModal from './AssignRoutineModal';
 
 // Generador seguro de identificadores únicos para evitar colisiones de keys en React
 const generateUniqueId = (prefix = '') => {
@@ -89,7 +90,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   // Modal Rápido: Asignar a Alumno
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
   const [routineToAssign, setRoutineToAssign] = useState(null);
-  const [targetClientId, setTargetClientId] = useState('');
+  const [targetClientId, setTargetClientId] = useState(null);
 
   // Modal de Confirmación: Eliminar
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -118,9 +119,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
 
   useEffect(() => {
     const fetchMedical = async () => {
-      const targetId = (isAssignModalOpen && targetClientId) 
-        ? targetClientId 
-        : (routineForm.destinatarioTipo === 'alumno' ? routineForm.client_id : null);
+      const targetId = routineForm.destinatarioTipo === 'alumno' ? routineForm.client_id : null;
 
       if (targetId) {
         try {
@@ -134,7 +133,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       }
     };
     fetchMedical();
-  }, [routineForm.client_id, routineForm.destinatarioTipo, targetClientId, isAssignModalOpen]);
+  }, [routineForm.client_id, routineForm.destinatarioTipo]);
 
   const showNotification = (text, type = 'success') => {
     setNotification({ text, type });
@@ -407,7 +406,9 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       const payload = {
         nombre: routineForm.nombre.trim(),
         descripcion: routineForm.descripcion.trim(),
-        client_id: routineForm.destinatarioTipo === 'alumno' ? routineForm.client_id : '00000000-0000-0000-0000-000000000000',
+        client_id: (routineForm.destinatarioTipo === 'alumno' && routineForm.client_id && routineForm.client_id.trim() !== '' && routineForm.client_id !== '00000000-0000-0000-0000-000000000000')
+          ? routineForm.client_id.trim()
+          : null,
         es_plantilla: routineForm.destinatarioTipo === 'plantilla',
         activa: true
       };
@@ -438,28 +439,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   // ==========================================================
   const handleOpenAssignModal = (routine) => {
     setRoutineToAssign(routine);
-    setTargetClientId('');
+    setTargetClientId(null);
     setIsAssignModalOpen(true);
-  };
-
-  const handleConfirmAssignRoutine = async () => {
-    if (!routineToAssign || !targetClientId) {
-      showNotification('Por favor selecciona un alumno para asignar la rutina', 'error');
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      const assigned = await dataService.assignRoutineToClient(routineToAssign.id, targetClientId);
-      await loadAllData();
-      setIsAssignModalOpen(false);
-      showNotification(`¡Rutina asignada exitosamente a ${assigned.client?.nombre_completo || 'Alumno'}!`);
-    } catch (err) {
-      console.error('Error detallado de Supabase:', err);
-      showNotification(`Error al asignar rutina: ${err?.message || 'Fallo de conexión'}`, 'error');
-    } finally {
-      setIsSubmitting(false);
-    }
   };
 
   // ==========================================================
@@ -500,8 +481,15 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   // ==========================================================
   const filteredRoutines = useMemo(() => {
     return routines.filter(r => {
-      const totalDays = r.dias ? r.dias.length : (r.dias_por_semana || 3);
       const isTemplate = Boolean(r.es_plantilla || !r.client_id || r.client_id === '00000000-0000-0000-0000-000000000000');
+
+      // Regla de Negocio (Prevención de duplicados visuales):
+      // Solo deben mostrarse las rutinas donde r.activa === true (o si son plantillas r.es_plantilla === true)
+      if (!isTemplate && r.activa !== true) {
+        return false;
+      }
+
+      const totalDays = r.dias ? r.dias.length : (r.dias_por_semana || 3);
       const clientName = r.client?.nombre_completo || '';
 
       // Filtro de pestañas
@@ -524,13 +512,18 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     });
   }, [routines, selectedFilter, searchTerm]);
 
-  // Contadores para las píldoras de filtro
+  // Contadores para las píldoras de filtro (calculados únicamente sobre rutinas activas o plantillas)
   const filterCounts = useMemo(() => {
-    const total = routines.length;
-    const d3 = routines.filter(r => (r.dias?.length || r.dias_por_semana || 3) === 3).length;
-    const d4 = routines.filter(r => (r.dias?.length || r.dias_por_semana || 3) === 4).length;
-    const d5 = routines.filter(r => (r.dias?.length || r.dias_por_semana || 3) === 5).length;
-    const templates = routines.filter(r => r.es_plantilla || !r.client_id || r.client_id === '00000000-0000-0000-0000-000000000000').length;
+    const activeRoutines = routines.filter(r => {
+      const isTemplate = Boolean(r.es_plantilla || !r.client_id || r.client_id === '00000000-0000-0000-0000-000000000000');
+      return isTemplate || r.activa === true;
+    });
+
+    const total = activeRoutines.length;
+    const d3 = activeRoutines.filter(r => (r.dias?.length || r.dias_por_semana || 3) === 3).length;
+    const d4 = activeRoutines.filter(r => (r.dias?.length || r.dias_por_semana || 3) === 4).length;
+    const d5 = activeRoutines.filter(r => (r.dias?.length || r.dias_por_semana || 3) === 5).length;
+    const templates = activeRoutines.filter(r => r.es_plantilla || !r.client_id || r.client_id === '00000000-0000-0000-0000-000000000000').length;
     return { total, d3, d4, d5, templates };
   }, [routines]);
 
@@ -1579,125 +1572,31 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       {/* 5. MODAL RÁPIDO: ASIGNAR RUTINA A ALUMNO                    */}
       {/* ========================================================== */}
       {isAssignModalOpen && routineToAssign && (
-        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4">
-          <div className="w-full max-w-md p-5 sm:p-6 rounded-2xl bg-dark-850 border border-dark-700 shadow-2xl relative animate-scale space-y-4">
-            
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl bg-brand/15 border border-brand/30 flex items-center justify-center text-brand-light shrink-0">
-                  <UserPlus className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-white">Asignar Rutina a Alumno</h3>
-                  <p className="text-xs text-gray-400">Vincular una copia activa a su perfil</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsAssignModalOpen(false)}
-                className="p-1.5 rounded-xl text-gray-400 hover:text-white bg-dark-800 border border-dark-700"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Ficha de la rutina seleccionada */}
-            <div className="p-3.5 rounded-xl bg-dark-900 border border-dark-700 space-y-1">
-              <span className="text-[10px] uppercase font-bold text-brand-light block">Rutina Seleccionada:</span>
-              <p className="text-sm font-bold text-white">{routineToAssign.nombre}</p>
-              <p className="text-xs text-zinc-400">
-                {routineToAssign.dias?.length || 3} Días de entreno • {routineToAssign.total_ejercicios || 0} ejercicios
-              </p>
-            </div>
-
-            {/* Selector de alumno */}
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold uppercase tracking-wider text-zinc-300">
-                Seleccionar Alumno Destinatario *
-              </label>
-              <select
-                value={targetClientId}
-                onChange={(e) => setTargetClientId(e.target.value)}
-                className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-brand font-medium min-h-[44px]"
-              >
-                <option value="">-- Elige el alumno --</option>
-                {clients.map(c => (
-                  <option key={c.id} value={c.id}>
-                    {c.nombre_completo} ({c.access_code}) • {c.modalidad}
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] text-zinc-400 mt-1">
-                💡 Se clonará la rutina completa para este alumno y se activará inmediatamente en su portal.
-              </p>
-
-              {/* Alertas médicas en modal de asignación */}
-              {targetClientId && (
-                selectedStudentMedical ? (
-                  <div className="p-3 rounded-xl bg-gray-950 border border-dark-750 text-xs space-y-1.5 mt-2">
-                    <span className="text-[10px] uppercase font-bold text-gray-400 flex items-center gap-1">
-                      <HeartPulse className="w-3.5 h-3.5 text-red-500" />
-                      Ficha de Salud del Alumno:
-                    </span>
-                    {(() => {
-                      const lesionesValidas = Array.isArray(selectedStudentMedical.lesiones)
-                        ? selectedStudentMedical.lesiones.filter(z => z && z !== 'Ninguna')
-                        : [];
-
-                      if (lesionesValidas.length > 0) {
-                        return (
-                          <div className="flex flex-wrap gap-1">
-                            {lesionesValidas.map((zona, idx) => (
-                              <span key={idx} className="px-2 py-0.5 rounded text-[11px] font-bold bg-red-950/80 text-red-300 border border-red-500/40">
-                                ⚠️ Lesión: {zona}
-                              </span>
-                            ))}
-                          </div>
-                        );
-                      }
-
-                      return (
-                        <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs px-2.5 py-1.5 rounded-lg">
-                          <span>✅ Sin lesiones ni molestias reportadas por el alumno.</span>
-                        </div>
-                      );
-                    })()}
-                    {(selectedStudentMedical.condiciones_cronicas || selectedStudentMedical.alergias) && (
-                      <p className="text-amber-300 text-[11px]">
-                        <b>Condiciones:</b> {[selectedStudentMedical.condiciones_cronicas, selectedStudentMedical.alergias].filter(Boolean).join(' • ')}
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs mt-2">
-                    ⚠️ El alumno aún no completó su ficha médica.
-                  </div>
-                )
-              )}
-            </div>
-
-            {/* Botones de acción */}
-            <div className="pt-2 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setIsAssignModalOpen(false)}
-                className="px-4 py-2.5 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white bg-dark-800 border border-dark-700 min-h-[44px]"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={isSubmitting || !targetClientId}
-                onClick={handleConfirmAssignRoutine}
-                className="px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-white bg-brand hover:bg-brand-dark shadow-glow-red transition-all flex items-center gap-2 disabled:opacity-50 min-h-[44px]"
-              >
-                <Check className="w-4 h-4" />
-                <span>{isSubmitting ? 'Asignando...' : 'Confirmar Asignación'}</span>
-              </button>
-            </div>
-
-          </div>
-        </div>
+        <AssignRoutineModal
+          isOpen={isAssignModalOpen}
+          routine={routineToAssign}
+          clients={clients}
+          routines={routines}
+          onClose={() => {
+            setIsAssignModalOpen(false);
+            setRoutineToAssign(null);
+            setTargetClientId(null);
+          }}
+          onSuccess={async (assigned) => {
+            await loadAllData();
+            const clientName = Array.isArray(assigned)
+              ? `${assigned.length} alumnos`
+              : (assigned?.client?.nombre_completo || 'el alumno');
+            showNotification(`¡Rutina asignada exitosamente a ${clientName}!`, 'success');
+          }}
+          onQuickEdit={(client, activeRoutine) => {
+            if (activeRoutine) {
+              handleOpenEditModal(activeRoutine);
+            } else if (onNavigateToClient) {
+              onNavigateToClient(client.id);
+            }
+          }}
+        />
       )}
 
       {/* ========================================================== */}

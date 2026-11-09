@@ -24,6 +24,7 @@ import {
   Save, 
   ChevronRight,
   AlertCircle,
+  AlertTriangle,
   Trash2,
   ExternalLink,
   HeartPulse
@@ -39,7 +40,7 @@ import {
 } from 'recharts';
 import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
-import ClientPhotoUploader from '../common/ClientPhotoUploader';
+import EditClientModal from './EditClientModal';
 import MedicalRecordViewOnly from '../medical/MedicalRecordViewOnly';
 
 export default function ClientDetailView({ client: initialClient, onBack, onUpdateClient, onCreateRoutine }) {
@@ -67,51 +68,18 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [notesSuccess, setNotesSuccess] = useState(false);
 
-  // Modal Editar Perfil
+  // Modal Editar Perfil y Estados de Fotografía / Edición
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editPhotoFile, setEditPhotoFile] = useState(null);
   const [editPhotoPreview, setEditPhotoPreview] = useState(null);
   const [editPhotoRemoved, setEditPhotoRemoved] = useState(false);
-  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [editFormData, setEditFormData] = useState({});
 
   const [isAssignRoutineOpen, setIsAssignRoutineOpen] = useState(false);
   const [catalogExercises, setCatalogExercises] = useState([]);
   const [newRoutineTitle, setNewRoutineTitle] = useState('Rutina Personalizada');
   const [selectedExForRoutine, setSelectedExForRoutine] = useState([]);
-  const [editFormData, setEditFormData] = useState({
-    nombre_completo: client?.nombre_completo || '',
-    telefono: client?.telefono || '',
-    email: client?.email || '',
-    edad: client?.edad || '',
-    altura: client?.altura || '',
-    modalidad: client?.modalidad || 'Presencial',
-    objetivo: client?.objetivo || '',
-    estado: client?.estado || 'Activo',
-    plan_actual: client?.plan_actual || 'Presencial',
-    dias_por_semana: client?.dias_por_semana || 3,
-    dias_asignados: client?.dias_asignados || ['Lunes', 'Miércoles', 'Viernes'],
-    tipo_planificacion: client?.tipo_planificacion || 'Semanal',
-    duracion_sesion_min: client?.duracion_sesion_min || 60
-  });
-
-  const ALL_DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
-
-  const toggleEditDay = (day) => {
-    let nextDays = [...(editFormData.dias_asignados || [])];
-    if (nextDays.includes(day)) {
-      if (nextDays.length > 1) {
-        nextDays = nextDays.filter(d => d !== day);
-      }
-    } else {
-      nextDays.push(day);
-    }
-    nextDays.sort((a, b) => ALL_DAYS.indexOf(a) - ALL_DAYS.indexOf(b));
-    setEditFormData({
-      ...editFormData,
-      dias_asignados: nextDays,
-      dias_por_semana: nextDays.length
-    });
-  };
 
   // Modal Registrar Medición desde Progreso
   const [isNewEvalModalOpen, setIsNewEvalModalOpen] = useState(false);
@@ -280,109 +248,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
     setEditPhotoFile(null);
     setEditPhotoPreview(client?.foto_url || client?.avatar_url || null);
     setEditPhotoRemoved(false);
-    setEditFormData({
-      nombre_completo: client?.nombre_completo || '',
-      telefono: client?.telefono || '',
-      email: client?.email || '',
-      edad: (client?.edad !== null && client?.edad !== undefined) ? client.edad : '',
-      altura: (client?.altura !== null && client?.altura !== undefined) ? client.altura : '',
-      modalidad: client?.modalidad || 'Presencial',
-      objetivo: client?.objetivo || '',
-      estado: client?.estado || 'Activo',
-      plan_actual: client?.plan_actual || 'Presencial',
-      dias_por_semana: client?.dias_por_semana || 3,
-      dias_asignados: client?.dias_asignados || ['Lunes', 'Miércoles', 'Viernes'],
-      tipo_planificacion: client?.tipo_planificacion || 'Semanal',
-      duracion_sesion_min: client?.duracion_sesion_min || 60
-    });
     setIsEditModalOpen(true);
-  };
-
-  const handleUpdateProfile = async (e) => {
-    e.preventDefault();
-    setIsSavingProfile(true);
-    try {
-      let photoUrl = client?.foto_url || client?.avatar_url || null;
-      let isPhotoChanged = false;
-
-      if (editPhotoRemoved) {
-        photoUrl = null;
-        isPhotoChanged = true;
-      }
-      if (editPhotoFile) {
-        const uploadedUrl = await dataService.uploadClientAvatar(editPhotoFile);
-        if (uploadedUrl) {
-          photoUrl = uploadedUrl;
-          isPhotoChanged = true;
-        }
-      }
-
-      // Mapear el ID de plan oficial de membresía
-      const planName = editFormData.plan_actual || client?.plan_actual || 'Presencial';
-      let planId = client?.plan_id || null;
-      const lower = planName.toLowerCase();
-      if (lower.includes('presencial')) {
-        planId = '12dc754e-4262-4171-9f6c-6669b853af70';
-      } else if (lower.includes('distancia') || lower.includes('online')) {
-        planId = 'e2f87a8f-3ff0-4cd7-9e2b-35737861a172';
-      } else if (lower.includes('personalizado')) {
-        planId = 'b89bd142-8dd2-4a60-8436-fe069f7aeb83';
-      }
-
-      // Sanitizar el payload limpiando campos calculados y aislando metadatos
-      const payload = {
-        nombre_completo: editFormData.nombre_completo?.trim(),
-        telefono: editFormData.telefono?.trim(),
-        email: editFormData.email ? editFormData.email.trim() : null,
-        edad: (editFormData.edad !== '' && editFormData.edad !== null && editFormData.edad !== undefined) ? parseInt(editFormData.edad, 10) : null,
-        altura: (editFormData.altura !== '' && editFormData.altura !== null && editFormData.altura !== undefined) ? parseFloat(editFormData.altura) : null,
-        modalidad: editFormData.modalidad,
-        objetivo: editFormData.objetivo?.trim(),
-        estado: editFormData.estado,
-        plan_actual: planName,
-        plan_id: planId,
-        dias_por_semana: editFormData.dias_por_semana,
-        dias_asignados: editFormData.dias_asignados,
-        tipo_planificacion: editFormData.tipo_planificacion,
-        duracion_sesion_min: editFormData.duracion_sesion_min,
-        foto_url: photoUrl,
-        avatar_url: photoUrl
-      };
-
-      const updated = await dataService.updateClient(client.id, payload);
-      const updatedClient = {
-        ...client,
-        ...updated,
-        ...payload,
-        foto_url: photoUrl,
-        avatar_url: photoUrl,
-        plan_actual: planName,
-        plan_id: planId
-      };
-
-      // Inmediatamente actualizar estado local
-      setClient(updatedClient);
-      setEditPhotoPreview(photoUrl);
-      setEditPhotoFile(null);
-      setEditPhotoRemoved(false);
-      setIsEditModalOpen(false);
-
-      if (onUpdateClient) {
-        onUpdateClient(updatedClient);
-      }
-
-      setProfileSuccessMsg(isPhotoChanged ? 'Foto de perfil actualizada correctamente' : 'Perfil actualizado correctamente');
-      setTimeout(() => {
-        setProfileSuccessMsg(null);
-      }, 3500);
-
-      // Recargar datos frescos del cliente
-      loadClientData(client.id);
-    } catch (err) {
-      console.error('Error actualizando perfil del cliente:', err);
-    } finally {
-      setIsSavingProfile(false);
-    }
   };
 
   const handleCreateEvaluation = async (e) => {
@@ -1373,255 +1239,33 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
 
       </div>
 
-      {/* MODAL 1: EDITAR PERFIL */}
+      {/* MODAL 1: EDITAR PERFIL (UNIFICADO) */}
       {isEditModalOpen && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4">
-          <div className="w-full max-w-lg max-h-[92vh] sm:max-h-[85vh] flex flex-col p-4 sm:p-6 overflow-hidden rounded-2xl bg-dark-850 border border-dark-700 shadow-2xl relative animate-scale">
-            
-            {/* Cabecera fija */}
-            <div className="flex items-center justify-between pb-3 border-b border-dark-700 shrink-0">
-              <h2 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
-                <Edit3 className="w-5 h-5 text-brand" />
-                Editar Perfil del Alumno
-              </h2>
-              <button
-                type="button"
-                onClick={() => setIsEditModalOpen(false)}
-                className="p-1.5 rounded-lg text-gray-400 hover:text-white bg-dark-800 border border-dark-700"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleUpdateProfile} className="flex flex-col flex-1 min-h-0 overflow-hidden mt-3">
-              {/* Cuerpo scrolleable */}
-              <div className="overflow-y-auto no-scrollbar flex-1 pr-1 space-y-3.5 pb-2">
-                {/* Selector de Foto / Cámara */}
-                <div className="flex justify-center pb-2">
-                  <ClientPhotoUploader
-                    initialUrl={editPhotoPreview}
-                    currentPhoto={editPhotoPreview}
-                    name={editFormData.nombre_completo}
-                    onPhotoSelected={(file, previewUrl) => {
-                      setEditPhotoFile(file);
-                      setEditPhotoPreview(previewUrl);
-                      setEditPhotoRemoved(false);
-                    }}
-                    onPhotoSelect={(file, previewUrl) => {
-                      setEditPhotoFile(file);
-                      setEditPhotoPreview(previewUrl);
-                      setEditPhotoRemoved(false);
-                    }}
-                    onPhotoRemoved={() => {
-                      setEditPhotoFile(null);
-                      setEditPhotoPreview(null);
-                      setEditPhotoRemoved(true);
-                    }}
-                    onPhotoRemove={() => {
-                      setEditPhotoFile(null);
-                      setEditPhotoPreview(null);
-                      setEditPhotoRemoved(true);
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Nombre Completo *</label>
-                  <input
-                    type="text"
-                    required
-                    value={editFormData.nombre_completo}
-                    onChange={(e) => setEditFormData({ ...editFormData, nombre_completo: e.target.value })}
-                    className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Teléfono / WhatsApp *</label>
-                    <input
-                      type="text"
-                      required
-                      value={editFormData.telefono}
-                      onChange={(e) => setEditFormData({ ...editFormData, telefono: e.target.value })}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Email</label>
-                    <input
-                      type="email"
-                      value={editFormData.email}
-                      onChange={(e) => setEditFormData({ ...editFormData, email: e.target.value })}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Edad</label>
-                    <input
-                      type="number"
-                      value={editFormData.edad}
-                      onChange={(e) => setEditFormData({ ...editFormData, edad: e.target.value })}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Altura (cm)</label>
-                    <input
-                      type="number"
-                      value={editFormData.altura}
-                      onChange={(e) => setEditFormData({ ...editFormData, altura: e.target.value })}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Modalidad</label>
-                    <select
-                      value={editFormData.modalidad}
-                      onChange={(e) => setEditFormData({ ...editFormData, modalidad: e.target.value })}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
-                    >
-                      <option value="Presencial">Presencial</option>
-                      <option value="Online">Online</option>
-                      <option value="Híbrido">Híbrido</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Plan de Membresía</label>
-                    <select
-                      value={editFormData.plan_actual || 'Presencial'}
-                      onChange={(e) => setEditFormData({ ...editFormData, plan_actual: e.target.value })}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
-                    >
-                      <option value="Presencial">Plan Presencial</option>
-                      <option value="Personalizado">Plan Personalizado</option>
-                      <option value="A distancia">Plan A Distancia (Online)</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Objetivo</label>
-                    <input
-                      type="text"
-                      value={editFormData.objetivo}
-                      onChange={(e) => setEditFormData({ ...editFormData, objetivo: e.target.value })}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">Estado</label>
-                    <select
-                      value={editFormData.estado}
-                      onChange={(e) => setEditFormData({ ...editFormData, estado: e.target.value })}
-                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white min-h-[44px]"
-                    >
-                      <option value="Activo">Activo</option>
-                      <option value="Inactivo">Inactivo</option>
-                      <option value="Pausado">Pausado</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Configuración de Entrenamiento y Días Asignados */}
-                <div className="p-3.5 rounded-xl bg-dark-900 border border-dark-700 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-brand-light">
-                      🗓️ Días Asignados & Planificación
-                    </span>
-                    <span className="text-[10px] text-zinc-400 font-semibold">
-                      {(editFormData.dias_asignados || []).length} días
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-4 sm:flex sm:flex-wrap gap-1">
-                    {ALL_DAYS.map((day) => {
-                      const isSelected = (editFormData.dias_asignados || []).includes(day);
-                      return (
-                        <button
-                          key={day}
-                          type="button"
-                          onClick={() => toggleEditDay(day)}
-                          className={`min-h-[38px] px-2 py-1 rounded-lg text-xs font-bold transition-all flex items-center justify-center ${
-                            isSelected
-                              ? 'bg-brand text-white shadow-glow-red'
-                              : 'bg-dark-800 text-zinc-400 hover:text-white border border-dark-700'
-                          }`}
-                        >
-                          {day.slice(0, 3)}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                    <div>
-                      <label className="block text-[10px] font-semibold uppercase text-zinc-400 mb-0.5">
-                        Tipo Planificación
-                      </label>
-                      <select
-                        value={editFormData.tipo_planificacion || 'Semanal'}
-                        onChange={(e) => setEditFormData({ ...editFormData, tipo_planificacion: e.target.value })}
-                        className="w-full bg-dark-850 border border-dark-700 rounded-lg px-2 py-2 text-base sm:text-xs text-white min-h-[44px]"
-                      >
-                        <option value="Semanal">Semanal</option>
-                        <option value="Mensual">Mensual</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] font-semibold uppercase text-zinc-400 mb-0.5">
-                        Duración Sesión
-                      </label>
-                      <select
-                        value={editFormData.duracion_sesion_min || 60}
-                        onChange={(e) => setEditFormData({ ...editFormData, duracion_sesion_min: parseInt(e.target.value) })}
-                        className="w-full bg-dark-850 border border-dark-700 rounded-lg px-2 py-2 text-base sm:text-xs text-white min-h-[44px]"
-                      >
-                        <option value="45">45 min</option>
-                        <option value="60">60 min</option>
-                        <option value="75">75 min</option>
-                        <option value="90">90 min</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Barra inferior fija */}
-              <div className="sticky bottom-0 bg-[#121217] pt-3 pb-1 border-t border-zinc-800 flex items-center justify-end gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setIsEditModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-gray-400 bg-dark-800 border border-dark-700 min-h-[44px]"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingProfile}
-                  className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-brand hover:bg-brand-dark shadow-glow-red min-h-[44px] flex items-center gap-1.5 disabled:opacity-50"
-                >
-                  {isSavingProfile ? (
-                    <>
-                      <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      <span>Guardando...</span>
-                    </>
-                  ) : (
-                    <span>Guardar Cambios</span>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <EditClientModal
+          isOpen={isEditModalOpen}
+          clienteAEditar={client}
+          onClose={() => {
+            setIsEditModalOpen(false);
+            setEditPhotoFile(null);
+            setEditPhotoPreview(null);
+            setEditPhotoRemoved(false);
+          }}
+          onSuccess={(updatedClient) => {
+            setIsEditModalOpen(false);
+            setEditPhotoFile(null);
+            setEditPhotoPreview(null);
+            setEditPhotoRemoved(false);
+            setClient(prev => ({ ...prev, ...updatedClient }));
+            if (onUpdateClient) {
+              onUpdateClient(updatedClient);
+            }
+            setProfileSuccessMsg('Perfil actualizado correctamente');
+            setTimeout(() => setProfileSuccessMsg(null), 3500);
+            if (client?.id) {
+              loadClientData(client.id);
+            }
+          }}
+        />
       )}
 
       {/* MODAL 2: REGISTRAR MEDICIÓN FÍSICA */}
@@ -1934,7 +1578,9 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                 libraryRoutines.map((rout) => {
                   const daysCount = rout.dias?.length || rout.dias_por_semana || 3;
                   const totalExercises = (rout.dias || []).reduce((acc, d) => acc + (d.ejercicios?.length || 0), 0);
-                  const isCurrent = routine?.id === rout.id;
+                  const cleanRoutName = (rout.nombre || '').replace(/\s*\(Plantilla\)/gi, '').replace(/\s*-\s*[^-]+$/, '').trim().toLowerCase();
+                  const cleanCurrentName = (routine?.nombre || '').replace(/\s*\(Plantilla\)/gi, '').replace(/\s*-\s*[^-]+$/, '').trim().toLowerCase();
+                  const isCurrent = routine?.id === rout.id || (Boolean(cleanCurrentName) && Boolean(cleanRoutName) && cleanCurrentName === cleanRoutName);
 
                   return (
                     <div
@@ -1952,6 +1598,17 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                           {rout.es_plantilla && (
                             <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
                               Plantilla Oficial
+                            </span>
+                          )}
+                          {isCurrent && (
+                            <span className="text-gray-500 text-xs italic">
+                              (Ya tiene esta rutina)
+                            </span>
+                          )}
+                          {!isCurrent && routine && (
+                            <span className="text-amber-400 text-[11px] flex items-center gap-1 font-medium">
+                              <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
+                              Reemplazará: "{routine.nombre}"
                             </span>
                           )}
                         </div>
@@ -1976,7 +1633,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                         {isAssigningRoutine ? (
                           <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                         ) : isCurrent ? (
-                          <span>Ya Asignada</span>
+                          <span>(Ya tiene esta rutina)</span>
                         ) : (
                           <>
                             <CheckCircle2 className="w-3.5 h-3.5" />

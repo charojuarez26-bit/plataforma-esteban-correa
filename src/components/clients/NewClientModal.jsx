@@ -24,6 +24,7 @@ const INITIAL_FORM_DATA = {
   email: '',
   edad: '',
   altura: '',
+  peso_actual: '',
   modalidad: 'Presencial',
   objetivo: 'Reducir % de grasa y ganar fuerza',
   plan_actual: 'Plan 4x Semanal Personalizado',
@@ -119,6 +120,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
         email: formData.email ? formData.email.trim() : null,
         edad: formData.edad ? parseInt(formData.edad, 10) : null,
         altura: formData.altura ? parseFloat(formData.altura) : null,
+        peso_actual: formData.peso_actual ? parseFloat(formData.peso_actual) : null,
         modalidad: formData.modalidad || 'Presencial',
         objetivo: (formData.objetivo || 'Acondicionamiento físico general').trim(),
         access_code: code,
@@ -398,7 +400,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                   </div>
                 </div>
 
-                {/* Edad, Altura y Modalidad: 2 cols en móvil (o 1 col sm: 3 cols) */}
+                {/* Antropometría: Edad, Altura y Peso Inicial */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">
@@ -425,6 +427,29 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                     />
                   </div>
                   <div className="col-span-2 sm:col-span-1">
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 sm:mb-1">
+                      Peso Inicial <span className="text-gray-600 font-normal">(Opcional)</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="30"
+                        max="250"
+                        name="peso_actual"
+                        value={formData.peso_actual}
+                        onChange={(e) => setFormData({ ...formData, peso_actual: e.target.value })}
+                        placeholder="Ej: 75.5"
+                        className="w-full bg-gray-900 border border-gray-800 rounded-xl px-3 sm:px-4 pr-10 py-2 sm:py-2 text-base sm:text-sm text-gray-100 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors placeholder-gray-600 appearance-none min-h-[44px]"
+                      />
+                      <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-500 text-xs font-medium pointer-events-none">kg</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Modalidad y Objetivo */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
                     <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">
                       Modalidad
                     </label>
@@ -438,23 +463,22 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                       <option value="Híbrido">Híbrido</option>
                     </select>
                   </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">
-                    Objetivo Principal *
-                  </label>
-                  <select
-                    value={formData.objetivo}
-                    onChange={(e) => setFormData({ ...formData, objetivo: e.target.value })}
-                    className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-brand min-h-[44px]"
-                  >
-                    <option value="Reducir % de grasa y ganar fuerza">Reducir % de grasa y ganar fuerza</option>
-                    <option value="Hipertrofia muscular y volumen limpio">Hipertrofia muscular y volumen limpio</option>
-                    <option value="Fuerza máxima y potencia deportiva">Fuerza máxima y potencia deportiva</option>
-                    <option value="Recomposición corporal y definición">Recomposición corporal y definición</option>
-                    <option value="Acondicionamiento físico general">Acondicionamiento físico general</option>
-                  </select>
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">
+                      Objetivo Principal *
+                    </label>
+                    <select
+                      value={formData.objetivo}
+                      onChange={(e) => setFormData({ ...formData, objetivo: e.target.value })}
+                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-brand min-h-[44px]"
+                    >
+                      <option value="Reducir % de grasa y ganar fuerza">Reducir % de grasa y ganar fuerza</option>
+                      <option value="Hipertrofia muscular y volumen limpio">Hipertrofia muscular y volumen limpio</option>
+                      <option value="Fuerza máxima y potencia deportiva">Fuerza máxima y potencia deportiva</option>
+                      <option value="Recomposición corporal y definición">Recomposición corporal y definición</option>
+                      <option value="Acondicionamiento físico general">Acondicionamiento físico general</option>
+                    </select>
+                  </div>
                 </div>
 
                 {/* SECCIÓN PLANIFICACIÓN TEMPORAL Y DÍAS ASIGNADOS */}

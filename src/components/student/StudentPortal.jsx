@@ -26,7 +26,9 @@ import {
   MessageCircle,
   Receipt,
   Lock,
-  HeartPulse
+  HeartPulse,
+  Timer,
+  X
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -64,6 +66,8 @@ export default function StudentPortal({ student, onLogout }) {
   const [payments, setPayments] = useState([]);
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [completedSets, setCompletedSets] = useState({});
+  const [exerciseLogs, setExerciseLogs] = useState({});
+  const [trainingSessions, setTrainingSessions] = useState([]);
   const [selectedExerciseForModal, setSelectedExerciseForModal] = useState(null);
 
   // Ficha Médica y de Salud
@@ -86,6 +90,80 @@ export default function StudentPortal({ student, onLogout }) {
   const [showFinishSuccessModal, setShowFinishSuccessModal] = useState(false);
   const [isFinishingWorkout, setIsFinishingWorkout] = useState(false);
   const [completedSessionsToday, setCompletedSessionsToday] = useState([]);
+  const [entrenamientosDeHoy, setEntrenamientosDeHoy] = useState([]);
+
+  // Auto-Rest Timer con Feedback Nativo (Vibración y Sonido)
+  const [restTimer, setRestTimer] = useState(0);
+  const [isTimerActive, setIsTimerActive] = useState(false);
+
+  // Función de audio sintético Web Audio API (cero dependencias externas y sin error 404)
+  const playTimerAlertSound = () => {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioContextClass) {
+        const ctx = new AudioContextClass();
+        if (ctx.state === 'suspended') {
+          ctx.resume();
+        }
+        const playTone = (freq, startTime, duration) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, ctx.currentTime + startTime);
+          gain.gain.setValueAtTime(0.35, ctx.currentTime + startTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + startTime + duration);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + startTime);
+          osc.stop(ctx.currentTime + startTime + duration);
+        };
+
+        // Secuencia deportiva: 3 beeps de finalización (800Hz -> 800Hz -> 1200Hz)
+        playTone(800, 0, 0.12);
+        playTone(800, 0.18, 0.12);
+        playTone(1200, 0.36, 0.35);
+        return;
+      }
+    } catch (err) {
+      console.warn('Web Audio API no inicializada:', err);
+    }
+
+    try {
+      const audio = new Audio('/sounds/beep.mp3');
+      audio.play().catch(e => console.warn('Autoplay de audio bloqueado por el navegador:', e));
+    } catch (error) {
+      console.warn('Error reproduciendo sonido:', error);
+    }
+  };
+
+  // Efecto que decrementa el cronómetro cada 1000ms y activa el feedback nativo al llegar a 0
+  useEffect(() => {
+    let interval = null;
+
+    if (isTimerActive && restTimer > 0) {
+      interval = setInterval(() => {
+        setRestTimer(prev => prev - 1);
+      }, 1000);
+    } else if (isTimerActive && restTimer === 0) {
+      setIsTimerActive(false);
+
+      // API de Vibración (Patrón: vibra, pausa, vibra)
+      if (typeof window !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          navigator.vibrate([500, 200, 500]);
+        } catch (e) {
+          console.warn('Vibrate API no permitida por el dispositivo/navegador:', e);
+        }
+      }
+
+      // Sonido (Beep)
+      playTimerAlertSound();
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isTimerActive, restTimer]);
 
   useEffect(() => {
     loadStudentData();
@@ -205,13 +283,43 @@ export default function StudentPortal({ student, onLogout }) {
       }
     }
 
-    // 2. Cargar sesiones completadas hoy
+    // 2. Consulta al historial del alumno para bloqueo diario basado en el tiempo (Bucle Semanal / Microciclo)
     try {
+      // Obtener inicio del día actual (local)
+      const hoy = new Date();
+      hoy.setHours(0, 0, 0, 0);
+      const todayDateStr = new Date().toISOString().split('T')[0];
+
+      let logsHoy = [];
+      try {
+        const { data: entrenamientosDeHoyData, error: errSessions } = await supabase
+          .from('training_sessions')
+          .select('*')
+          .eq('client_id', student.id)
+          .gte('created_at', hoy.toISOString());
+
+        if (!errSessions && Array.isArray(entrenamientosDeHoyData)) {
+          logsHoy = entrenamientosDeHoyData;
+        }
+      } catch (errSupabase) {
+        console.warn('Error consultando historial de hoy en Supabase:', errSupabase);
+      }
+
+      // Cargar sesiones históricas generales (incluye almacenamiento local y remoto)
       const allSessions = await dataService.getTrainingSessionsForClient(student.id);
-      const today = new Date().toISOString().split('T')[0];
-      const todayDone = allSessions
-        .filter(s => (s.fecha || '').split('T')[0] === today && (s.completada || s.completada === undefined))
-        .map(s => s.nombre_dia || s.dia_rutina);
+      setTrainingSessions(allSessions || []);
+
+      // Si por conectividad o caché local existen sesiones de hoy en allSessions, consolidarlas
+      if (logsHoy.length === 0 && Array.isArray(allSessions)) {
+        logsHoy = allSessions.filter(s => {
+          const sDate = (s.fecha || s.created_at || '').split('T')[0];
+          return sDate === todayDateStr && (s.completada === true || s.completada === undefined);
+        });
+      }
+
+      setEntrenamientosDeHoy(logsHoy);
+
+      const todayDone = logsHoy.map(s => s.routine_day_id || s.nombre_dia || s.dia_rutina).filter(Boolean);
       setCompletedSessionsToday(todayDone);
     } catch (e) {
       console.warn('Error cargando sesiones de hoy:', e);
@@ -285,20 +393,91 @@ export default function StudentPortal({ student, onLogout }) {
     }
   };
 
+  const hasRoutine = Boolean(routine && routine.dias && routine.dias.length > 0);
+  const currentDay = hasRoutine && routine.dias[selectedDayIndex] ? routine.dias[selectedDayIndex] : null;
+
+  // Regla de Negocio: Bucle Semanal o Microciclo.
+  // La rutina asignada y sus días NUNCA mutan su estado a completada=true en la tabla de rutinas.
+  // El bloqueo es un estado computado dinámicamente según los logs de training_sessions de HOY.
+  const isDayCompletedToday = (dia, index) => {
+    if (!dia) return false;
+    const dayId = dia.id || `dia-${index + 1}`;
+    const dayName = (dia.dia || `Día ${index + 1}`).toLowerCase().trim();
+    const dayLabel = `día ${index + 1}`;
+    const dayWeek = (dia.dia_semana || (dia.dia?.includes('(') ? dia.dia.split('(')[1].split(')')[0] : dia.dia?.split(':')[0]) || '').toLowerCase().trim();
+
+    return (entrenamientosDeHoy || []).some(log => {
+      // 1. Coincidencia directa por routine_day_id
+      if (log.routine_day_id && (log.routine_day_id === dayId || log.routine_day_id === dia.id)) {
+        return true;
+      }
+      // 2. Coincidencia por nombre o etiqueta del día
+      const logName = (log.nombre_dia || log.dia_rutina || '').toLowerCase().trim();
+      if (!logName) return false;
+      return (
+        logName === dayId ||
+        logName === dayName ||
+        logName === dayLabel ||
+        (dayWeek && logName === dayWeek) ||
+        (dayName && logName.includes(dayName)) ||
+        logName.includes(dayLabel)
+      );
+    });
+  };
+
+  const isCurrentDayDone = Boolean(
+    currentDay && isDayCompletedToday(currentDay, selectedDayIndex)
+  );
+
+  // Inmutabilidad de Sesiones de Entrenamiento (Read-Only por el día actual)
+  const isReadOnly = isCurrentDayDone;
+
+  const toggleSetCompleted = (exerciseId, setIdx, restParam = 90) => {
+    if (isReadOnly) return;
+    const key = `${exerciseId}-${setIdx}`;
+    const willBeDone = !completedSets[key];
+
+    setCompletedSets(prev => ({
+      ...prev,
+      [key]: willBeDone
+    }));
+
+    // Auto-Rest Timer: iniciar automáticamente al marcar la serie como completada
+    if (willBeDone) {
+      const rawSec = typeof restParam === 'number'
+        ? restParam
+        : (parseInt(String(restParam || '').replace(/\D/g, ''), 10) || 90);
+      const descansoSugerido = rawSec > 0 ? rawSec : 90;
+      setRestTimer(descansoSugerido);
+      setIsTimerActive(true);
+    }
+  };
+
   const handleConfirmFinishWorkout = async () => {
-    if (!currentDay) return;
+    if (!currentDay || isReadOnly) return;
     setIsFinishingWorkout(true);
     const dayLabel = `Día ${selectedDayIndex + 1}`;
     const today = new Date().toISOString().split('T')[0];
+    const dayId = currentDay.id || `dia-${selectedDayIndex + 1}`;
+
     try {
-      await dataService.recordTrainingSession({
+      // ACCIÓN DE GUARDAR: SOLO inserta en la tabla de historial (training_sessions)
+      // NUNCA muta ni altera la estructura de la rutina asignada ni sus días
+      const recorded = await dataService.recordTrainingSession({
         clientId: student.id,
         nombreDia: dayLabel,
         diaRutina: dayLabel,
+        dayId: dayId,
+        routineDayId: dayId,
         fecha: today,
         completada: true
       });
-      setCompletedSessionsToday(prev => [...prev, dayLabel, currentDay.dia].filter(Boolean));
+
+      if (recorded) {
+        setTrainingSessions(prev => [recorded, ...prev]);
+        setEntrenamientosDeHoy(prev => [recorded, ...prev]);
+      }
+      setCompletedSessionsToday(prev => [...prev, dayId, dayLabel, currentDay.dia].filter(Boolean));
       setShowFinishConfirmModal(false);
       setShowFinishSuccessModal(true);
     } catch (err) {
@@ -308,31 +487,6 @@ export default function StudentPortal({ student, onLogout }) {
       setIsFinishingWorkout(false);
     }
   };
-
-  const toggleSetCompleted = (exerciseId, setIdx) => {
-    const key = `${exerciseId}-${setIdx}`;
-    setCompletedSets(prev => ({
-      ...prev,
-      [key]: !prev[key]
-    }));
-  };
-
-  const hasRoutine = Boolean(routine && routine.dias && routine.dias.length > 0);
-  const currentDay = hasRoutine && routine.dias[selectedDayIndex] ? routine.dias[selectedDayIndex] : null;
-
-  const isDayCompleted = (d, index) => {
-    const dayName = d?.dia || `Día ${index + 1}`;
-    const dayLabel = d?.dia_semana || (d?.dia?.includes('(') ? d.dia.split('(')[1].split(')')[0] : d?.dia?.split(':')[0]);
-    return completedSessionsToday.some(s => {
-      if (!s) return false;
-      const lower = s.toLowerCase();
-      return lower === dayName.toLowerCase() || 
-             lower === (dayLabel || '').toLowerCase() || 
-             lower.includes(`día ${index + 1}`.toLowerCase());
-    });
-  };
-
-  const isCurrentDayDone = Boolean(currentDay && isDayCompleted(currentDay, selectedDayIndex));
 
   const handleCopy = (text, key) => {
     if (!text) return;
@@ -868,7 +1022,7 @@ export default function StudentPortal({ student, onLogout }) {
                 {routine?.dias?.map((d, index) => {
                   const dayLabel = d.dia_semana || (d.dia.includes('(') ? d.dia.split('(')[1].split(')')[0] : d.dia.split(':')[0]);
                   const isActive = selectedDayIndex === index;
-                  const isDone = isDayCompleted(d, index);
+                  const isDoneToday = isDayCompletedToday(d, index);
                   const count = d.ejercicios?.length || 0;
                   return (
                     <button
@@ -877,27 +1031,44 @@ export default function StudentPortal({ student, onLogout }) {
                       className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all flex items-center gap-2 ${
                         isActive
                           ? 'bg-brand text-white shadow-glow-red scale-[1.02]'
-                          : isDone
+                          : isDoneToday
                             ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/40 hover:border-emerald-500/70'
                             : 'bg-dark-900 text-gray-400 hover:text-white border border-dark-700'
                       }`}
                     >
-                      {isDone && <span className="text-emerald-400 font-black">✓</span>}
+                      {isDoneToday && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 font-black" />}
                       <span>{dayLabel}</span>
-                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                        isActive 
-                          ? 'bg-black/40 text-white' 
-                          : isDone 
-                            ? 'bg-emerald-500/20 text-emerald-300' 
+                      {isDoneToday ? (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold bg-emerald-500/25 text-emerald-300 border border-emerald-500/30">
+                          Completado hoy
+                        </span>
+                      ) : (
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                          isActive 
+                            ? 'bg-black/40 text-white' 
                             : 'bg-dark-800 text-zinc-300'
-                      }`}>
-                        {count}
-                      </span>
+                        }`}>
+                          {count}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
               </div>
             </div>
+
+            {/* Feedback Visual Superior (Banner Informativo de Solo Lectura por Día Completado Hoy) */}
+            {isReadOnly && (
+              <div className="bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 px-4 py-3 rounded-xl flex items-center justify-between gap-3 mb-6 text-xs sm:text-sm font-medium">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-400" />
+                  <span>Entrenamiento finalizado. Modo solo lectura por hoy.</span>
+                </div>
+                <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-bold text-emerald-300 uppercase tracking-wider shrink-0">
+                  Completado por hoy
+                </span>
+              </div>
+            )}
 
             {/* Nombre y Enfoque del Día Seleccionado */}
             <div className="p-3 rounded-xl bg-dark-900 border border-dark-700 flex items-center justify-between">
@@ -919,11 +1090,13 @@ export default function StudentPortal({ student, onLogout }) {
                     className="card-dark rounded-2xl p-4 space-y-3 border border-white/5 shadow-md"
                   >
                     <div className="flex items-start gap-3">
-                      <img
-                        src={item.exercise.imagen_url}
-                        alt={item.exercise.nombre}
-                        className="w-16 h-16 rounded-xl object-cover border border-dark-700 shrink-0"
-                      />
+                      <div className="w-16 h-16 rounded-xl bg-white p-1 border border-dark-700 shrink-0 flex items-center justify-center overflow-hidden">
+                        <img
+                          src={item.exercise?.gif_url || item.exercise?.imagen_url}
+                          alt={item.exercise?.nombre || 'Ejercicio'}
+                          className="w-full h-full object-contain"
+                        />
+                      </div>
                       <div className="flex-1 min-w-0">
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-brand/20 text-brand-light">
                           {item.exercise.grupo_muscular}
@@ -966,6 +1139,37 @@ export default function StudentPortal({ student, onLogout }) {
                       </div>
                     </div>
 
+                    {/* Registro de Carga y Reps del Alumno (Inputs con bloqueo en Solo Lectura) */}
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-400 mb-1">
+                          Peso Real (kg)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.5"
+                          disabled={isReadOnly}
+                          value={exerciseLogs[`${item.id}_peso`] ?? ''}
+                          onChange={(e) => setExerciseLogs(prev => ({ ...prev, [`${item.id}_peso`]: e.target.value }))}
+                          placeholder={item.peso_sugerido ? `${item.peso_sugerido}` : 'Ej: 50'}
+                          className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-brand disabled:opacity-50 disabled:bg-gray-800/40 disabled:text-gray-400 disabled:border-transparent disabled:cursor-not-allowed transition-colors"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-400 mb-1">
+                          Reps Realizadas
+                        </label>
+                        <input
+                          type="text"
+                          disabled={isReadOnly}
+                          value={exerciseLogs[`${item.id}_reps`] ?? ''}
+                          onChange={(e) => setExerciseLogs(prev => ({ ...prev, [`${item.id}_reps`]: e.target.value }))}
+                          placeholder={item.repeticiones ? `${item.repeticiones}` : 'Ej: 12'}
+                          className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-brand disabled:opacity-50 disabled:bg-gray-800/40 disabled:text-gray-400 disabled:border-transparent disabled:cursor-not-allowed transition-colors"
+                        />
+                      </div>
+                    </div>
+
                     {/* Checklist interactivo de series con área de toque táctil de 44px */}
                     <div className="pt-2">
                       <div className="flex items-center justify-between mb-2">
@@ -973,26 +1177,35 @@ export default function StudentPortal({ student, onLogout }) {
                           Marcar series completadas:
                         </span>
                         <span className="text-[10px] text-gray-400">
-                          Toca al terminar cada serie
+                          {isReadOnly ? 'Series bloqueadas (Solo lectura)' : 'Toca al terminar cada serie'}
                         </span>
                       </div>
 
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         {Array.from({ length: item.series }).map((_, sIdx) => {
-                          const isDone = completedSets[`${item.id}-${sIdx}`];
+                          const isDone = isReadOnly || Boolean(completedSets[`${item.id}-${sIdx}`]);
                           return (
                             <button
                               key={sIdx}
                               type="button"
-                              onClick={() => toggleSetCompleted(item.id, sIdx)}
-                              className={`min-h-[44px] px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 border select-none active:scale-95 ${
+                              disabled={isReadOnly}
+                              onClick={() => toggleSetCompleted(item.id, sIdx, item.descanso_seg || item.descanso)}
+                              className={`min-h-[44px] px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 border select-none disabled:cursor-not-allowed disabled:pointer-events-none ${
                                 isDone
-                                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-950/50'
-                                  : 'bg-dark-900 text-gray-300 border-dark-700 hover:border-gray-500 hover:text-white'
+                                  ? isReadOnly
+                                    ? 'bg-emerald-950/60 text-emerald-400/80 border-emerald-500/30'
+                                    : 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-950/50 active:scale-95'
+                                  : isReadOnly
+                                    ? 'bg-dark-900/40 text-gray-600 border-dark-800'
+                                    : 'bg-dark-900 text-gray-300 border-dark-700 hover:border-gray-500 hover:text-white active:scale-95'
                               }`}
                             >
                               <span className={`w-4 h-4 rounded border flex items-center justify-center text-[10px] ${
-                                isDone ? 'bg-white text-emerald-700 border-white font-black' : 'border-gray-500'
+                                isDone 
+                                  ? isReadOnly 
+                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 font-black' 
+                                    : 'bg-white text-emerald-700 border-white font-black' 
+                                  : 'border-gray-500'
                               }`}>
                                 {isDone ? '✓' : ''}
                               </span>
@@ -1011,16 +1224,16 @@ export default function StudentPortal({ student, onLogout }) {
                   </div>
                 ))}
 
-                {/* BOTÓN FINALIZAR ENTRENO */}
+                {/* BOTÓN FINALIZAR ENTRENO (BLOQUEADO EN MODO SOLO LECTURA POR HOY) */}
                 <div className="pt-3">
-                  {isCurrentDayDone ? (
+                  {isReadOnly ? (
                     <button
                       type="button"
                       disabled
-                      className="bg-emerald-700/80 cursor-not-allowed w-full p-4 rounded-xl text-lg font-bold text-white flex items-center justify-center gap-2 shadow-inner select-none transition-all"
+                      className="bg-emerald-950/60 border border-emerald-500/30 cursor-not-allowed w-full p-4 rounded-xl text-base sm:text-lg font-bold text-emerald-300 flex items-center justify-center gap-2 shadow-inner select-none transition-all disabled:opacity-80 disabled:cursor-not-allowed"
                     >
-                      <CheckCircle2 className="w-6 h-6 text-emerald-300" />
-                      <span>¡Entreno del Día Completado!</span>
+                      <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                      <span>Completado por hoy</span>
                     </button>
                   ) : (
                     <button
@@ -1452,6 +1665,35 @@ export default function StudentPortal({ student, onLogout }) {
           setShowMedicalModal(false);
         }}
       />
+
+      {/* 4. COMPONENTE FLOTANTE DE CRONÓMETRO (FLOATING PILL) */}
+      {isTimerActive && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white border border-gray-700 shadow-2xl px-6 py-3 rounded-full flex items-center gap-3 z-50 animate-bounce-short">
+          <Timer className="w-5 h-5 text-red-500 animate-pulse shrink-0" />
+          <span className="font-mono text-lg font-bold">
+            {Math.floor(restTimer / 60)}:{(restTimer % 60).toString().padStart(2, '0')}
+          </span>
+          <button
+            type="button"
+            onClick={() => setRestTimer(prev => prev + 15)}
+            className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
+            title="Sumar 15 segundos"
+          >
+            +15s
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setIsTimerActive(false);
+              setRestTimer(0);
+            }}
+            className="ml-2 text-gray-400 hover:text-white transition-colors"
+            title="Cerrar temporizador"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
     </div>
   );

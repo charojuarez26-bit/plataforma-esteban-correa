@@ -39,7 +39,8 @@ const CLIENT_DB_COLUMNS = [
   'fecha_inicio_rutina',
   'plan_id',
   'plan_actual',
-  'estado_pago'
+  'estado_pago',
+  'peso_actual'
 ];
 
 function enrichClient(c) {
@@ -468,6 +469,7 @@ export const dataService = {
       email: clientData.email ? clientData.email.trim() : null,
       edad: clientData.edad ? parseInt(clientData.edad, 10) : null,
       altura: clientData.altura ? parseFloat(clientData.altura) : null,
+      peso_actual: clientData.peso_actual ? parseFloat(clientData.peso_actual) : null,
       modalidad: clientData.modalidad || 'Presencial',
       objetivo: (clientData.objetivo || 'Acondicionamiento físico general').trim(),
       access_code: code,
@@ -490,6 +492,7 @@ export const dataService = {
     saveClientMeta(data.id, {
       avatar_url: photoUrl,
       foto_url: photoUrl,
+      peso_actual: clientData.peso_actual ? parseFloat(clientData.peso_actual) : null,
       notas: clientData.notas,
       plan_actual: clientData.plan_actual,
       dias_por_semana: clientData.dias_por_semana,
@@ -548,7 +551,7 @@ export const dataService = {
             dbPayload[key] = (updates[key] !== '' && updates[key] !== null && updates[key] !== undefined)
               ? parseInt(updates[key], 10)
               : null;
-          } else if (key === 'altura') {
+          } else if (key === 'altura' || key === 'peso_actual') {
             dbPayload[key] = (updates[key] !== '' && updates[key] !== null && updates[key] !== undefined)
               ? parseFloat(updates[key])
               : null;
@@ -1215,23 +1218,75 @@ export const dataService = {
         return query;
       });
 
-      if (!error && data && data.length > 0) {
+      if (!error && data) {
         return data;
       }
-
-      // Si la tabla exercises está vacía, sembrar catálogo oficial inicial en Supabase
-      if (!error && (!data || data.length === 0) && filterGroup === 'Todos') {
-        const seeded = await this.seedInitialExercises();
-        if (seeded && seeded.length > 0) {
-          return seeded;
-        }
-      }
     } catch (err) {
-      console.warn('[DataService] Error en getExercises Supabase:', err);
+      // Fallback silencioso
     }
 
-    if (filterGroup === 'Todos') return INITIAL_EXERCISES;
-    return INITIAL_EXERCISES.filter(e => (e.grupo_muscular || '').toLowerCase() === filterGroup.toLowerCase());
+    return [];
+  },
+
+  async getExercisesPaginated({ page = 0, limit = 16, filterGroup = 'Todos', search = '' } = {}) {
+    try {
+      const { data, error, count } = await withAuthRetry(async () => {
+        let query = supabase
+          .from('exercises')
+          .select('*', { count: 'exact' })
+          .order('nombre', { ascending: true });
+
+        if (filterGroup && filterGroup !== 'Todos') {
+          if (filterGroup === 'Core / Abdomen' || filterGroup === 'Core') {
+            query = query.in('grupo_muscular', ['Core', 'Core / Abdomen']);
+          } else {
+            query = query.eq('grupo_muscular', filterGroup);
+          }
+        }
+
+        const cleanSearch = (search || '').trim();
+        if (cleanSearch) {
+          const sanitized = cleanSearch.replace(/[%_,()]/g, ' ').trim();
+          if (sanitized) {
+            query = query.or(`nombre.ilike.%${sanitized}%,grupo_muscular.ilike.%${sanitized}%,instrucciones.ilike.%${sanitized}%`);
+          }
+        }
+
+        const from = page * limit;
+        const to = from + limit - 1;
+        query = query.range(from, to);
+
+        return query;
+      });
+
+      if (!error && data) {
+        const total = count ?? data.length;
+        const hasMore = (page + 1) * limit < total;
+        return { data, total, hasMore };
+      }
+    } catch (err) {
+      // Fallback silencioso
+    }
+
+    return { data: [], total: 0, hasMore: false };
+  },
+
+  async getDistinctMuscleGroups() {
+    try {
+      const { data, error } = await withAuthRetry(() => {
+        return supabase.from('exercises').select('grupo_muscular');
+      });
+      if (!error && data) {
+        const groups = new Set();
+        data.forEach(item => {
+          if (item.grupo_muscular) groups.add(item.grupo_muscular.trim());
+        });
+        return Array.from(groups);
+      }
+    } catch (err) {
+      // Fallback silencioso
+    }
+    return [];
   },
 
   async seedInitialExercises() {
@@ -1364,7 +1419,7 @@ export const dataService = {
 
   async seedInitialRoutines() {
     try {
-      const templateClientId = '00000000-0000-0000-0000-000000000000';
+      const templateClientId = null;
       const allEx = await this.getExercises('Todos');
       if (!allEx || allEx.length === 0) return [];
 
@@ -1584,22 +1639,26 @@ export const dataService = {
         activeCoachId = '00000000-0000-0000-0000-000000000001';
       }
 
-      // 2. VALIDAR client_id SI SE ASIGNA A UN ALUMNO
+      // 2. VALIDAR client_id SI SE ASIGNA A UN ALUMNO (FORZAR NULL SI ES PLANTILLA O VACÍO)
+      const rawClientId = routineData.client_id && typeof routineData.client_id === 'string'
+        ? routineData.client_id.trim()
+        : null;
+
       const isTemplate = Boolean(
         routineData.es_plantilla || 
         routineData.destinatarioTipo === 'plantilla' ||
-        !routineData.client_id || 
-        routineData.client_id === '00000000-0000-0000-0000-000000000000'
+        !rawClientId || 
+        rawClientId === '00000000-0000-0000-0000-000000000000'
       );
 
-      let targetClientId = '00000000-0000-0000-0000-000000000000';
+      let targetClientId = null;
       if (!isTemplate) {
-        if (!routineData.client_id || typeof routineData.client_id !== 'string' || routineData.client_id.trim() === '') {
+        if (!rawClientId || rawClientId === '00000000-0000-0000-0000-000000000000') {
           const clientError = new Error('Debes seleccionar un alumno válido para asignar la rutina.');
           console.error('Error detallado de Supabase:', clientError);
           throw clientError;
         }
-        targetClientId = routineData.client_id.trim();
+        targetClientId = rawClientId;
       }
 
       // 3. ESTRUCTURAR DÍAS, SERIES, REPS Y EJERCICIOS EN FORMATO JSON VÁLIDO (jsonb)
@@ -1645,101 +1704,50 @@ export const dataService = {
         };
       });
 
-      // 4. PREPARAR PAYLOADS PARA SUPABASE
-      // basePayload funciona con las columnas existentes en routines
-      const basePayload = {
-        client_id: targetClientId,
+      // 4. PREPARAR PAYLOAD SANEADO PARA SUPABASE (SOLO COLUMNAS REALES DE ROUTINES)
+      // client_id DEBE ser null para plantillas para evitar error 23503 foreign key violation
+      const payloadLimpio = {
+        client_id: targetClientId, // null para plantillas generales o UUID real existente en clients
         nombre: (routineData.nombre || 'Rutina Personalizada').trim(),
         descripcion: (routineData.descripcion || routineData.objetivo || '').trim(),
         activa: routineData.activa ?? true,
         dias_por_semana: daysCount,
         es_plantilla: isTemplate,
-        dia_semana: JSON.stringify(cleanedDays) // Respaldo JSON seguro en columna de texto
+        dia_semana: typeof cleanedDays === 'string' ? cleanedDays : JSON.stringify(cleanedDays) // Respaldo JSON seguro en columna de texto dia_semana
       };
 
-      // fullPayload incluye coach_id y dias (jsonb) si las columnas están disponibles en Supabase
-      const fullPayload = {
-        ...basePayload,
-        coach_id: activeCoachId,
-        dias: cleanedDays
-      };
-
-      let routineId = existingId;
-      let savedRecord = null;
+      if (routineData.nivel) payloadLimpio.nivel = routineData.nivel;
+      if (routineData.objetivo) payloadLimpio.objetivo = routineData.objetivo;
 
       if (existingId) {
-        // ACTUALIZACIÓN DE RUTINA EXISTENTE
-        let { data: updated, error: uErr } = await supabase
-          .from('routines')
-          .update(fullPayload)
-          .eq('id', existingId)
-          .select('*')
-          .single();
+        payloadLimpio.id = existingId;
+      }
 
-        // Si falla por columna inexistente en el schema cache (PGRST204), reintentar con basePayload
-        if (uErr && (uErr.code === 'PGRST204' || uErr.message?.includes('schema cache') || uErr.message?.includes('coach_id') || uErr.message?.includes('dias'))) {
-          console.warn('[DataService] Columnas coach_id/dias ausentes en routines, reintentando con basePayload...');
-          const { data: retryUpdated, error: retryErr } = await supabase
+      // Si es para un alumno y es una nueva rutina/asignación, desactivar rutinas previas del alumno
+      if (!isTemplate && targetClientId && !existingId) {
+        try {
+          await supabase
             .from('routines')
-            .update(basePayload)
-            .eq('id', existingId)
-            .select('*')
-            .single();
-
-          if (retryErr) {
-            console.error('Error detallado de Supabase:', retryErr);
-            throw retryErr;
-          }
-          savedRecord = retryUpdated;
-        } else if (uErr) {
-          console.error('Error detallado de Supabase:', uErr);
-          throw uErr;
-        } else {
-          savedRecord = updated;
-        }
-      } else {
-        // CREACIÓN DE NUEVA RUTINA
-        // Si es para un alumno, desactivar rutinas anteriores de ese alumno
-        if (!isTemplate && targetClientId && targetClientId !== '00000000-0000-0000-0000-000000000000') {
-          try {
-            await supabase
-              .from('routines')
-              .update({ activa: false })
-              .eq('client_id', targetClientId);
-          } catch (deactErr) {
-            console.warn('[DataService] Error desactivando rutinas previas del alumno:', deactErr);
-          }
-        }
-
-        let { data: inserted, error: iErr } = await supabase
-          .from('routines')
-          .insert([fullPayload])
-          .select('*')
-          .single();
-
-        // Si falla por columna inexistente en schema, reintentar con basePayload
-        if (iErr && (iErr.code === 'PGRST204' || iErr.message?.includes('schema cache') || iErr.message?.includes('coach_id') || iErr.message?.includes('dias'))) {
-          console.warn('[DataService] Columnas coach_id/dias ausentes en routines, reintentando con basePayload...');
-          const { data: retryInserted, error: retryErr } = await supabase
-            .from('routines')
-            .insert([basePayload])
-            .select('*')
-            .single();
-
-          if (retryErr) {
-            console.error('Error detallado de Supabase:', retryErr);
-            throw retryErr;
-          }
-          savedRecord = retryInserted;
-          routineId = retryInserted.id;
-        } else if (iErr) {
-          console.error('Error detallado de Supabase:', iErr);
-          throw iErr;
-        } else {
-          savedRecord = inserted;
-          routineId = inserted.id;
+            .update({ activa: false })
+            .eq('client_id', targetClientId);
+        } catch (deactErr) {
+          // Desactivación no crítica
         }
       }
+
+      // 5. UPSERT DIRECTO CON RESOLUCIÓN DE CONFLICTO POR ID (EVITA ERROR 409)
+      const { data: savedRecord, error: saveErr } = await supabase
+        .from('routines')
+        .upsert(payloadLimpio, { onConflict: 'id' })
+        .select('*')
+        .single();
+
+      if (saveErr) {
+        console.error('Error detallado de Supabase en saveRoutine:', saveErr);
+        throw saveErr;
+      }
+
+      const routineId = savedRecord.id;
 
       // 5. PERSISTIR RESPALDO LOCAL
       try {
@@ -1834,7 +1842,45 @@ export const dataService = {
         dias_por_semana: sourceRoutine.dias_por_semana || (clonedDays.length || 3)
       };
 
-      // existingId = null fuerza un INSERT completamente nuevo en Supabase routines
+      // Validación preventiva contra duplicados en Supabase
+      const baseCleanName = sourceRoutine.nombre
+        .replace(/\s*\(Plantilla\)/gi, '')
+        .replace(/\s*\(Asignada\)/gi, '')
+        .replace(/\s*-\s*[^-]+$/, '')
+        .trim();
+
+      const { data: existingRoutines } = await supabase
+        .from('routines')
+        .select('id, nombre, activa')
+        .eq('client_id', clientId)
+        .eq('activa', true);
+
+      const isDuplicate = (existingRoutines || []).some(r => {
+        if (r.activa === false) return false;
+        const rClean = (r.nombre || '').replace(/\s*\(Plantilla\)/gi, '').replace(/\s*\(Asignada\)/gi, '').replace(/\s*-\s*[^-]+$/, '').trim().toLowerCase();
+        return (
+          r.nombre?.toLowerCase() === sourceRoutine.nombre?.toLowerCase() ||
+          r.nombre?.toLowerCase() === payload.nombre?.toLowerCase() ||
+          (baseCleanName && rClean && baseCleanName.toLowerCase() === rClean.toLowerCase())
+        );
+      });
+
+      if (isDuplicate) {
+        throw new Error(`Este alumno (${clientName}) ya tiene esta rutina asignada.`);
+      }
+
+      // 1. Apagar todas las rutinas anteriores del alumno para garantizar que solo tenga una activa
+      const { error: archiveError } = await supabase
+        .from('routines')
+        .update({ activa: false })
+        .eq('client_id', clientId);
+
+      if (archiveError) {
+        console.error("Error archivando rutinas viejas:", archiveError);
+        throw new Error("No se pudieron limpiar las rutinas anteriores.");
+      }
+
+      // 2. existingId = null fuerza un INSERT completamente nuevo en Supabase routines
       return await this.saveRoutine(payload, clonedDays, null);
     } catch (err) {
       console.error('Error detallado de Supabase:', err);
@@ -2243,22 +2289,25 @@ export const dataService = {
     return true;
   },
 
-  async recordTrainingSession({ clientId, nombreDia = 'Día 1', diaRutina = null, fecha = null, completada = true }) {
+  async recordTrainingSession({ clientId, nombreDia = 'Día 1', diaRutina = null, dayId = null, routineDayId = null, fecha = null, completada = true }) {
     if (!clientId) throw new Error('clientId es requerido');
 
     const dayName = nombreDia || diaRutina || 'Día 1';
+    const rDayId = routineDayId || dayId || null;
     const sessionDate = fecha || new Date().toISOString().split('T')[0];
     const newSessionLocal = {
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `ts-${Date.now()}`,
       client_id: clientId,
       nombre_dia: dayName,
       dia_rutina: dayName,
+      routine_day_id: rDayId,
       fecha: sessionDate,
       completada: Boolean(completada),
       created_at: new Date().toISOString()
     };
 
-    // 1. Guardar en Supabase (tabla training_sessions)
+    // 1. Guardar en Supabase (tabla training_sessions) ÚNICAMENTE con .insert()
+    // NUNCA muta ni actualiza la rutina asignada ni sus días en la tabla 'routines'
     try {
       const { data, error } = await supabase
         .from('training_sessions')
@@ -2272,7 +2321,7 @@ export const dataService = {
         .single();
 
       if (!error && data) {
-        const fullSaved = { ...newSessionLocal, ...data, nombre_dia: dayName, dia_rutina: dayName };
+        const fullSaved = { ...newSessionLocal, ...data, nombre_dia: dayName, dia_rutina: dayName, routine_day_id: rDayId };
         this.saveLocalTrainingSession(clientId, fullSaved);
         return fullSaved;
       }
@@ -2291,7 +2340,7 @@ export const dataService = {
           .single();
 
         if (!baseError && baseData) {
-          const fullSaved = { ...newSessionLocal, ...baseData, nombre_dia: dayName, dia_rutina: dayName };
+          const fullSaved = { ...newSessionLocal, ...baseData, nombre_dia: dayName, dia_rutina: dayName, routine_day_id: rDayId };
           this.saveLocalTrainingSession(clientId, fullSaved);
           return fullSaved;
         }

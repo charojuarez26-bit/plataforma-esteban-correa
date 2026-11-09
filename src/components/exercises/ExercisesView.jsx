@@ -302,13 +302,13 @@ export default function ExercisesView() {
       {selectedExercise && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="w-full max-w-md bg-dark-850 border border-dark-700 rounded-2xl p-5 space-y-4">
-            <div className="relative h-48 rounded-xl overflow-hidden">
+            <div className="relative w-full h-48 sm:h-64 bg-white rounded-xl overflow-hidden flex items-center justify-center p-2 mb-4 border border-dark-700/60 shadow-md">
               <img
-                src={selectedExercise.imagen_url}
+                src={selectedExercise.gif_url || selectedExercise.imagen_url}
                 alt={selectedExercise.nombre}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain"
               />
-              <span className="absolute top-2 left-2 text-xs font-bold px-2.5 py-1 rounded-lg bg-brand text-white">
+              <span className="absolute top-2 left-2 text-xs font-bold px-2.5 py-1 rounded-lg bg-brand text-white shadow-sm">
                 {selectedExercise.grupo_muscular}
               </span>
             </div>

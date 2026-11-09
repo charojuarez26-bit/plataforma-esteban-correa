@@ -9,7 +9,8 @@ import {
   CheckCircle2, 
   Calendar,
   Sparkles,
-  Award
+  Award,
+  X
 } from 'lucide-react';
 import { 
   LineChart, 

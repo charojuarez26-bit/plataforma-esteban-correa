@@ -26,12 +26,17 @@ export function getEmbedVideoUrl(url) {
   return null;
 }
 
-export function ExerciseMedia({ videoUrl, imageUrl, title, className = "w-full h-56 sm:h-72" }) {
-  const embedUrl = getEmbedVideoUrl(videoUrl);
+export function ExerciseMedia({ videoUrl, imageUrl, title, className = "" }) {
+  // Si la url de video es en realidad un archivo GIF, tratarlo como imagen
+  const isGifInVideo = videoUrl && (/\.gif(\?.*)?$/i.test(videoUrl) || videoUrl.toLowerCase().includes('.gif'));
+  const effectiveImageUrl = isGifInVideo ? videoUrl : imageUrl;
+  const effectiveVideoUrl = isGifInVideo ? null : videoUrl;
+
+  const embedUrl = getEmbedVideoUrl(effectiveVideoUrl);
 
   if (embedUrl) {
     return (
-      <div className={`relative overflow-hidden rounded-xl bg-black border border-dark-700 shadow-md ${className}`}>
+      <div className={`relative overflow-hidden rounded-xl bg-black border border-dark-700 shadow-md w-full h-48 sm:h-64 mb-4 ${className}`}>
         <iframe
           src={embedUrl}
           title={title}
@@ -43,34 +48,34 @@ export function ExerciseMedia({ videoUrl, imageUrl, title, className = "w-full h
     );
   }
 
-  const isDirectVideo = videoUrl && (videoUrl.match(/\.(mp4|webm|mov)(\?.*)?$/i) || videoUrl.includes('assets.mixkit.co'));
+  const isDirectVideo = effectiveVideoUrl && (effectiveVideoUrl.match(/\.(mp4|webm|mov)(\?.*)?$/i) || effectiveVideoUrl.includes('assets.mixkit.co'));
   if (isDirectVideo) {
     return (
-      <div className={`relative overflow-hidden rounded-xl bg-black border border-dark-700 shadow-md ${className}`}>
+      <div className={`relative w-full h-48 sm:h-64 bg-white rounded-xl overflow-hidden flex items-center justify-center p-2 mb-4 border border-dark-700/60 shadow-md ${className}`}>
         <video
-          src={videoUrl}
+          src={effectiveVideoUrl}
           autoPlay
           loop
           muted
           playsInline
           controls
-          className="w-full h-full object-cover"
+          className="w-full h-full object-contain"
         />
       </div>
     );
   }
 
-  if (videoUrl && !embedUrl) {
+  if (effectiveVideoUrl && !embedUrl) {
     return (
-      <div className={`relative overflow-hidden rounded-xl bg-black border border-dark-700 shadow-md ${className}`}>
+      <div className={`relative w-full h-48 sm:h-64 bg-white rounded-xl overflow-hidden flex items-center justify-center p-2 mb-4 border border-dark-700/60 shadow-md ${className}`}>
         <video
-          src={videoUrl}
+          src={effectiveVideoUrl}
           autoPlay
           loop
           muted
           playsInline
           controls
-          className="w-full h-full object-cover"
+          className="w-full h-full object-contain"
           onError={(e) => {
             e.target.style.display = 'none';
             const imgFallback = e.target.nextSibling;
@@ -78,21 +83,25 @@ export function ExerciseMedia({ videoUrl, imageUrl, title, className = "w-full h
           }}
         />
         <img
-          src={videoUrl}
+          src={effectiveImageUrl || effectiveVideoUrl}
           alt={title}
+          loading="lazy"
+          decoding="async"
           style={{ display: 'none' }}
-          className="w-full h-full object-cover"
+          className="w-full h-full object-contain"
         />
       </div>
     );
   }
 
   return (
-    <div className={`relative overflow-hidden rounded-xl bg-dark-900 border border-dark-700 shadow-md ${className}`}>
+    <div className={`relative w-full h-48 sm:h-64 bg-white rounded-xl overflow-hidden flex items-center justify-center p-2 mb-4 ${className}`}>
       <img
-        src={imageUrl || 'https://images.unsplash.com/photo-1517838277536-f5f99be501cd?auto=format&fit=crop&w=600&q=80'}
+        src={effectiveImageUrl || 'https://images.unsplash.com/photo-1517838277536-f5f99be501cd?auto=format&fit=crop&w=600&q=80'}
         alt={title}
-        className="w-full h-full object-cover"
+        loading="lazy"
+        decoding="async"
+        className="w-full h-full object-contain"
       />
     </div>
   );
@@ -147,9 +156,8 @@ export default function ExerciseTechniqueModal({ exercise, isOpen, onClose, canE
           {/* Reproductor de Video / Demostración en Loop / Imagen */}
           <ExerciseMedia
             videoUrl={exercise.video_url}
-            imageUrl={exercise.imagen_url}
+            imageUrl={exercise.gif_url || exercise.imagen_url}
             title={exercise.nombre}
-            className="w-full h-52 sm:h-64"
           />
 
           {/* Bloque de Pautas Técnicas e Instrucciones */}

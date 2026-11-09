@@ -99,3 +99,17 @@
     min-height: 44px;
   }
 }
+
+/* Animación sutil para pill flotante de cronómetro */
+@keyframes bounceShort {
+  0%, 100% {
+    transform: translate(-50%, 0);
+  }
+  50% {
+    transform: translate(-50%, -6px);
+  }
+}
+
+.animate-bounce-short {
+  animation: bounceShort 0.5s ease-in-out;
+}

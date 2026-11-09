@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import RegisterPaymentModal from './RegisterPaymentModal';
+import EditClientModal from '../clients/EditClientModal';
 import { 
   CreditCard, 
   DollarSign, 
@@ -14,6 +15,7 @@ import {
   Copy, 
   Check, 
   Edit3, 
+  Pencil,
   Trash2, 
   ArrowUpRight, 
   RefreshCw,
@@ -47,6 +49,10 @@ export default function PaymentsView() {
   const [loading, setLoading] = useState(true);
   const [filterState, setFilterState] = useState('Todos'); // 'Todos' | 'por_vencer' | 'vencido' | 'al_dia' | 'sin_plan'
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Modal Editar Alumno Unificado
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [clientToEdit, setClientToEdit] = useState(null);
 
   // Configuración Bancaria
   const [bankDetails, setBankDetails] = useState(DEFAULT_BANK_DETAILS);
@@ -636,6 +642,20 @@ export default function PaymentsView() {
                                 </button>
                               )}
 
+                              {/* Botón Editar Alumno (Modal Único) */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setClientToEdit(client);
+                                  setIsEditModalOpen(true);
+                                }}
+                                className="min-h-[38px] px-2.5 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white border border-gray-700 transition-all flex items-center justify-center gap-1.5 text-xs font-semibold shrink-0"
+                                title={`Editar alumno ${client.nombre_completo}`}
+                              >
+                                <Pencil className="w-3.5 h-3.5 text-brand-light" />
+                                <span className="hidden xl:inline">Editar</span>
+                              </button>
+
                               {/* Botón Registrar Cobro según regla de 3 días de vencimiento */}
                               <div className="flex-1 sm:flex-initial">
                                 {(() => {
@@ -1102,6 +1122,26 @@ export default function PaymentsView() {
           showToast(`¡Cobro registrado! Nueva cuota al día hasta el ${formatearFechaPago(result.nuevaFechaVencimiento)}`);
         }}
       />
+
+      {/* ========================================================== */}
+      {/* MODAL EDITAR ALUMNO (UNIFICADO)                            */}
+      {/* ========================================================== */}
+      {isEditModalOpen && clientToEdit && (
+        <EditClientModal
+          isOpen={isEditModalOpen}
+          clienteAEditar={clientToEdit}
+          onClose={() => {
+            setIsEditModalOpen(false);
+            setClientToEdit(null);
+          }}
+          onSuccess={() => {
+            setIsEditModalOpen(false);
+            setClientToEdit(null);
+            loadAllData();
+            showToast('Alumno actualizado correctamente');
+          }}
+        />
+      )}
 
     </div>
   );

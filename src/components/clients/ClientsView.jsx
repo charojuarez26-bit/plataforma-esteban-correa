@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import ClientsListView from './ClientsListView';
 import ClientDetailView from './ClientDetailView';
 import NewClientModal from './NewClientModal';
-import ClientEditModal from './ClientEditModal';
+import EditClientModal from './EditClientModal';
 import ClientDeleteModal from './ClientDeleteModal';
 import RegisterPaymentModal from '../finance/RegisterPaymentModal';
 import ClientAvatar from '../common/ClientAvatar';
@@ -16,7 +16,8 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
   const [internalModalOpen, setInternalModalOpen] = useState(false);
-  const [editingClient, setEditingClient] = useState(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [clientToEdit, setClientToEdit] = useState(null);
   const [deletingClient, setDeletingClient] = useState(null);
   const [transitionClient, setTransitionClient] = useState(null);
   const [paymentModalClient, setPaymentModalClient] = useState(null);
@@ -34,7 +35,8 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
     // Actualización inmediata del estado local, sin recargar la página
     setClients(prev => prev.map(c => (c.id === updated.id ? { ...c, ...updated } : c)));
     setSelectedClient(prev => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
-    setEditingClient(null);
+    setIsEditModalOpen(false);
+    setClientToEdit(null);
     showToast('Alumno actualizado con éxito');
     if (routineChanged) loadClients(); // re-sincroniza las rutinas del alumno
   };
@@ -119,6 +121,7 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
 
         return {
           ...c,
+          peso_actual: c.peso_actual != null ? c.peso_actual : (meta.peso_actual ?? null),
           foto_url: photo,
           avatar_url: photo,
           rutina_activa: routineName,
@@ -293,7 +296,10 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
           clients={clients}
           onSelectClient={(client) => setSelectedClient(client)}
           onOpenModal={() => setInternalModalOpen(true)}
-          onEditClient={(client) => setEditingClient(client)}
+          onEditClient={(client) => {
+            setClientToEdit(client);
+            setIsEditModalOpen(true);
+          }}
           onDeleteClient={(client) => setDeletingClient(client)}
           onRegisterPayment={handleRegisterPayment}
         />
@@ -397,11 +403,17 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
         />
       )}
 
-      {editingClient && (
-        <ClientEditModal
-          client={editingClient}
-          onClose={() => setEditingClient(null)}
-          onSaved={handleClientEdited}
+      {isEditModalOpen && clientToEdit && (
+        <EditClientModal
+          isOpen={isEditModalOpen}
+          clienteAEditar={clientToEdit}
+          onClose={() => {
+            setIsEditModalOpen(false);
+            setClientToEdit(null);
+          }}
+          onSuccess={(updated, opts) => {
+            handleClientEdited(updated, opts);
+          }}
         />
       )}
 
