@@ -42,10 +42,12 @@ import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
 import EditClientModal from './EditClientModal';
 import MedicalRecordViewOnly from '../medical/MedicalRecordViewOnly';
+import WorkoutSessionProgress from '../progress/WorkoutSessionProgress';
 
 export default function ClientDetailView({ client: initialClient, onBack, onUpdateClient, onCreateRoutine }) {
   const [client, setClient] = useState(initialClient);
   const [profileSuccessMsg, setProfileSuccessMsg] = useState(null);
+  const [progresoSubTab, setProgresoSubTab] = useState('cargas'); // 'cargas' | 'antropometria'
 
   useEffect(() => {
     setClient(initialClient);
@@ -1005,110 +1007,153 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
         {/* PESTAÑA 3: PROGRESO */}
         {activeTab === 'progreso' && (
           <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  <TrendingUp className="w-4 h-4 text-brand-light" />
-                  Evolución de Peso & Antropometría
-                </h3>
-                <p className="text-xs text-gray-400">Curva de descenso de peso corporal</p>
-              </div>
+            
+            {/* Sub-tabs: Cargas Reales vs Antropometría */}
+            <div className="flex items-center gap-2 border-b border-dark-700/80 pb-2 overflow-x-auto no-scrollbar">
+              <button
+                type="button"
+                onClick={() => setProgresoSubTab('cargas')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
+                  progresoSubTab === 'cargas'
+                    ? 'bg-brand text-white shadow-glow-red'
+                    : 'text-gray-400 hover:text-white hover:bg-dark-850'
+                }`}
+              >
+                <Dumbbell className="w-4 h-4" />
+                <span>Cargas & Sesiones Reales (Feedback)</span>
+              </button>
 
               <button
-                onClick={() => setIsNewEvalModalOpen(true)}
-                className="px-3.5 py-1.5 rounded-xl bg-brand hover:bg-brand-dark text-white font-bold text-xs shadow-glow-red transition-all flex items-center gap-1.5"
+                type="button"
+                onClick={() => setProgresoSubTab('antropometria')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
+                  progresoSubTab === 'antropometria'
+                    ? 'bg-brand text-white shadow-glow-red'
+                    : 'text-gray-400 hover:text-white hover:bg-dark-850'
+                }`}
               >
-                <Plus className="w-4 h-4" />
-                <span>Registrar Medición</span>
+                <Ruler className="w-4 h-4" />
+                <span>Antropometría & Medidas</span>
               </button>
             </div>
 
-            {/* Gráfico de Línea con Recharts */}
-            <div className="p-4 rounded-xl bg-dark-900 border border-dark-700">
-              <div className="h-60 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={evaluations} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#272733" />
-                    <XAxis dataKey="fecha" stroke="#888" fontSize={11} tickLine={false} />
-                    <YAxis domain={['auto', 'auto']} stroke="#888" fontSize={11} tickLine={false} />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: '#18181f',
-                        borderColor: '#272733',
-                        borderRadius: '0.75rem',
-                        color: '#fff'
-                      }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="peso"
-                      name="Peso (kg)"
-                      stroke="#e50914"
-                      strokeWidth={3}
-                      dot={{ fill: '#e50914', r: 5 }}
-                      activeDot={{ r: 8 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
+            {/* VISTA 1: FEEDBACK DE CARGAS & SESIONES REALES */}
+            {progresoSubTab === 'cargas' && (
+              <WorkoutSessionProgress 
+                clientId={client.id} 
+                clientName={client.nombre_completo} 
+              />
+            )}
 
-            {/* Tabla de Medidas con Comparativa (+/- cm) */}
-            <div className="space-y-3">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-gray-400">
-                Historial de Medidas & Variaciones (+/- cm)
-              </h4>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs text-left">
-                  <thead className="bg-dark-900 text-gray-400 uppercase text-[10px] border-b border-dark-700">
-                    <tr>
-                      <th className="py-2.5 px-3">Fecha</th>
-                      <th className="py-2.5 px-3">Peso</th>
-                      <th className="py-2.5 px-3">Cintura</th>
-                      <th className="py-2.5 px-3">Cadera</th>
-                      <th className="py-2.5 px-3">Brazo</th>
-                      <th className="py-2.5 px-3">Muslo</th>
-                      <th className="py-2.5 px-3">% Grasa</th>
-                      <th className="py-2.5 px-3">Notas</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-dark-700/60 text-gray-300">
-                    {evaluations.map((ev, idx) => {
-                      const prev = idx > 0 ? evaluations[idx - 1] : null;
-                      const cDiff = prev ? (ev.cintura - prev.cintura).toFixed(1) : null;
-                      const hDiff = prev ? (ev.cadera - prev.cadera).toFixed(1) : null;
-                      const bDiff = prev ? (ev.brazo - prev.brazo).toFixed(1) : null;
-                      const mDiff = prev ? (ev.muslo - prev.muslo).toFixed(1) : null;
+            {/* VISTA 2: ANTROPOMETRÍA */}
+            {progresoSubTab === 'antropometria' && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      <TrendingUp className="w-4 h-4 text-brand-light" />
+                      Evolución de Peso & Antropometría
+                    </h3>
+                    <p className="text-xs text-gray-400">Curva de descenso de peso corporal</p>
+                  </div>
 
-                      return (
-                        <tr key={ev.id || idx} className="hover:bg-dark-800/50">
-                          <td className="py-2.5 px-3 font-semibold text-white">{ev.fecha}</td>
-                          <td className="py-2.5 px-3 font-bold text-brand-light">{ev.peso} kg</td>
-                          <td className="py-2.5 px-3">
-                            <span>{ev.cintura} cm</span>
-                            {renderDelta(cDiff, true)}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <span>{ev.cadera} cm</span>
-                            {renderDelta(hDiff, true)}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <span>{ev.brazo} cm</span>
-                            {renderDelta(bDiff, false)}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <span>{ev.muslo} cm</span>
-                            {renderDelta(mDiff, false)}
-                          </td>
-                          <td className="py-2.5 px-3 font-semibold text-amber-400">{ev.porcentaje_grasa}%</td>
-                          <td className="py-2.5 px-3 text-gray-400 truncate max-w-[150px]">{ev.notas || '-'}</td>
+                  <button
+                    onClick={() => setIsNewEvalModalOpen(true)}
+                    className="px-3.5 py-1.5 rounded-xl bg-brand hover:bg-brand-dark text-white font-bold text-xs shadow-glow-red transition-all flex items-center gap-1.5"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Registrar Medición</span>
+                  </button>
+                </div>
+
+                {/* Gráfico de Línea con Recharts */}
+                <div className="p-4 rounded-xl bg-dark-900 border border-dark-700">
+                  <div className="h-60 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={evaluations} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#272733" />
+                        <XAxis dataKey="fecha" stroke="#888" fontSize={11} tickLine={false} />
+                        <YAxis domain={['auto', 'auto']} stroke="#888" fontSize={11} tickLine={false} />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: '#18181f',
+                            borderColor: '#272733',
+                            borderRadius: '0.75rem',
+                            color: '#fff'
+                          }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="peso"
+                          name="Peso (kg)"
+                          stroke="#e50914"
+                          strokeWidth={3}
+                          dot={{ fill: '#e50914', r: 5 }}
+                          activeDot={{ r: 8 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Tabla de Medidas con Comparativa (+/- cm) */}
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-gray-400">
+                    Historial de Medidas & Variaciones (+/- cm)
+                  </h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-dark-900 text-gray-400 uppercase text-[10px] border-b border-dark-700">
+                        <tr>
+                          <th className="py-2.5 px-3">Fecha</th>
+                          <th className="py-2.5 px-3">Peso</th>
+                          <th className="py-2.5 px-3">Cintura</th>
+                          <th className="py-2.5 px-3">Cadera</th>
+                          <th className="py-2.5 px-3">Brazo</th>
+                          <th className="py-2.5 px-3">Muslo</th>
+                          <th className="py-2.5 px-3">% Grasa</th>
+                          <th className="py-2.5 px-3">Notas</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      </thead>
+                      <tbody className="divide-y divide-dark-700/60 text-gray-300">
+                        {evaluations.map((ev, idx) => {
+                          const prev = idx > 0 ? evaluations[idx - 1] : null;
+                          const cDiff = prev ? (ev.cintura - prev.cintura).toFixed(1) : null;
+                          const hDiff = prev ? (ev.cadera - prev.cadera).toFixed(1) : null;
+                          const bDiff = prev ? (ev.brazo - prev.brazo).toFixed(1) : null;
+                          const mDiff = prev ? (ev.muslo - prev.muslo).toFixed(1) : null;
+
+                          return (
+                            <tr key={ev.id || idx} className="hover:bg-dark-800/50">
+                              <td className="py-2.5 px-3 font-semibold text-white">{ev.fecha}</td>
+                              <td className="py-2.5 px-3 font-bold text-brand-light">{ev.peso} kg</td>
+                              <td className="py-2.5 px-3">
+                                <span>{ev.cintura} cm</span>
+                                {renderDelta(cDiff, true)}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span>{ev.cadera} cm</span>
+                                {renderDelta(hDiff, true)}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span>{ev.brazo} cm</span>
+                                {renderDelta(bDiff, false)}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span>{ev.muslo} cm</span>
+                                {renderDelta(mDiff, false)}
+                              </td>
+                              <td className="py-2.5 px-3 font-semibold text-amber-400">{ev.porcentaje_grasa}%</td>
+                              <td className="py-2.5 px-3 text-gray-400 truncate max-w-[150px]">{ev.notas || '-'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
 

@@ -1,13 +1,35 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import BrandLogo, { MotivationalSlogan } from '../common/BrandLogo';
 import { authService } from '../../services/authService';
-import { User, Lock, KeyRound, ArrowRight, ShieldCheck, AlertCircle, MessageCircle } from 'lucide-react';
+import { supabase } from '../../lib/supabaseClient';
+import { 
+  User, 
+  Lock, 
+  KeyRound, 
+  ArrowRight, 
+  ArrowLeft,
+  ShieldCheck, 
+  AlertCircle, 
+  MessageCircle, 
+  Sparkles, 
+  UserCheck,
+  ChevronRight,
+  Loader2 
+} from 'lucide-react';
 
-export default function LoginView({ onLoginSuccess }) {
+export function LoginView({ onLoginSuccess, onStartOnboarding }) {
   const [activeTab, setActiveTab] = useState('student'); // 'student' | 'coach'
-  const [studentName, setStudentName] = useState('');
-  const [studentCode, setStudentCode] = useState('');
+  const [studentMode, setStudentMode] = useState('select'); // 'select' | 'first_time' | 'existing'
   
+  // Opción 1: "Es mi primera vez" (Código de 4 dígitos del coach)
+  const [studentPin, setStudentPin] = useState(['', '', '', '']);
+  const pinRefs = [useRef(null), useRef(null), useRef(null), useRef(null)];
+  
+  // Opción 2: "Ya tengo mi cuenta" (Nombre y Código asignado)
+  const [existingName, setExistingName] = useState('');
+  const [existingCode, setExistingCode] = useState('');
+
+  // Entrenador
   const [coachEmail, setCoachEmail] = useState('');
   const [coachPassword, setCoachPassword] = useState('');
 
@@ -28,21 +50,122 @@ export default function LoginView({ onLoginSuccess }) {
     }
   }, []);
 
-  const handleStudentSubmit = async (e) => {
-    e.preventDefault();
+  // Manejo de "Es mi primera vez" (código de 4 dígitos del entrenador)
+  const handleFirstTimeSubmit = async (e) => {
+    if (e?.preventDefault) e.preventDefault();
     setError(null);
-    setLoading(true);
+    const code = studentPin.join('').trim();
 
+    if (code.length < 4) {
+      setError('Por favor introduce los 4 dígitos del código de tu entrenador.');
+      return;
+    }
+
+    setLoading(true);
     try {
-      const session = await authService.loginAlumno({
-        nombre: studentName,
-        codigo: studentCode
-      });
-      if (onLoginSuccess) {
-        onLoginSuccess(session, '/portal-alumno');
+      const verified = await authService.verifyCoachInvitationCode(code);
+      if (verified && onStartOnboarding) {
+        onStartOnboarding(code);
       }
     } catch (err) {
-      setError(err.message || 'No se encontró un alumno con ese nombre y código. Consulta con Esteban');
+      // Si el código pertenecía a un alumno ya registrado, permitirle ingresar directamente
+      try {
+        const alt = await authService.loginStudentBy4DigitCode(code);
+        if (alt.isComplete && alt.client && onLoginSuccess) {
+          localStorage.setItem('active_student_id', alt.client.id);
+          localStorage.setItem('alumno_session', JSON.stringify(alt.client));
+          onLoginSuccess(alt.session, '/portal-alumno');
+          return;
+        }
+      } catch { /* ignorar y mostrar error original */ }
+
+      setError(err.message || 'Código de 4 dígitos no reconocido. Solicítaselo a Esteban Correa.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Manejo de "Ya tengo mi cuenta" (Nombre + Código Asignado)
+  const handleExistingStudentSubmit = async (e) => {
+    if (e?.preventDefault) e.preventDefault();
+    setError(null);
+
+    // 1. Aplicar .trim() tanto al nombre como al código
+    const cleanName = existingName.trim();
+    const cleanCode = existingCode.trim();
+
+    if (!cleanName) {
+      setError('Por favor ingresa tu nombre y apellido.');
+      return;
+    }
+    if (!cleanCode) {
+      setError('Por favor ingresa tu código o identificador asignado.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // 2 y 3. Consulta a Supabase utilizando .eq('access_code', cleanCode) e .ilike(...)
+      // Nota: En la tabla 'clients' la columna es 'nombre_completo' (se incluye fallback a 'nombre' por compatibilidad)
+      let { data: alumnos, error: queryError } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('access_code', cleanCode)
+        .ilike('nombre_completo', `%${cleanName}%`);
+
+      // Fallback si la columna en la base de datos se llamara 'nombre'
+      if (queryError && (queryError.message?.includes('nombre_completo') || queryError.code === '42703')) {
+        const retry = await supabase
+          .from('clients')
+          .select('*')
+          .eq('access_code', cleanCode)
+          .ilike('nombre', `%${cleanName}%`);
+        alumnos = retry.data;
+        queryError = retry.error;
+      }
+
+      let alumno = alumnos && alumnos.length > 0 ? alumnos[0] : null;
+
+      // Tolerancia adicional para acentos/tildes (ej: Sofía vs Sofia) si el access_code coincide
+      if (!alumno && !queryError) {
+        const { data: byCode } = await supabase
+          .from('clients')
+          .select('*')
+          .eq('access_code', cleanCode);
+
+        if (byCode && byCode.length > 0) {
+          const normalize = (str) => (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+          const normInput = normalize(cleanName);
+          alumno = byCode.find(c => {
+            const normDb = normalize(c.nombre_completo || c.nombre || '');
+            return normDb.includes(normInput) || normInput.includes(normDb) || normInput.split(' ')[0] === normDb.split(' ')[0];
+          }) || null;
+        }
+      }
+
+      if (queryError || !alumno) {
+        throw new Error('No se encontró un alumno con ese nombre y código asignado. Verifica tus datos o consulta con Esteban Correa.');
+      }
+
+      // 4. Si la consulta es exitosa, guardar en localStorage y redirigir
+      localStorage.setItem('active_student_id', alumno.id);
+      localStorage.setItem('alumno_session', JSON.stringify(alumno));
+
+      const userSession = {
+        role: 'student',
+        user: alumno,
+        token: `student-session-${alumno.id}`,
+        loggedAt: new Date().toISOString()
+      };
+
+      authService.saveSession(userSession);
+
+      if (onLoginSuccess) {
+        onLoginSuccess(userSession, '/portal-alumno');
+      }
+    } catch (err) {
+      console.error('[LoginView] Error en login de alumno:', err);
+      setError(err.message || 'No se encontró un alumno con ese nombre y código. Verifica los datos o consulta con Esteban Correa.');
     } finally {
       setLoading(false);
     }
@@ -92,7 +215,7 @@ export default function LoginView({ onLoginSuccess }) {
         <div className="grid grid-cols-2 p-1 bg-dark-900 border border-dark-700 rounded-xl mb-6">
           <button
             type="button"
-            onClick={() => { setActiveTab('student'); setError(null); }}
+            onClick={() => { setActiveTab('student'); setStudentMode('select'); setError(null); }}
             className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
               activeTab === 'student'
                 ? 'bg-brand text-white shadow-lg shadow-brand/30'
@@ -126,63 +249,316 @@ export default function LoginView({ onLoginSuccess }) {
         )}
 
         {/* ========================================================= */}
-        {/* FORMULARIO 1: ALUMNO (PASSWORDLESS REAL)                  */}
+        {/* SECCIÓN 1: ALUMNO (FLUJO DUAL CON SELECTOR INICIAL)       */}
         {/* ========================================================= */}
         {activeTab === 'student' && (
-          <form onSubmit={handleStudentSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-gray-300 mb-1.5">
-                Nombre (o Apellido) *
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej: Martín o Gómez"
-                  value={studentName}
-                  onChange={(e) => setStudentName(e.target.value)}
-                  className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-3 text-base sm:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand transition-all pl-10 min-h-[48px]"
-                />
-                <User className="w-4 h-4 text-gray-500 absolute left-3.5 top-4" />
-              </div>
-            </div>
+          <div className="space-y-4">
+            
+            {/* SUB-VISTA A: PANTALLA DE SELECCIÓN INICIAL */}
+            {studentMode === 'select' && (
+              <div className="space-y-3.5 animate-in fade-in duration-200">
+                <div className="text-center pb-1">
+                  <span className="text-[11px] font-bold text-brand-light uppercase tracking-wider bg-brand/10 border border-brand/20 px-2.5 py-1 rounded-full">
+                    Acceso para Alumnos
+                  </span>
+                  <h2 className="text-base sm:text-lg font-black text-white mt-2.5">
+                    ¿Cómo deseas ingresar?
+                  </h2>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Selecciona una opción para continuar:
+                  </p>
+                </div>
 
-            <div>
-              <div className="flex justify-between items-center mb-1.5">
-                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-300">
-                  Código Único de Alumno *
-                </label>
-                <span className="text-[11px] text-gray-400">Sin contraseña</span>
-              </div>
-              <div className="relative">
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej: MG-4821"
-                  value={studentCode}
-                  onChange={(e) => setStudentCode(e.target.value)}
-                  className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-3 text-base sm:text-sm font-mono tracking-widest text-brand-light placeholder-gray-600 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand transition-all pl-10 uppercase min-h-[48px]"
-                />
-                <KeyRound className="w-4 h-4 text-gray-500 absolute left-3.5 top-4" />
-              </div>
-              <p className="text-[11px] text-gray-400 mt-1.5">
-                ¿No tienes tu código? Solicitáselo a Esteban por WhatsApp.
-              </p>
-            </div>
+                {/* Botón 1: Es mi primera vez */}
+                <button
+                  type="button"
+                  onClick={() => { setStudentMode('first_time'); setError(null); }}
+                  className="w-full text-left p-4 rounded-2xl bg-dark-900/90 border border-dark-700 hover:border-brand transition-all flex items-center justify-between group active:scale-[0.99] shadow-lg shadow-black/40 hover:shadow-brand/20 relative overflow-hidden"
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-12 h-12 rounded-xl bg-brand/15 border border-brand/35 text-brand flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform shadow-inner">
+                      <Sparkles className="w-6 h-6 text-brand-light" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-brand-light bg-brand/20 px-2 py-0.5 rounded-full border border-brand/30">
+                          Nuevo Registro
+                        </span>
+                      </div>
+                      <h3 className="text-sm sm:text-base font-black text-white group-hover:text-brand-light transition-colors mt-0.5">
+                        Es mi primera vez
+                      </h3>
+                      <p className="text-xs text-gray-400 mt-0.5 leading-snug line-clamp-2">
+                        Tengo el código de 4 dígitos de mi coach para crear mi perfil y ficha médica.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="w-8 h-8 rounded-full bg-dark-800 border border-dark-650 flex items-center justify-center text-gray-400 group-hover:text-brand-light group-hover:border-brand/50 group-hover:translate-x-1 transition-all shrink-0 ml-2">
+                    <ChevronRight className="w-4 h-4" />
+                  </div>
+                </button>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3.5 px-4 bg-brand hover:bg-brand-dark text-white font-bold rounded-xl shadow-glow-red hover:shadow-brand/50 transition-all flex items-center justify-center gap-2 group mt-2 disabled:opacity-50 min-h-[48px]"
-            >
-              <span>{loading ? 'Verificando datos...' : 'Ingresar a Mi Portal'}</span>
-              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
-            </button>
-          </form>
+                {/* Botón 2: Ya tengo mi cuenta */}
+                <button
+                  type="button"
+                  onClick={() => { setStudentMode('existing'); setError(null); }}
+                  className="w-full text-left p-4 rounded-2xl bg-dark-900/90 border border-dark-700 hover:border-emerald-500/80 transition-all flex items-center justify-between group active:scale-[0.99] shadow-lg shadow-black/40 hover:shadow-emerald-500/10 relative overflow-hidden"
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-12 h-12 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform shadow-inner">
+                      <UserCheck className="w-6 h-6" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/25">
+                          Alumno Activo
+                        </span>
+                      </div>
+                      <h3 className="text-sm sm:text-base font-black text-white group-hover:text-emerald-400 transition-colors mt-0.5">
+                        Ya tengo mi cuenta
+                      </h3>
+                      <p className="text-xs text-gray-400 mt-0.5 leading-snug line-clamp-2">
+                        Ingresar directamente con mi nombre y código asignado.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="w-8 h-8 rounded-full bg-dark-800 border border-dark-650 flex items-center justify-center text-gray-400 group-hover:text-emerald-400 group-hover:border-emerald-500/50 group-hover:translate-x-1 transition-all shrink-0 ml-2">
+                    <ChevronRight className="w-4 h-4" />
+                  </div>
+                </button>
+
+                <p className="text-[11px] text-gray-500 text-center pt-2">
+                  ¿Dudas sobre cómo ingresar? Consulta con Esteban Correa por WhatsApp.
+                </p>
+              </div>
+            )}
+
+            {/* SUB-VISTA B: ES MI PRIMERA VEZ (CÓDIGO DE 4 DÍGITOS DEL COACH) */}
+            {studentMode === 'first_time' && (
+              <form onSubmit={handleFirstTimeSubmit} className="space-y-4 animate-in fade-in duration-200">
+                <button
+                  type="button"
+                  onClick={() => { setStudentMode('select'); setError(null); }}
+                  className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Volver al selector</span>
+                </button>
+
+                <div className="text-center">
+                  <div className="w-12 h-12 rounded-2xl bg-brand/15 border border-brand/35 text-brand flex items-center justify-center mx-auto mb-2.5">
+                    <Sparkles className="w-6 h-6 text-brand-light" />
+                  </div>
+                  <h2 className="text-base sm:text-lg font-black text-white">
+                    Código de Invitación (4 dígitos)
+                  </h2>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Introduce el código provisto por Esteban para iniciar tu registro y ficha médica.
+                  </p>
+                </div>
+
+                {/* Casillas de los 4 dígitos */}
+                <div
+                  className="flex justify-center items-center gap-3 sm:gap-4 my-3"
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const pasted = e.clipboardData.getData('text').replace(/[^0-9]/g, '').slice(0, 4);
+                    if (!pasted) return;
+                    const newDigits = ['', '', '', ''];
+                    for (let i = 0; i < pasted.length; i++) newDigits[i] = pasted[i];
+                    setStudentPin(newDigits);
+                    if (pasted.length === 4) {
+                      pinRefs[3].current?.focus();
+                      authService.verifyCoachInvitationCode(pasted).then(() => {
+                        if (onStartOnboarding) onStartOnboarding(pasted);
+                      }).catch((err) => {
+                        authService.loginStudentBy4DigitCode(pasted).then((result) => {
+                          if (result.isComplete && result.client && onLoginSuccess) {
+                            localStorage.setItem('active_student_id', result.client.id);
+                            localStorage.setItem('alumno_session', JSON.stringify(result.client));
+                            onLoginSuccess(result.session, '/portal-alumno');
+                          } else {
+                            setError(err.message);
+                          }
+                        }).catch(() => setError(err.message));
+                      });
+                    }
+                  }}
+                >
+                  {studentPin.map((digit, idx) => (
+                    <input
+                      key={idx}
+                      ref={pinRefs[idx]}
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={1}
+                      autoComplete="one-time-code"
+                      value={digit}
+                      onChange={(e) => {
+                        setError(null);
+                        const clean = e.target.value.replace(/[^0-9]/g, '').slice(-1);
+                        const updated = [...studentPin];
+                        updated[idx] = clean;
+                        setStudentPin(updated);
+                        if (clean && idx < 3) {
+                          pinRefs[idx + 1].current?.focus();
+                        }
+                        if (updated.join('').length === 4) {
+                          const full = updated.join('');
+                          authService.verifyCoachInvitationCode(full).then(() => {
+                            if (onStartOnboarding) onStartOnboarding(full);
+                          }).catch((err) => {
+                            authService.loginStudentBy4DigitCode(full).then((result) => {
+                              if (result.isComplete && result.client && onLoginSuccess) {
+                                localStorage.setItem('active_student_id', result.client.id);
+                                localStorage.setItem('alumno_session', JSON.stringify(result.client));
+                                onLoginSuccess(result.session, '/portal-alumno');
+                              } else {
+                                setError(err.message);
+                              }
+                            }).catch(() => setError(err.message));
+                          });
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Backspace' && !studentPin[idx] && idx > 0) {
+                          pinRefs[idx - 1].current?.focus();
+                        }
+                      }}
+                      className="w-12 h-14 sm:w-14 sm:h-16 text-center text-2xl font-mono font-black text-brand-light bg-dark-900 border border-dark-700 rounded-xl focus:border-brand focus:ring-2 focus:ring-brand/30 focus:outline-none transition-all shadow-inner"
+                      autoFocus={idx === 0}
+                    />
+                  ))}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading || studentPin.some(d => !d)}
+                  className="w-full py-3.5 px-4 bg-brand hover:bg-brand-dark text-white font-bold rounded-xl shadow-glow-red hover:shadow-brand/50 transition-all flex items-center justify-center gap-2 group mt-2 disabled:opacity-40 min-h-[48px] text-sm active:scale-95"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Verificando código...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Continuar al Registro</span>
+                      <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+                    </>
+                  )}
+                </button>
+
+                <div className="pt-2 text-center">
+                  <button
+                    type="button"
+                    onClick={() => { setStudentMode('existing'); setError(null); }}
+                    className="text-xs text-gray-400 hover:text-white transition-colors"
+                  >
+                    ¿Ya tienes una cuenta creada? <span className="text-brand-light font-bold underline">Ingresa aquí</span>
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* SUB-VISTA C: YA TENGO MI CUENTA (NOMBRE + CÓDIGO ASIGNADO) */}
+            {studentMode === 'existing' && (
+              <form onSubmit={handleExistingStudentSubmit} className="space-y-4 animate-in fade-in duration-200">
+                <button
+                  type="button"
+                  onClick={() => { setStudentMode('select'); setError(null); }}
+                  className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Volver al selector</span>
+                </button>
+
+                <div className="text-center">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-400 flex items-center justify-center mx-auto mb-2.5">
+                    <UserCheck className="w-6 h-6" />
+                  </div>
+                  <h2 className="text-base sm:text-lg font-black text-white">
+                    Ingreso para Alumnos
+                  </h2>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Ingresa tu nombre y tu código asignado para entrar a tu Dashboard.
+                  </p>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-300 mb-1.5">
+                      Tu Nombre Completo *
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ej: Juan Pérez"
+                        value={existingName}
+                        onChange={(e) => setExistingName(e.target.value)}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-3 text-base sm:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all pl-10 min-h-[48px]"
+                      />
+                      <User className="w-4 h-4 text-gray-500 absolute left-3.5 top-4" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-300 mb-1.5">
+                      Código o Identificador Asignado *
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ej: JP-9505 o 9505"
+                        value={existingCode}
+                        onChange={(e) => setExistingCode(e.target.value.toUpperCase())}
+                        className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-3 text-base sm:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all pl-10 min-h-[48px] font-mono tracking-wider"
+                      />
+                      <KeyRound className="w-4 h-4 text-gray-500 absolute left-3.5 top-4" />
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-1">
+                      Es el código provisto por tu entrenador (ej: iniciales + 4 números).
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading || !existingName.trim() || !existingCode.trim()}
+                  className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/30 transition-all flex items-center justify-center gap-2 group mt-2 disabled:opacity-40 min-h-[48px] text-sm active:scale-95"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Verificando alumno...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Ingresar a Mi Portal</span>
+                      <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+                    </>
+                  )}
+                </button>
+
+                <div className="pt-2 text-center">
+                  <button
+                    type="button"
+                    onClick={() => { setStudentMode('first_time'); setError(null); }}
+                    className="text-xs text-gray-400 hover:text-white transition-colors"
+                  >
+                    ¿Es tu primera vez con Esteban? <span className="text-brand-light font-bold underline">Regístrate aquí</span>
+                  </button>
+                </div>
+              </form>
+            )}
+
+          </div>
         )}
 
         {/* ========================================================= */}
-        {/* FORMULARIO 2: ENTRENADOR (SUPABASE AUTH REAL)             */}
+        {/* SECCIÓN 2: ENTRENADOR (SUPABASE AUTH REAL)                */}
         {/* ========================================================= */}
         {activeTab === 'coach' && (
           <form onSubmit={handleCoachSubmit} className="space-y-4">
@@ -261,3 +637,5 @@ export default function LoginView({ onLoginSuccess }) {
     </div>
   );
 }
+
+export default LoginView;

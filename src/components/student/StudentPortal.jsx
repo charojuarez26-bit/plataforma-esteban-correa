@@ -52,6 +52,7 @@ import {
 } from '../../utils/paymentUtils';
 import ExerciseTechniqueModal from '../exercises/ExerciseTechniqueModal';
 import ClientAvatar from '../common/ClientAvatar';
+import StaticGif from '../common/StaticGif';
 import AboutModal from '../AboutModal';
 import MedicalRecordModal from '../medical/MedicalRecordModal';
 import MedicalRecordViewOnly from '../medical/MedicalRecordViewOnly';
@@ -68,6 +69,7 @@ export default function StudentPortal({ student, onLogout }) {
   const [completedSets, setCompletedSets] = useState({});
   const [exerciseLogs, setExerciseLogs] = useState({});
   const [trainingSessions, setTrainingSessions] = useState([]);
+  const [studentSessionLogs, setStudentSessionLogs] = useState([]);
   const [selectedExerciseForModal, setSelectedExerciseForModal] = useState(null);
 
   // Ficha Médica y de Salud
@@ -91,6 +93,7 @@ export default function StudentPortal({ student, onLogout }) {
   const [isFinishingWorkout, setIsFinishingWorkout] = useState(false);
   const [completedSessionsToday, setCompletedSessionsToday] = useState([]);
   const [entrenamientosDeHoy, setEntrenamientosDeHoy] = useState([]);
+  const [sessionComments, setSessionComments] = useState('');
 
   // Auto-Rest Timer con Feedback Nativo (Vibración y Sonido)
   const [restTimer, setRestTimer] = useState(0);
@@ -179,6 +182,13 @@ export default function StudentPortal({ student, onLogout }) {
     setRoutine(r);
     setEvaluations(ev);
     setPayments(studentPayments);
+
+    try {
+      const sLogs = await dataService.getClientSessionLogs(student.id);
+      setStudentSessionLogs(sLogs || []);
+    } catch (errLogs) {
+      console.warn('Error cargando historial de sesiones del alumno:', errLogs);
+    }
 
     // Cargar ficha médica directamente desde Supabase sin confiar en flags ficticios
     try {
@@ -459,12 +469,63 @@ export default function StudentPortal({ student, onLogout }) {
     const dayLabel = `Día ${selectedDayIndex + 1}`;
     const today = new Date().toISOString().split('T')[0];
     const dayId = currentDay.id || `dia-${selectedDayIndex + 1}`;
+    const studentId = student?.id || currentStudent?.id;
 
     try {
-      // ACCIÓN DE GUARDAR: SOLO inserta en la tabla de historial (training_sessions)
-      // NUNCA muta ni altera la estructura de la rutina asignada ni sus días
+      // 1. Mapear datos reales ejecutados SERIE POR SERIE para session_exercise_logs
+      const exercisesForLog = [];
+
+      (currentDay.ejercicios || []).forEach(item => {
+        const totalSets = Math.max(1, parseInt(item.series, 10) || 1);
+
+        for (let sIdx = 0; sIdx < totalSets; sIdx++) {
+          const isDone = Boolean(completedSets[`${item.id}-${sIdx}`]);
+          
+          // Buscar valores específicos ingresados para esta serie
+          const setPesoInput = exerciseLogs[`${item.id}_set_${sIdx}_peso`];
+          const setRepsInput = exerciseLogs[`${item.id}_set_${sIdx}_reps`];
+
+          // Fallbacks: input específico de serie -> input general -> prescripción del coach
+          const actualWeight = (setPesoInput !== undefined && setPesoInput !== '')
+            ? setPesoInput
+            : ((exerciseLogs[`${item.id}_peso`] !== undefined && exerciseLogs[`${item.id}_peso`] !== '')
+              ? exerciseLogs[`${item.id}_peso`]
+              : (item.peso_sugerido || 0));
+
+          const actualReps = (setRepsInput !== undefined && setRepsInput !== '')
+            ? setRepsInput
+            : ((exerciseLogs[`${item.id}_reps`] !== undefined && exerciseLogs[`${item.id}_reps`] !== '')
+              ? exerciseLogs[`${item.id}_reps`]
+              : (item.repeticiones || 10));
+
+          exercisesForLog.push({
+            exercise_name: item.exercise?.nombre || 'Ejercicio',
+            prescribed_sets: totalSets,
+            prescribed_reps: item.repeticiones,
+            prescribed_weight: item.peso_sugerido,
+            actual_sets: 1, // 1 serie individual registrada
+            actual_reps: actualReps,
+            actual_weight: actualWeight,
+            set_number: sIdx + 1,
+            is_completed: isDone
+          });
+        }
+      });
+
+      // 2. Guardar en session_logs y session_exercise_logs (feedback de cargas)
+      const saveRes = await dataService.saveWorkoutSession({
+        clientId: studentId,
+        comentarios: sessionComments,
+        exercises: exercisesForLog
+      });
+
+      if (saveRes?.data) {
+        setStudentSessionLogs(prev => [saveRes.data, ...prev]);
+      }
+
+      // 3. Registrar en training_sessions para preservar estadísticas de asistencia y calendario
       const recorded = await dataService.recordTrainingSession({
-        clientId: student.id,
+        clientId: studentId,
         nombreDia: dayLabel,
         diaRutina: dayLabel,
         dayId: dayId,
@@ -478,6 +539,7 @@ export default function StudentPortal({ student, onLogout }) {
         setEntrenamientosDeHoy(prev => [recorded, ...prev]);
       }
       setCompletedSessionsToday(prev => [...prev, dayId, dayLabel, currentDay.dia].filter(Boolean));
+      setSessionComments('');
       setShowFinishConfirmModal(false);
       setShowFinishSuccessModal(true);
     } catch (err) {
@@ -582,8 +644,18 @@ export default function StudentPortal({ student, onLogout }) {
               </div>
 
               <div className="mt-3.5 pt-2.5 border-t border-white/10 flex items-center justify-between text-xs text-gray-300">
-                <span className="truncate max-w-[75%]">🎯 {student.objetivo}</span>
-                <span className="text-emerald-400 font-bold shrink-0">{student.estado || 'Activo'}</span>
+                <span className="truncate max-w-[65%]">🎯 {student.objetivo}</span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-emerald-400 font-bold">{student.estado || 'Activo'}</span>
+                  <button
+                    onClick={onLogout}
+                    title="Cerrar sesión en este dispositivo"
+                    className="text-[11px] text-gray-400 hover:text-red-400 flex items-center gap-1 pl-2 border-l border-white/10 transition-colors"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    <span className="hidden sm:inline">Salir</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1091,7 +1163,7 @@ export default function StudentPortal({ student, onLogout }) {
                   >
                     <div className="flex items-start gap-3">
                       <div className="w-16 h-16 rounded-xl bg-white p-1 border border-dark-700 shrink-0 flex items-center justify-center overflow-hidden">
-                        <img
+                        <StaticGif
                           src={item.exercise?.gif_url || item.exercise?.imagen_url}
                           alt={item.exercise?.nombre || 'Ejercicio'}
                           className="w-full h-full object-contain"
@@ -1139,78 +1211,113 @@ export default function StudentPortal({ student, onLogout }) {
                       </div>
                     </div>
 
-                    {/* Registro de Carga y Reps del Alumno (Inputs con bloqueo en Solo Lectura) */}
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      <div>
-                        <label className="block text-[10px] font-semibold text-gray-400 mb-1">
-                          Peso Real (kg)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.5"
-                          disabled={isReadOnly}
-                          value={exerciseLogs[`${item.id}_peso`] ?? ''}
-                          onChange={(e) => setExerciseLogs(prev => ({ ...prev, [`${item.id}_peso`]: e.target.value }))}
-                          placeholder={item.peso_sugerido ? `${item.peso_sugerido}` : 'Ej: 50'}
-                          className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-brand disabled:opacity-50 disabled:bg-gray-800/40 disabled:text-gray-400 disabled:border-transparent disabled:cursor-not-allowed transition-colors"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-semibold text-gray-400 mb-1">
-                          Reps Realizadas
-                        </label>
-                        <input
-                          type="text"
-                          disabled={isReadOnly}
-                          value={exerciseLogs[`${item.id}_reps`] ?? ''}
-                          onChange={(e) => setExerciseLogs(prev => ({ ...prev, [`${item.id}_reps`]: e.target.value }))}
-                          placeholder={item.repeticiones ? `${item.repeticiones}` : 'Ej: 12'}
-                          className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-brand disabled:opacity-50 disabled:bg-gray-800/40 disabled:text-gray-400 disabled:border-transparent disabled:cursor-not-allowed transition-colors"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Checklist interactivo de series con área de toque táctil de 44px */}
-                    <div className="pt-2">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[11px] uppercase font-bold text-gray-300">
-                          Marcar series completadas:
+                    {/* REGISTRO DETALLADO SERIE POR SERIE */}
+                    <div className="space-y-2 pt-2 border-t border-dark-700/60">
+                      <div className="flex items-center justify-between text-[11px] font-bold text-gray-300 px-1">
+                        <span className="uppercase tracking-wider flex items-center gap-1.5 text-brand-light">
+                          <Dumbbell className="w-3.5 h-3.5" />
+                          Registro Serie por Serie
                         </span>
-                        <span className="text-[10px] text-gray-400">
-                          {isReadOnly ? 'Series bloqueadas (Solo lectura)' : 'Toca al terminar cada serie'}
+                        <span className="text-[10px] text-gray-400 font-normal">
+                          {isReadOnly ? 'Bloqueado (Solo lectura)' : 'Toca "Listo" al terminar cada serie'}
                         </span>
                       </div>
 
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        {Array.from({ length: item.series }).map((_, sIdx) => {
+                      {/* Header de columnas */}
+                      <div className="grid grid-cols-12 gap-2 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 text-center">
+                        <div className="col-span-3 text-left pl-1">Serie</div>
+                        <div className="col-span-3">Peso (kg)</div>
+                        <div className="col-span-3">Reps</div>
+                        <div className="col-span-3">Estado</div>
+                      </div>
+
+                      {/* Filas independientes por cada serie */}
+                      <div className="space-y-2">
+                        {Array.from({ length: Math.max(1, parseInt(item.series, 10) || 1) }).map((_, sIdx) => {
                           const isDone = isReadOnly || Boolean(completedSets[`${item.id}-${sIdx}`]);
+                          const setPeso = exerciseLogs[`${item.id}_set_${sIdx}_peso`] ?? '';
+                          const setReps = exerciseLogs[`${item.id}_set_${sIdx}_reps`] ?? '';
+
                           return (
-                            <button
+                            <div
                               key={sIdx}
-                              type="button"
-                              disabled={isReadOnly}
-                              onClick={() => toggleSetCompleted(item.id, sIdx, item.descanso_seg || item.descanso)}
-                              className={`min-h-[44px] px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 border select-none disabled:cursor-not-allowed disabled:pointer-events-none ${
+                              className={`grid grid-cols-12 gap-2 items-center p-2 rounded-xl border transition-all ${
                                 isDone
-                                  ? isReadOnly
-                                    ? 'bg-emerald-950/60 text-emerald-400/80 border-emerald-500/30'
-                                    : 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-950/50 active:scale-95'
-                                  : isReadOnly
-                                    ? 'bg-dark-900/40 text-gray-600 border-dark-800'
-                                    : 'bg-dark-900 text-gray-300 border-dark-700 hover:border-gray-500 hover:text-white active:scale-95'
+                                  ? 'bg-emerald-950/30 border-emerald-500/40 shadow-sm'
+                                  : 'bg-dark-900 border-dark-700/80 hover:border-dark-600'
                               }`}
                             >
-                              <span className={`w-4 h-4 rounded border flex items-center justify-center text-[10px] ${
-                                isDone 
-                                  ? isReadOnly 
-                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 font-black' 
-                                    : 'bg-white text-emerald-700 border-white font-black' 
-                                  : 'border-gray-500'
-                              }`}>
-                                {isDone ? '✓' : ''}
-                              </span>
-                              <span>Serie {sIdx + 1}</span>
-                            </button>
+                              {/* Columna 1: Número de Serie & Objetivo */}
+                              <div className="col-span-3 flex items-center gap-1.5 pl-0.5">
+                                <span className={`w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black shrink-0 ${
+                                  isDone 
+                                    ? 'bg-emerald-500 text-white shadow-sm' 
+                                    : 'bg-dark-800 text-gray-300 border border-dark-700'
+                                }`}>
+                                  {sIdx + 1}
+                                </span>
+                                <div className="leading-tight min-w-0">
+                                  <span className="text-[11px] font-bold text-white block">Serie {sIdx + 1}</span>
+                                  <span className="text-[9px] text-gray-500 block truncate" title={`Obj: ${item.repeticiones} reps @ ${item.peso_sugerido || '-'} kg`}>
+                                    Obj: {item.repeticiones}r
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Columna 2: Input Peso Real (kg) */}
+                              <div className="col-span-3">
+                                <input
+                                  type="number"
+                                  step="0.5"
+                                  min="0"
+                                  disabled={isReadOnly}
+                                  value={setPeso}
+                                  onChange={(e) => setExerciseLogs(prev => ({
+                                    ...prev,
+                                    [`${item.id}_set_${sIdx}_peso`]: e.target.value
+                                  }))}
+                                  placeholder={item.peso_sugerido ? `${item.peso_sugerido}` : 'kg'}
+                                  className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
+                                />
+                              </div>
+
+                              {/* Columna 3: Input Reps Reales */}
+                              <div className="col-span-3">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  disabled={isReadOnly}
+                                  value={setReps}
+                                  onChange={(e) => setExerciseLogs(prev => ({
+                                    ...prev,
+                                    [`${item.id}_set_${sIdx}_reps`]: e.target.value
+                                  }))}
+                                  placeholder={item.repeticiones ? `${item.repeticiones}` : 'reps'}
+                                  className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
+                                />
+                              </div>
+
+                              {/* Columna 4: Botón o Estado Completada */}
+                              <div className="col-span-3">
+                                <button
+                                  type="button"
+                                  disabled={isReadOnly}
+                                  onClick={() => toggleSetCompleted(item.id, sIdx, item.descanso_seg || item.descanso)}
+                                  className={`w-full min-h-[38px] px-1.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 border select-none ${
+                                    isDone
+                                      ? isReadOnly
+                                        ? 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30'
+                                        : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500 shadow-md shadow-emerald-950/50 active:scale-95'
+                                      : isReadOnly
+                                        ? 'bg-dark-950/40 text-gray-600 border-dark-800 cursor-not-allowed'
+                                        : 'bg-dark-800 hover:bg-dark-750 text-gray-300 border-dark-700 hover:border-gray-500 hover:text-white active:scale-95'
+                                  }`}
+                                >
+                                  <CheckCircle2 className={`w-3.5 h-3.5 ${isDone ? 'text-white' : 'text-gray-500'}`} />
+                                  <span>{isDone ? 'Hecha' : 'Listo'}</span>
+                                </button>
+                              </div>
+                            </div>
                           );
                         })}
                       </div>
@@ -1224,7 +1331,7 @@ export default function StudentPortal({ student, onLogout }) {
                   </div>
                 ))}
 
-                {/* BOTÓN FINALIZAR ENTRENO (BLOQUEADO EN MODO SOLO LECTURA POR HOY) */}
+                {/* BOTÓN FINALIZAR Y GUARDAR SESIÓN (BLOQUEADO EN MODO SOLO LECTURA POR HOY) */}
                 <div className="pt-3">
                   {isReadOnly ? (
                     <button
@@ -1240,10 +1347,10 @@ export default function StudentPortal({ student, onLogout }) {
                       type="button"
                       onClick={() => setShowFinishConfirmModal(true)}
                       disabled={isFinishingWorkout}
-                      className="bg-red-600 hover:bg-red-500 active:scale-[0.98] w-full p-4 rounded-xl text-lg font-bold text-white flex items-center justify-center gap-2 shadow-glow-red hover:shadow-lg transition-all cursor-pointer"
+                      className="bg-red-600 hover:bg-red-500 active:scale-[0.98] w-full p-4 rounded-xl text-base sm:text-lg font-bold text-white flex items-center justify-center gap-2 shadow-glow-red hover:shadow-lg transition-all cursor-pointer"
                     >
                       <Flame className="w-6 h-6 text-amber-300" />
-                      <span>Finalizar Entreno</span>
+                      <span>Finalizar y Guardar Sesión</span>
                     </button>
                   )}
                 </div>
@@ -1306,6 +1413,81 @@ export default function StudentPortal({ student, onLogout }) {
                   </div>
                 </div>
               ))}
+            </div>
+
+            {/* Historial de Entrenamientos & Cargas Reales del Alumno */}
+            <div className="space-y-2 pt-2">
+              <span className="text-xs font-bold text-gray-300 uppercase px-1 flex items-center gap-1.5">
+                <Dumbbell className="w-4 h-4 text-brand" />
+                Mis Entrenamientos & Cargas Reales
+              </span>
+              
+              {studentSessionLogs.length === 0 ? (
+                <div className="card-dark rounded-xl p-4 text-center text-xs text-gray-400 border border-dashed border-dark-700">
+                  Aún no has registrado sesiones. Cuando completes tu rutina y pulses "Finalizar y Guardar Sesión", verás aquí tus marcas y sensaciones.
+                </div>
+              ) : (
+                studentSessionLogs.map((sess) => {
+                  const exList = sess.session_exercise_logs || [];
+                  const sessDate = sess.fecha 
+                    ? new Date(sess.fecha).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' })
+                    : 'Sesión';
+
+                  return (
+                    <div key={sess.id} className="card-dark rounded-xl p-3.5 text-xs space-y-2.5">
+                      <div className="flex justify-between items-center border-b border-dark-700/60 pb-1.5">
+                        <span className="font-bold text-white flex items-center gap-1.5">
+                          <Flame className="w-3.5 h-3.5 text-amber-400" />
+                          {sessDate}
+                        </span>
+                        <span className="text-[10px] text-gray-400 font-semibold bg-dark-900 px-2 py-0.5 rounded-full border border-dark-700">
+                          {exList.length} ejercicios
+                        </span>
+                      </div>
+
+                      {sess.comentarios_alumno && (
+                        <p className="text-[11px] text-brand-light italic bg-brand-950/20 p-2 rounded-lg border border-brand/20">
+                          💬 "{sess.comentarios_alumno}"
+                        </p>
+                      )}
+
+                      <div className="space-y-2 pt-0.5">
+                        {(() => {
+                          const groupedMap = new Map();
+                          exList.forEach((ex) => {
+                            const name = ex.exercise_name || 'Ejercicio';
+                            if (!groupedMap.has(name)) {
+                              groupedMap.set(name, []);
+                            }
+                            groupedMap.get(name).push(ex);
+                          });
+
+                          return Array.from(groupedMap.entries()).map(([exName, setsArr], i) => (
+                            <div key={i} className="p-2 rounded-lg bg-dark-900/70 border border-dark-700/60 space-y-1">
+                              <div className="flex justify-between items-center text-[11px]">
+                                <span className="font-bold text-white">{exName}</span>
+                                <span className="text-[10px] text-gray-400 font-mono">
+                                  {setsArr.length} {setsArr.length === 1 ? 'serie' : 'series'}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                {setsArr.map((s, sIndex) => (
+                                  <span key={sIndex} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-dark-950 border border-dark-700 text-[10px] text-gray-300 font-mono">
+                                    <strong className="text-gray-400">S{sIndex + 1}:</strong>
+                                    <span className="text-white font-bold">{s.actual_reps || s.prescribed_reps}r</span>
+                                    <span>@</span>
+                                    <span className="text-brand-light font-bold">{s.actual_weight || s.prescribed_weight}kg</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         )}
@@ -1522,7 +1704,7 @@ export default function StudentPortal({ student, onLogout }) {
           Esteban Correa Personal Trainer • Plataforma Móvil
         </p>
 
-        <div>
+        <div className="flex items-center justify-center gap-2.5 flex-wrap">
           <button
             type="button"
             onClick={() => setIsAboutModalOpen(true)}
@@ -1530,6 +1712,16 @@ export default function StudentPortal({ student, onLogout }) {
           >
             <Info className="w-3.5 h-3.5 text-brand" />
             <span>Acerca de la app / Soporte</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onLogout}
+            title="Cerrar sesión en este dispositivo"
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-300 border border-red-800/40 text-[11px] font-semibold transition-all active:scale-95 shadow-sm"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Cerrar Sesión</span>
           </button>
         </div>
       </footer>
@@ -1582,18 +1774,32 @@ export default function StudentPortal({ student, onLogout }) {
         </div>
       )}
 
-      {/* 2. Modal Confirmación: Finalizar Entreno */}
+      {/* 2. Modal Confirmación: Finalizar Entreno & Guardar Sesión con Feedback */}
       {showFinishConfirmModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-dark-900 border border-dark-700 shadow-2xl p-6 text-center space-y-5 animate-in zoom-in-95">
+          <div className="w-full max-w-sm rounded-2xl bg-dark-900 border border-dark-700 shadow-2xl p-6 text-center space-y-4 animate-in zoom-in-95">
             <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
               <Flame className="w-7 h-7" />
             </div>
             <div className="space-y-1.5">
-              <h3 className="text-base font-black text-white">¿Finalizar el entrenamiento de hoy?</h3>
+              <h3 className="text-base font-black text-white">¿Finalizar y guardar sesión?</h3>
               <p className="text-xs text-gray-400">
-                ¿Completaste todos los ejercicios de {currentDay?.dia || `Día ${selectedDayIndex + 1}`}?
+                Se registrará tu entrenamiento de {currentDay?.dia || `Día ${selectedDayIndex + 1}`} con los pesos, repeticiones y series ejecutadas.
               </p>
+            </div>
+
+            {/* Campo opcional de comentarios / feedback para el coach */}
+            <div className="text-left space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-300">
+                Feedback para tu Coach (opcional):
+              </label>
+              <textarea
+                rows="3"
+                value={sessionComments}
+                onChange={(e) => setSessionComments(e.target.value)}
+                placeholder="¿Cómo te sentiste? Sensaciones, RPE, molestias o marcas alcanzadas..."
+                className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-xl p-2.5 text-xs text-white placeholder-gray-500 focus:outline-none transition-colors resize-none"
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-3 pt-2">
@@ -1610,7 +1816,7 @@ export default function StudentPortal({ student, onLogout }) {
                 onClick={handleConfirmFinishWorkout}
                 className="py-3 px-4 rounded-xl bg-brand hover:bg-brand-dark text-white font-black text-xs transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-glow-red"
               >
-                {isFinishingWorkout ? 'Guardando...' : 'Sí, finalizar'}
+                {isFinishingWorkout ? 'Guardando...' : 'Finalizar y Guardar'}
               </button>
             </div>
           </div>

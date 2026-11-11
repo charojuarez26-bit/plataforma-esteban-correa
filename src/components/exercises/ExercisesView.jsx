@@ -14,6 +14,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
+import StaticGif from '../common/StaticGif';
 
 export default function ExercisesView() {
   const [exercises, setExercises] = useState([]);
@@ -139,8 +140,8 @@ export default function ExercisesView() {
               >
                 <div>
                   <div className="relative h-32 rounded-lg overflow-hidden mb-2.5 bg-dark-900 border border-dark-700/60">
-                    <img
-                      src={ex.imagen_url}
+                    <StaticGif
+                      src={ex.imagen_url || ex.video_url}
                       alt={ex.nombre}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
@@ -304,8 +305,9 @@ export default function ExercisesView() {
           <div className="w-full max-w-md bg-dark-850 border border-dark-700 rounded-2xl p-5 space-y-4">
             <div className="relative w-full h-48 sm:h-64 bg-white rounded-xl overflow-hidden flex items-center justify-center p-2 mb-4 border border-dark-700/60 shadow-md">
               <img
-                src={selectedExercise.gif_url || selectedExercise.imagen_url}
+                src={selectedExercise.video_url || selectedExercise.gif_url || selectedExercise.imagen_url}
                 alt={selectedExercise.nombre}
+                loading="lazy"
                 className="w-full h-full object-contain"
               />
               <span className="absolute top-2 left-2 text-xs font-bold px-2.5 py-1 rounded-lg bg-brand text-white shadow-sm">

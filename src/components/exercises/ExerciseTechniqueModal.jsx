@@ -151,6 +151,14 @@ export default function ExerciseTechniqueModal({ exercise, isOpen, onClose, canE
               <Dumbbell className="w-5 h-5 text-brand shrink-0" />
               <span>{exercise.nombre}</span>
             </h2>
+            {exercise.equipamiento && (
+              <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-300">
+                <span className="text-[10px] uppercase font-bold text-brand-light tracking-wider bg-brand/10 border border-brand/20 px-2 py-0.5 rounded-lg">
+                  Equipamiento
+                </span>
+                <span className="font-medium text-gray-200">{exercise.equipamiento}</span>
+              </div>
+            )}
           </div>
 
           {/* Reproductor de Video / Demostración en Loop / Imagen */}

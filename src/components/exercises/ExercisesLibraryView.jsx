@@ -14,13 +14,13 @@ import {
   Play,
   Loader2
 } from 'lucide-react';
+import { supabase } from '../../lib/supabaseClient';
 import { dataService } from '../../services/dataService';
 import { authService } from '../../services/authService';
 import ExerciseTechniqueModal, { ExerciseMedia } from './ExerciseTechniqueModal';
+import StaticGif from '../common/StaticGif';
 
-const PAGE_SIZE = 16;
-
-const BASE_CATEGORIES = ['Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Core / Abdomen', 'Glúteos'];
+const PAGE_SIZE = 24;
 
 const DEFAULT_IMAGES = {
   Pecho: 'https://images.unsplash.com/photo-1517838277536-f5f99be501cd?auto=format&fit=crop&w=500&q=80',
@@ -28,9 +28,11 @@ const DEFAULT_IMAGES = {
   Piernas: 'https://images.unsplash.com/photo-1574680096145-d05b474e2155?auto=format&fit=crop&w=500&q=80',
   Hombros: 'https://images.unsplash.com/photo-1532029837206-abbe2b7620e3?auto=format&fit=crop&w=500&q=80',
   Brazos: 'https://images.unsplash.com/photo-1583454110551-21f2fa2afe61?auto=format&fit=crop&w=500&q=80',
+  'Abdomen / Core': 'https://images.unsplash.com/photo-1566241142559-40e1dab266c6?auto=format&fit=crop&w=500&q=80',
   'Core / Abdomen': 'https://images.unsplash.com/photo-1566241142559-40e1dab266c6?auto=format&fit=crop&w=500&q=80',
   Core: 'https://images.unsplash.com/photo-1566241142559-40e1dab266c6?auto=format&fit=crop&w=500&q=80',
   Glúteos: 'https://images.unsplash.com/photo-1574680096145-d05b474e2155?auto=format&fit=crop&w=500&q=80',
+  'Cardio / Otros': 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?auto=format&fit=crop&w=500&q=80',
   General: 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?auto=format&fit=crop&w=500&q=80'
 };
 
@@ -44,7 +46,7 @@ export default function ExercisesLibraryView() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
-  const [customGroups, setCustomGroups] = useState([]);
+  const [categoriasDinamicas, setCategoriasDinamicas] = useState([]);
 
   // Modales
   const [selectedExerciseForDetail, setSelectedExerciseForDetail] = useState(null);
@@ -55,7 +57,8 @@ export default function ExercisesLibraryView() {
   // Formulario nuevo/editar ejercicio
   const [formData, setFormData] = useState({
     nombre: '',
-    grupo_muscular: 'Pecho',
+    grupo_muscular: '',
+    equipamiento: '',
     imagen_url: '',
     video_url: '',
     instrucciones: '',
@@ -76,32 +79,43 @@ export default function ExercisesLibraryView() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // 2. Cargar grupos musculares distintos desde Supabase al montar
+  // 2. Cargar grupos musculares dinámicos desde Supabase al montar
   useEffect(() => {
-    let isMounted = true;
-    dataService.getDistinctMuscleGroups().then((groups) => {
-      if (isMounted && groups && groups.length > 0) {
-        setCustomGroups(groups);
+    const fetchCategorias = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('exercises')
+          .select('grupo_muscular');
+
+        if (error) {
+          console.error('Error al obtener grupos musculares de Supabase:', error);
+          return;
+        }
+
+        if (data) {
+          const categoriasUnicas = [
+            ...new Set(
+              data
+                .map((item) => item?.grupo_muscular)
+                .filter((cat) => cat && typeof cat === 'string' && cat.trim() !== '')
+                .map((cat) => cat.trim())
+            )
+          ].sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+
+          setCategoriasDinamicas(categoriasUnicas);
+        }
+      } catch (err) {
+        console.error('Error inesperado al cargar categorías de ejercicios:', err);
       }
-    });
-    return () => {
-      isMounted = false;
     };
+
+    fetchCategorias();
   }, []);
 
-  // Grupos musculares dinámicos (Base + Cualquier grupo creado por el coach)
+  // Grupos musculares para filtros de la biblioteca ('Todos' + categorías dinámicas)
   const dynamicCategories = useMemo(() => {
-    const set = new Set(BASE_CATEGORIES);
-    customGroups.forEach((g) => {
-      if (g && !set.has(g)) set.add(g);
-    });
-    exercises.forEach((ex) => {
-      if (ex.grupo_muscular && !set.has(ex.grupo_muscular)) {
-        set.add(ex.grupo_muscular);
-      }
-    });
-    return Array.from(set);
-  }, [customGroups, exercises]);
+    return ['Todos', ...categoriasDinamicas];
+  }, [categoriasDinamicas]);
 
   // 3. Consulta paginada a Supabase
   const fetchExercises = useCallback(async (pageToLoad, isReset = false) => {
@@ -174,7 +188,8 @@ export default function ExercisesLibraryView() {
     setEditingExercise(null);
     setFormData({
       nombre: '',
-      grupo_muscular: 'Pecho',
+      grupo_muscular: '',
+      equipamiento: '',
       imagen_url: '',
       video_url: '',
       instrucciones: '',
@@ -191,7 +206,8 @@ export default function ExercisesLibraryView() {
     setEditingExercise(exercise);
     setFormData({
       nombre: exercise.nombre || '',
-      grupo_muscular: exercise.grupo_muscular || 'Pecho',
+      grupo_muscular: exercise.grupo_muscular || '',
+      equipamiento: exercise.equipamiento || '',
       imagen_url: exercise.imagen_url || '',
       video_url: exercise.video_url || '',
       instrucciones: exercise.instrucciones || '',
@@ -221,34 +237,49 @@ export default function ExercisesLibraryView() {
         return;
       }
       finalGroup = customGroupName.trim();
+    } else if (!finalGroup || finalGroup.trim() === '') {
+      setFormError('Por favor selecciona una categoría / grupo muscular.');
+      return;
     }
 
     setIsSaving(true);
     try {
       const currentSession = authService.getCurrentSession();
       const coachId = currentSession?.user?.id || '00000000-0000-0000-0000-000000000001';
-      const finalImage = formData.imagen_url.trim() || DEFAULT_IMAGES[finalGroup] || DEFAULT_IMAGES.General;
 
-      const exercisePayload = {
+      // 2. Lógica de multimedia (GIF único):
+      // Si el usuario ingresa un link en el campo "video_url", se asigna a ambas columnas
+      // a menos que el usuario haya especificado una imagen distinta en "imagen_url".
+      const videoUrl = formData.video_url?.trim() || null;
+      const imageUrl = formData.imagen_url?.trim() || videoUrl || DEFAULT_IMAGES[finalGroup] || DEFAULT_IMAGES.General || null;
+
+      // 3. Mapeo estricto del payload final alineado con las columnas de Supabase
+      const payload = {
         nombre: exerciseName,
         grupo_muscular: finalGroup,
-        imagen_url: finalImage,
-        video_url: formData.video_url.trim() || null,
-        instrucciones: formData.instrucciones.trim(),
-        errores_comunes: formData.errores_comunes.trim() || null,
+        equipamiento: formData.equipamiento?.trim() || null,
+        imagen_url: imageUrl,
+        video_url: videoUrl,
+        instrucciones: formData.instrucciones?.trim() || '',
+        errores_comunes: formData.errores_comunes?.trim() || null,
         coach_id: coachId
       };
 
       if (editingExercise) {
-        const updated = await dataService.updateExercise(editingExercise.id, exercisePayload);
+        const updated = await dataService.updateExercise(editingExercise.id, payload);
         setExercises((prev) => prev.map((ex) => (ex.id === updated.id ? updated : ex)));
       } else {
-        const created = await dataService.addExercise(exercisePayload);
+        const created = await dataService.addExercise(payload);
         setExercises((prev) => [created, ...prev]);
         setTotalCount((prev) => prev + 1);
-        if (isCreatingCustomGroup && customGroupName.trim()) {
-          setCustomGroups((prev) => Array.from(new Set([...prev, customGroupName.trim()])));
-        }
+      }
+
+      if (finalGroup) {
+        setCategoriasDinamicas((prev) =>
+          Array.from(new Set([...prev, finalGroup])).sort((a, b) =>
+            a.localeCompare(b, 'es', { sensitivity: 'base' })
+          )
+        );
       }
 
       setIsFormModalOpen(false);
@@ -376,19 +407,27 @@ export default function ExercisesLibraryView() {
                       onClick={() => setSelectedExerciseForDetail(exercise)}
                       className="relative h-44 rounded-xl overflow-hidden mb-3 bg-gray-900 border border-dark-700/80 cursor-pointer"
                     >
-                      <img
+                      <StaticGif
                         src={exercise.imagen_url || DEFAULT_IMAGES[exercise.grupo_muscular] || DEFAULT_IMAGES.General}
                         alt={exercise.nombre}
-                        loading="lazy"
-                        decoding="async"
                         className="w-full h-full object-contain bg-gray-900 group-hover:scale-105 transition-transform duration-300"
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent pointer-events-none"></div>
                       
-                      {/* Badge Grupo Muscular */}
-                      <span className="absolute bottom-2.5 left-2.5 text-[10px] font-bold px-2 py-0.5 rounded-lg bg-dark-950/90 text-brand-light border border-dark-700 shadow-sm pointer-events-none">
-                        {exercise.grupo_muscular}
-                      </span>
+                      {/* Badge Grupo Muscular & Equipamiento */}
+                      <div className="absolute bottom-2.5 left-2.5 flex flex-wrap items-center gap-1 pointer-events-none max-w-[85%]">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-dark-950/90 text-brand-light border border-dark-700 shadow-sm shrink-0">
+                          {exercise.grupo_muscular}
+                        </span>
+                        {exercise.equipamiento && (
+                          <span 
+                            className="text-[9px] font-semibold px-1.5 py-0.5 rounded-lg bg-dark-900/90 text-gray-300 border border-dark-700/80 shadow-sm truncate max-w-[110px]"
+                            title={exercise.equipamiento}
+                          >
+                            {exercise.equipamiento}
+                          </span>
+                        )}
+                      </div>
 
                       {/* Badges de multimedia y prevención */}
                       <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 pointer-events-none">
@@ -637,12 +676,32 @@ export default function ExercisesLibraryView() {
                       }}
                       className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-brand min-h-[44px]"
                     >
-                      {dynamicCategories.filter((c) => c !== 'Todos').map((group) => (
-                        <option key={group} value={group}>{group}</option>
+                      <option value="">Seleccionar categoría...</option>
+                      {categoriasDinamicas.map((cat) => (
+                        <option key={cat} value={cat}>
+                          {cat}
+                        </option>
                       ))}
                       <option value="__new__">+ Crear nuevo grupo muscular...</option>
                     </select>
                   )}
+                </div>
+
+                {/* Equipamiento / Máquinas a Usar */}
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">
+                    Equipamiento / Máquinas a Usar
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ej: Barra Olímpica, Mancuernas, Banco Inclinado, Polea..."
+                    value={formData.equipamiento}
+                    onChange={(e) => setFormData({ ...formData, equipamiento: e.target.value })}
+                    className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand min-h-[44px]"
+                  />
+                  <span className="text-[10px] text-gray-400 mt-1 block">
+                    Indica los implementos, mancuernas, poleas o máquinas necesarias para el ejercicio.
+                  </span>
                 </div>
 
                 {/* Multimedia: Imagen y Video */}

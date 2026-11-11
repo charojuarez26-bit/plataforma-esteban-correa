@@ -1228,7 +1228,7 @@ export const dataService = {
     return [];
   },
 
-  async getExercisesPaginated({ page = 0, limit = 16, filterGroup = 'Todos', search = '' } = {}) {
+  async getExercisesPaginated({ page = 0, limit = 25, filterGroup = 'Todos', search = '' } = {}) {
     try {
       const { data, error, count } = await withAuthRetry(async () => {
         let query = supabase
@@ -1237,8 +1237,8 @@ export const dataService = {
           .order('nombre', { ascending: true });
 
         if (filterGroup && filterGroup !== 'Todos') {
-          if (filterGroup === 'Core / Abdomen' || filterGroup === 'Core') {
-            query = query.in('grupo_muscular', ['Core', 'Core / Abdomen']);
+          if (filterGroup === 'Core / Abdomen' || filterGroup === 'Core' || filterGroup === 'Abdomen / Core' || filterGroup === 'Abdomen') {
+            query = query.in('grupo_muscular', ['Core', 'Core / Abdomen', 'Abdomen / Core', 'Abdomen']);
           } else {
             query = query.eq('grupo_muscular', filterGroup);
           }
@@ -1248,7 +1248,7 @@ export const dataService = {
         if (cleanSearch) {
           const sanitized = cleanSearch.replace(/[%_,()]/g, ' ').trim();
           if (sanitized) {
-            query = query.or(`nombre.ilike.%${sanitized}%,grupo_muscular.ilike.%${sanitized}%,instrucciones.ilike.%${sanitized}%`);
+            query = query.or(`nombre.ilike.%${sanitized}%,grupo_muscular.ilike.%${sanitized}%,equipamiento.ilike.%${sanitized}%`);
           }
         }
 
@@ -1265,7 +1265,7 @@ export const dataService = {
         return { data, total, hasMore };
       }
     } catch (err) {
-      // Fallback silencioso
+      console.error('Error detallado en getExercisesPaginated:', err);
     }
 
     return { data: [], total: 0, hasMore: false };
@@ -1327,6 +1327,7 @@ export const dataService = {
       coach_id: coachId,
       nombre: (exerciseData.nombre || '').trim(),
       grupo_muscular: (exerciseData.grupo_muscular || 'Pecho').trim(),
+      equipamiento: exerciseData.equipamiento ? exerciseData.equipamiento.trim() : null,
       imagen_url: exerciseData.imagen_url ? exerciseData.imagen_url.trim() : null,
       video_url: exerciseData.video_url ? exerciseData.video_url.trim() : null,
       instrucciones: (exerciseData.instrucciones || '').trim(),
@@ -1351,6 +1352,7 @@ export const dataService = {
     const payload = {};
     if (updates.nombre !== undefined) payload.nombre = updates.nombre.trim();
     if (updates.grupo_muscular !== undefined) payload.grupo_muscular = updates.grupo_muscular.trim();
+    if (updates.equipamiento !== undefined) payload.equipamiento = updates.equipamiento ? updates.equipamiento.trim() : null;
     if (updates.imagen_url !== undefined) payload.imagen_url = updates.imagen_url ? updates.imagen_url.trim() : null;
     if (updates.video_url !== undefined) payload.video_url = updates.video_url ? updates.video_url.trim() : null;
     if (updates.instrucciones !== undefined) payload.instrucciones = (updates.instrucciones || '').trim();
@@ -2440,6 +2442,156 @@ export const dataService = {
     result.mondayStr = mondayStr;
     result.sundayStr = sundayStr;
     return result;
+  },
+
+  // ==========================================================
+  // REGISTRO DE ENTRENAMIENTO REAL (FEEDBACK DE CARGAS & SESIONES)
+  // ==========================================================
+  async saveWorkoutSession({ clientId, comentarios, exercises = [] }) {
+    if (!clientId) {
+      console.error('[DataService] saveWorkoutSession requiere clientId');
+      return { data: null, error: new Error('clientId es requerido') };
+    }
+
+    try {
+      const sessionPayload = {
+        client_id: clientId,
+        fecha: new Date().toISOString(),
+        comentarios_alumno: comentarios ? String(comentarios).trim() : null
+      };
+
+      const { data: sessionData, error: sessionError } = await withAuthRetry(() =>
+        supabase
+          .from('session_logs')
+          .insert([sessionPayload])
+          .select()
+          .single()
+      );
+
+      if (sessionError) {
+        console.error('[DataService] Error insertando session_logs:', sessionError);
+        throw sessionError;
+      }
+
+      const sessionLogId = sessionData.id;
+      let savedExerciseLogs = [];
+
+      if (exercises && exercises.length > 0) {
+        const toInt = (val) => {
+          if (val === undefined || val === null || val === '') return null;
+          const num = parseInt(String(val).replace(/[^0-9]/g, ''), 10);
+          return isNaN(num) ? null : num;
+        };
+
+        const toFloat = (val) => {
+          if (val === undefined || val === null || val === '') return null;
+          const num = parseFloat(String(val).replace(/[^0-9.]/g, ''));
+          return isNaN(num) ? null : num;
+        };
+
+        const exerciseRows = exercises.map(ex => ({
+          session_log_id: sessionLogId,
+          exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
+          prescribed_sets: toInt(ex.prescribed_sets ?? ex.series),
+          prescribed_reps: toInt(ex.prescribed_reps ?? ex.repeticiones),
+          prescribed_weight: toFloat(ex.prescribed_weight ?? ex.peso_sugerido ?? ex.peso),
+          actual_sets: toInt(ex.actual_sets ?? ex.series_reales ?? ex.series),
+          actual_reps: toInt(ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones),
+          actual_weight: toFloat(ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido)
+        }));
+
+        const { data: exData, error: exercisesError } = await withAuthRetry(() =>
+          supabase
+            .from('session_exercise_logs')
+            .insert(exerciseRows)
+            .select()
+        );
+
+        if (exercisesError) {
+          console.error('[DataService] Error insertando session_exercise_logs:', exercisesError);
+        } else if (exData) {
+          savedExerciseLogs = exData;
+        }
+      }
+
+      const fullResult = {
+        ...sessionData,
+        session_exercise_logs: savedExerciseLogs.length > 0 ? savedExerciseLogs : exercises
+      };
+
+      // Guardar también en caché local de respaldo
+      try {
+        const key = `ec_session_logs_${clientId}`;
+        const prev = JSON.parse(localStorage.getItem(key) || '[]');
+        const updated = [fullResult, ...prev.filter(p => p.id !== fullResult.id)];
+        localStorage.setItem(key, JSON.stringify(updated));
+      } catch (e) {
+        // ignore
+      }
+
+      return { data: fullResult, error: null };
+    } catch (err) {
+      console.error('[DataService] Exception in saveWorkoutSession:', err);
+      // Fallback local en caso de error de red o tabla
+      const mockSession = {
+        id: `local-session-${Date.now()}`,
+        client_id: clientId,
+        fecha: new Date().toISOString(),
+        comentarios_alumno: comentarios || null,
+        session_exercise_logs: exercises.map((ex, idx) => ({
+          id: `local-ex-${Date.now()}-${idx}`,
+          exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
+          prescribed_sets: ex.prescribed_sets ?? ex.series,
+          prescribed_reps: ex.prescribed_reps ?? ex.repeticiones,
+          prescribed_weight: ex.prescribed_weight ?? ex.peso_sugerido,
+          actual_sets: ex.actual_sets ?? ex.series_reales ?? ex.series,
+          actual_reps: ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones,
+          actual_weight: ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido
+        }))
+      };
+
+      try {
+        const key = `ec_session_logs_${clientId}`;
+        const prev = JSON.parse(localStorage.getItem(key) || '[]');
+        localStorage.setItem(key, JSON.stringify([mockSession, ...prev]));
+      } catch (e) {}
+
+      return { data: mockSession, error: err };
+    }
+  },
+
+  async getClientSessionLogs(clientId) {
+    if (!clientId) return [];
+
+    let supabaseLogs = [];
+    try {
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('session_logs')
+          .select('*, session_exercise_logs(*)')
+          .eq('client_id', clientId)
+          .order('fecha', { ascending: false })
+      );
+
+      if (!error && Array.isArray(data)) {
+        supabaseLogs = data;
+      }
+    } catch (err) {
+      console.warn('[DataService] Error consultando session_logs:', err);
+    }
+
+    // Combinar con almacenamiento local
+    let localLogs = [];
+    try {
+      const raw = localStorage.getItem(`ec_session_logs_${clientId}`);
+      if (raw) localLogs = JSON.parse(raw);
+    } catch (e) {}
+
+    const logsMap = new Map();
+    localLogs.forEach(l => logsMap.set(l.id, l));
+    supabaseLogs.forEach(l => logsMap.set(l.id, l));
+
+    return Array.from(logsMap.values()).sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
   }
 };
 

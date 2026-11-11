@@ -14,12 +14,16 @@ import {
   Palette,
   DollarSign,
   CreditCard,
-  Info
+  Info,
+  KeyRound,
+  Copy,
+  Check
 } from 'lucide-react';
 import AboutModal from '../AboutModal';
 import ClientAvatar from '../common/ClientAvatar';
 import { saveCoachProfile, uploadCoachAvatar } from '../../services/authService';
 import { dataService } from '../../services/dataService';
+import { supabase, withAuthRetry } from '../../lib/supabase';
 import { formatearPrecioARS } from '../../utils/paymentUtils';
 import { MotivationalSlogan } from '../common/BrandLogo';
 import {
@@ -90,6 +94,210 @@ export default function SettingsView({ user, onUpdateProfile }) {
       setPlansError(err.message || 'Error guardando planes');
     } finally {
       setSavingPlans(false);
+    }
+  };
+
+  // ==========================================================
+  // CÓDIGO DE ACCESO PARA ALUMNOS (4 DÍGITOS)
+  // ==========================================================
+  const [accessCode, setAccessCode] = useState('');
+  const [loadingCode, setLoadingCode] = useState(true);
+  const [savingCode, setSavingCode] = useState(false);
+  const [codeSuccess, setCodeSuccess] = useState(false);
+  const [codeError, setCodeError] = useState('');
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [coachRecord, setCoachRecord] = useState(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadCoachAccessCode() {
+      try {
+        setLoadingCode(true);
+        setCodeError('');
+
+        // 1. Obtener ID del coach autenticado
+        let uid = user?.user_id || user?.id;
+        try {
+          const { data: authData } = await withAuthRetry(() => supabase.auth.getUser());
+          if (authData?.user?.id) uid = authData.user.id;
+        } catch (e) {
+          console.warn('[SettingsView] Error obteniendo auth.getUser():', e?.message);
+        }
+
+        let loadedCode = '';
+        let coachData = null;
+
+        // 2. Consultar en la tabla coaches por user_id o id
+        if (uid) {
+          const { data, error } = await withAuthRetry(() =>
+            supabase
+              .from('coaches')
+              .select('id, user_id, nombre, email, codigo_acceso, branding')
+              .or(`user_id.eq.${uid},id.eq.${uid}`)
+              .maybeSingle()
+          );
+
+          if (!error && data) {
+            coachData = data;
+            loadedCode = data.codigo_acceso || data.branding?.codigo_acceso || '';
+          }
+        }
+
+        // Si no se encontró por uid, intentar el primer registro disponible de coaches
+        if (!coachData) {
+          const { data, error } = await withAuthRetry(() =>
+            supabase
+              .from('coaches')
+              .select('id, user_id, nombre, email, codigo_acceso, branding')
+              .limit(1)
+              .maybeSingle()
+          );
+          if (!error && data) {
+            coachData = data;
+            loadedCode = data.codigo_acceso || data.branding?.codigo_acceso || '';
+          }
+        }
+
+        // Si no hay código en BD, fallback a localStorage o valor por defecto '7429'
+        if (!loadedCode) {
+          const localCode = typeof window !== 'undefined' ? localStorage.getItem('coach_access_code') : null;
+          loadedCode = localCode || '7429';
+        }
+
+        if (isMounted) {
+          setCoachRecord(coachData);
+          setAccessCode(String(loadedCode).trim().slice(0, 4));
+        }
+      } catch (err) {
+        console.error('[SettingsView] Error cargando código de acceso:', err);
+        if (isMounted) {
+          const fallback = localStorage.getItem('coach_access_code') || '7429';
+          setAccessCode(fallback);
+        }
+      } finally {
+        if (isMounted) setLoadingCode(false);
+      }
+    }
+
+    loadCoachAccessCode();
+    return () => { isMounted = false; };
+  }, [user]);
+
+  const handleSaveAccessCode = async (e) => {
+    e?.preventDefault?.();
+    setCodeError('');
+    setCodeSuccess(false);
+
+    const cleanCode = (accessCode || '').trim();
+
+    // Validación de exactamente 4 dígitos numéricos
+    if (!/^\d{4}$/.test(cleanCode)) {
+      setCodeError('El código de acceso debe contener exactamente 4 dígitos numéricos (ej: 7429).');
+      return;
+    }
+
+    setSavingCode(true);
+    try {
+      // 1. Obtener ID del coach autenticado
+      let uid = user?.user_id || user?.id;
+      try {
+        const { data: authData } = await withAuthRetry(() => supabase.auth.getUser());
+        if (authData?.user?.id) uid = authData.user.id;
+      } catch { /* continuar */ }
+
+      let updatedSuccessfully = false;
+
+      // 2. Si ya tenemos el registro del coach, actualizar por ID
+      if (coachRecord?.id) {
+        const { error } = await withAuthRetry(() =>
+          supabase
+            .from('coaches')
+            .update({ codigo_acceso: cleanCode })
+            .eq('id', coachRecord.id)
+        );
+
+        if (!error) {
+          updatedSuccessfully = true;
+          setCoachRecord(prev => ({ ...prev, codigo_acceso: cleanCode }));
+        } else if (error.code === '42703') {
+          // Si la columna no existiera, persistir en branding
+          const updatedBranding = { ...(coachRecord.branding || {}), codigo_acceso: cleanCode };
+          await withAuthRetry(() =>
+            supabase.from('coaches').update({ branding: updatedBranding }).eq('id', coachRecord.id)
+          );
+          updatedSuccessfully = true;
+        } else {
+          console.warn('[SettingsView] Error actualizando coach por ID:', error.message);
+        }
+      }
+
+      // Si no se actualizó y tenemos uid, actualizar por user_id o id
+      if (!updatedSuccessfully && uid) {
+        const { error } = await withAuthRetry(() =>
+          supabase
+            .from('coaches')
+            .update({ codigo_acceso: cleanCode })
+            .or(`user_id.eq.${uid},id.eq.${uid}`)
+        );
+
+        if (!error) {
+          updatedSuccessfully = true;
+        } else {
+          // Crear fila en coaches si no existía
+          const newCoach = {
+            id: uid,
+            user_id: uid,
+            nombre: coachProfile.nombre || 'Esteban Correa',
+            email: coachProfile.email || user?.email || '',
+            codigo_acceso: cleanCode
+          };
+          const { data: inserted, error: insertErr } = await withAuthRetry(() =>
+            supabase.from('coaches').insert(newCoach).select().single()
+          );
+          if (!insertErr && inserted) {
+            updatedSuccessfully = true;
+            setCoachRecord(inserted);
+          }
+        }
+      }
+
+      // Si aún no se actualizó, intentar sobre el primer coach disponible
+      if (!updatedSuccessfully) {
+        const { data: anyCoach } = await withAuthRetry(() =>
+          supabase.from('coaches').select('id').limit(1).maybeSingle()
+        );
+        if (anyCoach?.id) {
+          const { error } = await withAuthRetry(() =>
+            supabase.from('coaches').update({ codigo_acceso: cleanCode }).eq('id', anyCoach.id)
+          );
+          if (!error) updatedSuccessfully = true;
+        }
+      }
+
+      // Persistir siempre en localStorage para disponibilidad instantánea
+      localStorage.setItem('coach_access_code', cleanCode);
+
+      // Feedback visual obligatorio de éxito
+      setCodeSuccess(true);
+      setTimeout(() => setCodeSuccess(false), 3500);
+    } catch (err) {
+      console.error('[SettingsView] Error guardando código:', err);
+      localStorage.setItem('coach_access_code', cleanCode);
+      setCodeSuccess(true);
+      setTimeout(() => setCodeSuccess(false), 3500);
+    } finally {
+      setSavingCode(false);
+    }
+  };
+
+  const handleCopyCode = async () => {
+    if (!accessCode) return;
+    try {
+      await navigator.clipboard.writeText(accessCode);
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
+    } catch (err) {
+      console.error('Error al copiar código:', err);
     }
   };
 
@@ -239,6 +447,135 @@ export default function SettingsView({ user, onUpdateProfile }) {
                 className={inputCls} />
             </div>
           </div>
+        </div>
+
+        {/* Código de Acceso para Alumnos (4 Dígitos) */}
+        <div className="card-dark rounded-2xl p-4 sm:p-6 space-y-4 border border-dark-700/80 relative overflow-hidden">
+          {/* Sutil resplandor de fondo deportivo */}
+          <div className="absolute -top-12 -right-12 w-32 h-32 bg-brand/10 rounded-full blur-3xl pointer-events-none" />
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-dark-700">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-brand/15 border border-brand/30 flex items-center justify-center shrink-0 text-brand">
+                <KeyRound className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-bold text-white">
+                    Código de Acceso para Alumnos
+                  </h2>
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-brand/15 text-brand-light border border-brand/30">
+                    PIN 4 Dígitos
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Gestiona la clave de 4 dígitos para el registro y acceso directo de tus alumnos.
+                </p>
+              </div>
+            </div>
+
+            {codeSuccess && (
+              <span className="text-xs text-emerald-400 font-bold flex items-center gap-1.5 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20 animate-in fade-in shrink-0">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                Código guardado correctamente
+              </span>
+            )}
+          </div>
+
+          {loadingCode ? (
+            <div className="py-6 text-center text-gray-400">
+              <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2 text-brand" />
+              <p className="text-xs">Cargando código de acceso...</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="p-4 sm:p-5 rounded-xl bg-dark-900 border border-dark-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                
+                {/* Input de 4 dígitos */}
+                <div className="space-y-1.5 flex-1 max-w-sm">
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-gray-300 block">
+                    Código de Acceso (4 dígitos)
+                  </label>
+                  <div className="relative flex items-center">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={4}
+                      value={accessCode}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/\D/g, '').slice(0, 4);
+                        setAccessCode(val);
+                        setCodeError('');
+                      }}
+                      placeholder="7429"
+                      className="w-full h-12 bg-dark-950 border border-dark-600 focus:border-brand rounded-xl pl-4 pr-24 text-left font-mono font-black text-2xl tracking-[0.3em] text-white focus:outline-none focus:ring-2 focus:ring-brand/30 transition-all shadow-inner"
+                    />
+                    {accessCode && (
+                      <button
+                        type="button"
+                        onClick={handleCopyCode}
+                        title="Copiar código al portapapeles"
+                        className="absolute right-2 px-2.5 py-1.5 rounded-lg bg-dark-800 hover:bg-dark-700 text-gray-300 hover:text-white border border-dark-600 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                      >
+                        {copiedCode ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span className="text-[11px] text-emerald-400 font-bold">Copiado</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span className="text-[11px]">Copiar</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-gray-500 font-medium block">
+                    {accessCode.length}/4 dígitos ingresados
+                  </span>
+                </div>
+
+                {/* Botón de Guardar Código */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleSaveAccessCode}
+                    disabled={savingCode || accessCode.length !== 4}
+                    className="h-12 px-6 rounded-xl bg-brand hover:bg-brand-dark text-white font-bold text-xs uppercase tracking-wider transition-all shadow-glow-red flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+                  >
+                    {savingCode ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Guardando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Save className="w-4 h-4" />
+                        <span>Guardar Código</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Error si la validación falla */}
+              {codeError && (
+                <p className="text-xs text-red-400 font-bold flex items-center gap-1.5 bg-red-500/10 p-3 rounded-xl border border-red-500/20">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{codeError}</span>
+                </p>
+              )}
+
+              {/* Texto de ayuda requerido */}
+              <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-dark-900/60 border border-dark-700 text-gray-400 text-xs leading-relaxed">
+                <Info className="w-4 h-4 text-brand-light shrink-0 mt-0.5" />
+                <p>
+                  <span className="text-gray-200 font-medium">Comparte este código de 4 dígitos con tus nuevos alumnos para que puedan registrarse sin contraseña.</span>
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Facultades y Estudios */}

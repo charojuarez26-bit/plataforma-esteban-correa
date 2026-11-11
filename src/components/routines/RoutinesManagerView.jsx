@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   Layers, 
   Plus, 
@@ -21,10 +21,12 @@ import {
   AlertTriangle, 
   Copy, 
   ExternalLink,
-  HeartPulse
+  HeartPulse,
+  Loader2
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
+import StaticGif from '../common/StaticGif';
 import AssignRoutineModal from './AssignRoutineModal';
 
 // Generador seguro de identificadores únicos para evitar colisiones de keys en React
@@ -83,9 +85,22 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   const [routineDays, setRoutineDays] = useState([]);
   const [activeDayIndex, setActiveDayIndex] = useState(null); // null = Hub de días, número = Editor de Día
 
-  // Buscador de ejercicios dentro del editor
+  // Buscador y Paginación por lotes de ejercicios dentro del editor
+  const SELECTOR_PAGE_SIZE = 25;
   const [exerciseSearch, setExerciseSearch] = useState('');
+  const [debouncedExerciseSearch, setDebouncedExerciseSearch] = useState('');
   const [selectedMuscleFilter, setSelectedMuscleFilter] = useState('Todos');
+  const [selectorExercises, setSelectorExercises] = useState([]);
+  const [selectorPage, setSelectorPage] = useState(0);
+  const [selectorHasMore, setSelectorHasMore] = useState(false);
+  const [selectorLoading, setSelectorLoading] = useState(false);
+  const [selectorLoadingMore, setSelectorLoadingMore] = useState(false);
+  const [selectorTotalCount, setSelectorTotalCount] = useState(0);
+  const [availableMuscleGroups, setAvailableMuscleGroups] = useState([
+    'Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Abdomen / Core', 'Cardio / Otros'
+  ]);
+  const selectorScrollRef = useRef(null);
+  const selectorSentinelRef = useRef(null);
 
   // Modal Rápido: Asignar a Alumno
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -145,15 +160,13 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   const loadAllData = async () => {
     try {
       setLoading(true);
-      const [routList, cliList, exList] = await Promise.all([
+      const [routList, cliList] = await Promise.all([
         dataService.getAllRoutines(),
-        dataService.getClients(),
-        dataService.getExercises('Todos')
+        dataService.getClients()
       ]);
 
       setRoutines(routList || []);
       setClients(cliList || []);
-      setExercises(exList || []);
     } catch (err) {
       console.error('Error cargando datos de rutinas:', err);
       showNotification('Error al conectar con Supabase', 'error');
@@ -527,26 +540,99 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     return { total, d3, d4, d5, templates };
   }, [routines]);
 
-  // Grupos musculares para el selector del modal
-  const dynamicMuscleGroups = useMemo(() => {
-    const base = ['Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Core / Abdomen', 'Glúteos'];
-    const custom = new Set();
-    exercises.forEach(ex => {
-      if (ex.grupo_muscular && !base.includes(ex.grupo_muscular)) {
-        custom.add(ex.grupo_muscular);
+  // Cargar grupos musculares disponibles
+  useEffect(() => {
+    const loadDistinctGroups = async () => {
+      try {
+        const groups = await dataService.getDistinctMuscleGroups();
+        if (groups && groups.length > 0) {
+          const base = ['Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Abdomen / Core', 'Cardio / Otros'];
+          const custom = groups.filter(g => g && !base.some(b => b.toLowerCase() === g.toLowerCase()));
+          setAvailableMuscleGroups([...base, ...custom]);
+        }
+      } catch (err) {
+        // Silencioso
       }
-    });
-    return [...base, ...Array.from(custom)];
-  }, [exercises]);
+    };
+    loadDistinctGroups();
+  }, []);
 
-  const filteredExercisesForSelector = exercises.filter(ex => {
-    const matchSearch = ex.nombre.toLowerCase().includes(exerciseSearch.toLowerCase());
-    const matchGroup = selectedMuscleFilter === 'Todos' || 
-      (ex.grupo_muscular || '').toLowerCase() === selectedMuscleFilter.toLowerCase() ||
-      (selectedMuscleFilter === 'Core / Abdomen' && (ex.grupo_muscular || '').toLowerCase() === 'core') ||
-      (selectedMuscleFilter === 'Core' && (ex.grupo_muscular || '').toLowerCase() === 'core / abdomen');
-    return matchSearch && matchGroup;
-  });
+  // Debounce para búsqueda en el selector de ejercicios (300ms)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedExerciseSearch(exerciseSearch.trim());
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [exerciseSearch]);
+
+  // Consulta paginada por lotes (25 registros con .range(from, to))
+  const fetchSelectorExercises = useCallback(async (pageToLoad, isReset = false) => {
+    if (isReset) {
+      setSelectorLoading(true);
+    } else {
+      setSelectorLoadingMore(true);
+    }
+
+    try {
+      const res = await dataService.getExercisesPaginated({
+        page: pageToLoad,
+        limit: SELECTOR_PAGE_SIZE,
+        filterGroup: selectedMuscleFilter,
+        search: debouncedExerciseSearch
+      });
+
+      const items = res.data || [];
+      if (isReset) {
+        setSelectorExercises(items);
+      } else {
+        setSelectorExercises(prev => [...prev, ...items]);
+      }
+
+      setSelectorTotalCount(res.total ?? 0);
+      setSelectorHasMore(Boolean(res.hasMore));
+      setSelectorPage(pageToLoad);
+    } catch (err) {
+      console.error('Error cargando ejercicios en el selector:', err);
+      if (isReset) {
+        setSelectorExercises([]);
+        setSelectorTotalCount(0);
+        setSelectorHasMore(false);
+      }
+    } finally {
+      if (isReset) setSelectorLoading(false);
+      setSelectorLoadingMore(false);
+    }
+  }, [selectedMuscleFilter, debouncedExerciseSearch]);
+
+  // Carga reactiva solo cuando el editor de rutinas está abierto
+  useEffect(() => {
+    if (isEditorOpen) {
+      fetchSelectorExercises(0, true);
+    }
+  }, [isEditorOpen, selectedMuscleFilter, debouncedExerciseSearch, fetchSelectorExercises]);
+
+  // Cargar más ejercicios (siguiente lote)
+  const handleLoadMoreSelectorExercises = () => {
+    if (selectorLoading || selectorLoadingMore || !selectorHasMore) return;
+    fetchSelectorExercises(selectorPage + 1, false);
+  };
+
+  // Scroll infinito automático usando IntersectionObserver
+  useEffect(() => {
+    if (!selectorSentinelRef.current || !selectorHasMore || selectorLoading || selectorLoadingMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && selectorHasMore && !selectorLoading && !selectorLoadingMore) {
+          fetchSelectorExercises(selectorPage + 1, false);
+        }
+      },
+      { threshold: 0.1, rootMargin: '150px' }
+    );
+
+    observer.observe(selectorSentinelRef.current);
+    return () => observer.disconnect();
+  }, [selectorHasMore, selectorLoading, selectorLoadingMore, selectorPage, fetchSelectorExercises]);
 
   const currentActiveDay = activeDayIndex !== null ? (routineDays[activeDayIndex] || null) : null;
   const isDayEditorOpen = currentStep === 2 && activeDayIndex !== null && Boolean(currentActiveDay);
@@ -1353,7 +1439,9 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                     <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">
                       Biblioteca de Ejercicios
                     </span>
-                    <span className="text-[10px] text-zinc-400">Toca "+ Agregar"</span>
+                    <span className="text-[10px] text-zinc-400">
+                      {selectorTotalCount > 0 ? `${selectorExercises.length} de ${selectorTotalCount} disponibles` : 'Toca "+ Agregar"'}
+                    </span>
                   </div>
 
                   <div className="relative">
@@ -1369,7 +1457,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
 
                   {/* Píldoras de grupo muscular */}
                   <div className="flex gap-1 overflow-x-auto pb-1 text-[10px] no-scrollbar">
-                    {dynamicMuscleGroups.map(grp => (
+                    {availableMuscleGroups.map(grp => (
                       <button
                         key={grp}
                         type="button"
@@ -1383,9 +1471,29 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                     ))}
                   </div>
 
-                  {/* Lista de ejercicios */}
-                  <div className="space-y-1.5 md:max-h-[calc(90vh-320px)] md:overflow-y-auto no-scrollbar pr-1">
-                    {filteredExercisesForSelector.map(ex => {
+                  {/* Lista de ejercicios con carga por lotes y scroll infinito */}
+                  <div 
+                    ref={selectorScrollRef}
+                    className="space-y-1.5 md:max-h-[calc(90vh-320px)] md:overflow-y-auto no-scrollbar pr-1"
+                  >
+                    {/* Indicador de carga inicial */}
+                    {selectorLoading && (
+                      <div className="py-8 flex flex-col items-center justify-center gap-2 text-gray-400 text-xs">
+                        <Loader2 className="w-5 h-5 animate-spin text-brand" />
+                        <span>Cargando ejercicios...</span>
+                      </div>
+                    )}
+
+                    {/* Estado vacío */}
+                    {!selectorLoading && selectorExercises.length === 0 && (
+                      <div className="py-8 text-center text-gray-500 text-xs space-y-1">
+                        <p className="font-semibold text-gray-400">No se encontraron ejercicios</p>
+                        <p className="text-[11px]">Prueba con otro término de búsqueda o categoría</p>
+                      </div>
+                    )}
+
+                    {/* Lista paginada */}
+                    {!selectorLoading && selectorExercises.map(ex => {
                       const isAdded = (currentActiveDay.ejercicios || []).some(
                         item => item.exercise_id === ex.id || item.exercise?.id === ex.id
                       );
@@ -1401,10 +1509,10 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                           }`}
                         >
                           <div className="flex items-center gap-2.5 min-w-0">
-                            <img
-                              src={ex.imagen_url}
+                            <StaticGif
+                              src={ex.imagen_url || ex.video_url}
                               alt={ex.nombre}
-                              className="w-10 h-10 rounded-lg object-cover shrink-0"
+                              className="w-10 h-10 rounded-lg object-cover shrink-0 overflow-hidden"
                             />
                             <div className="min-w-0">
                               <p className={`text-xs font-bold truncate transition-colors ${
@@ -1438,6 +1546,33 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                         </div>
                       );
                     })}
+
+                    {/* Centinela invisible para auto-scroll incremental */}
+                    <div ref={selectorSentinelRef} className="h-2 w-full pointer-events-none" />
+
+                    {/* Botón Cargar más ejercicios */}
+                    {selectorHasMore && !selectorLoading && (
+                      <div className="pt-2 pb-1">
+                        <button
+                          type="button"
+                          onClick={handleLoadMoreSelectorExercises}
+                          disabled={selectorLoadingMore}
+                          className="w-full py-2 px-3 rounded-xl border border-dark-700 bg-dark-850 hover:bg-dark-800 hover:border-brand/40 text-xs font-bold text-gray-300 hover:text-white flex items-center justify-center gap-2 transition-all min-h-[40px] shadow-sm disabled:opacity-50"
+                        >
+                          {selectorLoadingMore ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin text-brand" />
+                              <span>Cargando más ejercicios...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Plus className="w-3.5 h-3.5 text-brand" />
+                              <span>Cargar más ejercicios ({Math.max(0, selectorTotalCount - selectorExercises.length)} restantes)</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
 

@@ -10,7 +10,9 @@ import {
   Calendar,
   Sparkles,
   Award,
-  X
+  X,
+  Dumbbell,
+  Activity
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -22,12 +24,17 @@ import {
   ResponsiveContainer 
 } from 'recharts';
 import { dataService } from '../../services/dataService';
+import WorkoutSessionProgress from './WorkoutSessionProgress';
 
-export default function ProgressView() {
+export default function ProgressView({ defaultTab = 'cargas' }) {
   const [clients, setClients] = useState([]);
   const [selectedClientId, setSelectedClientId] = useState('');
   const [evaluations, setEvaluations] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState(() => {
+    if (defaultTab === 'evaluaciones' || defaultTab === 'antropometria') return 'antropometria';
+    return 'cargas';
+  });
 
   // Formulario nueva medición
   const [formData, setFormData] = useState({
@@ -115,25 +122,25 @@ export default function ProgressView() {
   };
 
   return (
-    <div className="space-y-6 pb-20 md:pb-6">
+    <div className="space-y-6 pb-28 md:pb-12 w-full overflow-hidden">
       
       {/* HEADER & SELECTOR DE CLIENTE */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-display font-black text-white flex items-center gap-2">
-            <TrendingUp className="w-6 h-6 text-brand" />
-            Seguimiento Antropométrico & Físico
+          <h1 className="text-xl sm:text-2xl font-display font-black text-white flex items-center gap-2">
+            <TrendingUp className="w-5 sm:w-6 h-5 sm:h-6 text-brand shrink-0" />
+            <span>Evaluaciones, Cargas & Seguimiento</span>
           </h1>
-          <p className="text-xs sm:text-sm text-gray-400">
-            Control biométrico, pliegues cutáneos y variaciones en centímetros.
+          <p className="text-xs sm:text-sm text-gray-400 mt-1 leading-relaxed">
+            Control de sobrecarga progresiva, feedback de entrenamientos y biometría corporal.
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
           <select
             value={selectedClientId}
             onChange={(e) => setSelectedClientId(e.target.value)}
-            className="bg-dark-850 border border-dark-700 rounded-xl px-3 py-2 text-xs font-bold text-white focus:outline-none focus:border-brand"
+            className="w-full sm:w-auto h-12 sm:h-10 bg-dark-850 border border-dark-700 rounded-xl px-3.5 text-xs sm:text-sm font-bold text-white focus:outline-none focus:border-brand shadow-sm"
           >
             {clients.map(c => (
               <option key={c.id} value={c.id}>
@@ -142,192 +149,237 @@ export default function ProgressView() {
             ))}
           </select>
 
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="px-3.5 py-2 rounded-xl bg-brand hover:bg-brand-dark text-white font-bold text-xs shadow-glow-red transition-all flex items-center gap-1.5 shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Nueva Medición</span>
-          </button>
-        </div>
-      </div>
-
-      {/* TARJETAS RESUMEN DE VARIACIONES (+/-) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        
-        <div className="card-dark rounded-2xl p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-400 font-semibold uppercase">Peso Corporal</span>
-            <Scale className="w-4 h-4 text-brand-light" />
-          </div>
-          <p className="text-2xl font-black text-white mt-2">
-            {lastEval?.peso || 0} <span className="text-xs text-gray-400 font-normal">kg</span>
-          </p>
-          <div className="mt-1 flex items-center gap-1 text-xs font-bold">
-            {weightDelta <= 0 ? (
-              <span className="text-emerald-400 flex items-center">
-                <ArrowDownRight className="w-4 h-4" /> {weightDelta} kg
-              </span>
-            ) : (
-              <span className="text-blue-400 flex items-center">
-                <ArrowUpRight className="w-4 h-4" /> +{weightDelta} kg
-              </span>
-            )}
-            <span className="text-[10px] text-gray-400 font-normal">acumulado</span>
-          </div>
-        </div>
-
-        <div className="card-dark rounded-2xl p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-400 font-semibold uppercase">Cintura</span>
-            <Ruler className="w-4 h-4 text-emerald-400" />
-          </div>
-          <p className="text-2xl font-black text-white mt-2">
-            {lastEval?.cintura || 0} <span className="text-xs text-gray-400 font-normal">cm</span>
-          </p>
-          <div className="mt-1 flex items-center gap-1 text-xs font-bold">
-            <span className="text-emerald-400 flex items-center">
-              <ArrowDownRight className="w-4 h-4" /> {waistDelta} cm
-            </span>
-            <span className="text-[10px] text-gray-400 font-normal">reducción</span>
-          </div>
-        </div>
-
-        <div className="card-dark rounded-2xl p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-400 font-semibold uppercase">Brazo (Bíceps)</span>
-            <Ruler className="w-4 h-4 text-blue-400" />
-          </div>
-          <p className="text-2xl font-black text-white mt-2">
-            {lastEval?.brazo || 0} <span className="text-xs text-gray-400 font-normal">cm</span>
-          </p>
-          <div className="mt-1 flex items-center gap-1 text-xs font-bold">
-            <span className="text-blue-400 flex items-center">
-              <ArrowUpRight className="w-4 h-4" /> +{armDelta} cm
-            </span>
-            <span className="text-[10px] text-gray-400 font-normal">hipertrofia</span>
-          </div>
-        </div>
-
-        <div className="card-dark rounded-2xl p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-400 font-semibold uppercase">% Grasa Estimado</span>
-            <Award className="w-4 h-4 text-amber-400" />
-          </div>
-          <p className="text-2xl font-black text-white mt-2">
-            {lastEval?.porcentaje_grasa || 0} <span className="text-xs text-gray-400 font-normal">%</span>
-          </p>
-          <div className="mt-1 flex items-center gap-1 text-xs font-bold">
-            <span className="text-emerald-400 flex items-center">
-              <ArrowDownRight className="w-4 h-4" /> {fatDelta}%
-            </span>
-            <span className="text-[10px] text-gray-400 font-normal">mejora</span>
-          </div>
-        </div>
-
-      </div>
-
-      {/* GRÁFICO DE EVOLUCIÓN DE PESO */}
-      <div className="card-dark rounded-2xl p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-brand-light" />
-              Evolución Temporal del Peso (kg) - {currentClient?.nombre_completo}
-            </h2>
-            <p className="text-xs text-gray-400">Curva de descenso de peso y composición</p>
-          </div>
-        </div>
-
-        <div className="h-64 sm:h-72 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart
-              data={evaluations}
-              margin={{ top: 10, right: 20, left: -20, bottom: 0 }}
+          {activeTab === 'antropometria' && (
+            <button
+              onClick={() => setIsModalOpen(true)}
+              className="w-full sm:w-auto h-12 sm:h-10 justify-center px-4 rounded-xl bg-brand hover:bg-brand-dark text-white font-bold text-xs sm:text-sm shadow-glow-red transition-all flex items-center gap-2 shrink-0 min-h-[48px] sm:min-h-[40px]"
             >
-              <CartesianGrid strokeDasharray="3 3" stroke="#272733" />
-              <XAxis dataKey="fecha" stroke="#888" fontSize={11} tickLine={false} />
-              <YAxis domain={['auto', 'auto']} stroke="#888" fontSize={11} tickLine={false} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#18181f',
-                  borderColor: '#272733',
-                  borderRadius: '0.75rem',
-                  color: '#fff'
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey="peso"
-                name="Peso (kg)"
-                stroke="#e50914"
-                strokeWidth={3}
-                dot={{ fill: '#e50914', r: 5 }}
-                activeDot={{ r: 8 }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+              <Plus className="w-4 h-4 shrink-0" />
+              <span>+ Nueva Medición</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* TABLA DE MEDIDAS CON VARIACIÓN (+/- CM) */}
-      <div className="card-dark rounded-2xl p-5">
-        <h2 className="text-base font-bold text-white mb-3 flex items-center gap-2">
-          <Ruler className="w-4 h-4 text-brand-light" />
-          Historial Antropométrico Detallado
-        </h2>
+      {/* TABS DE SELECCIÓN: CARGAS & SESIONES REALES VS ANTROPOMETRÍA */}
+      <div className="flex items-center gap-2 border-b border-dark-700/80 pb-2.5 overflow-x-auto no-scrollbar flex-nowrap w-full scroll-smooth">
+        <button
+          type="button"
+          onClick={() => setActiveTab('cargas')}
+          className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2.5 sm:py-3 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 transition-all min-h-[44px] ${
+            activeTab === 'cargas'
+              ? 'bg-brand text-white shadow-glow-red'
+              : 'text-gray-400 hover:text-white hover:bg-dark-850'
+          }`}
+        >
+          <Dumbbell className="w-4 h-4 shrink-0" />
+          <span>Feedback de Cargas & Rendimiento Real</span>
+        </button>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs text-left">
-            <thead className="bg-dark-900 text-gray-400 uppercase text-[10px] border-b border-dark-700">
-              <tr>
-                <th className="py-3 px-3">Fecha</th>
-                <th className="py-3 px-3">Peso (kg)</th>
-                <th className="py-3 px-3">Cintura</th>
-                <th className="py-3 px-3">Cadera</th>
-                <th className="py-3 px-3">Brazo</th>
-                <th className="py-3 px-3">Muslo</th>
-                <th className="py-3 px-3">% Grasa</th>
-                <th className="py-3 px-3">Notas</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-dark-700/60 text-gray-300">
-              {evaluations.map((ev, index) => {
-                const prev = index > 0 ? evaluations[index - 1] : null;
-                const cDiff = prev ? (ev.cintura - prev.cintura).toFixed(1) : null;
-                const hDiff = prev ? (ev.cadera - prev.cadera).toFixed(1) : null;
-                const bDiff = prev ? (ev.brazo - prev.brazo).toFixed(1) : null;
-                const mDiff = prev ? (ev.muslo - prev.muslo).toFixed(1) : null;
+        <button
+          type="button"
+          onClick={() => setActiveTab('antropometria')}
+          className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2.5 sm:py-3 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 transition-all min-h-[44px] ${
+            activeTab === 'antropometria'
+              ? 'bg-brand text-white shadow-glow-red'
+              : 'text-gray-400 hover:text-white hover:bg-dark-850'
+          }`}
+        >
+          <Ruler className="w-4 h-4 shrink-0" />
+          <span>Antropometría & Medidas Físicas</span>
+        </button>
+      </div>
 
-                return (
-                  <tr key={ev.id} className="hover:bg-dark-800/50 transition-colors">
-                    <td className="py-3 px-3 font-semibold text-white">{ev.fecha}</td>
-                    <td className="py-3 px-3 font-bold text-brand-light">{ev.peso} kg</td>
-                    <td className="py-3 px-3">
-                      <span>{ev.cintura} cm</span>
-                      {renderDelta(cDiff, true)}
-                    </td>
-                    <td className="py-3 px-3">
-                      <span>{ev.cadera} cm</span>
-                      {renderDelta(hDiff, true)}
-                    </td>
-                    <td className="py-3 px-3">
-                      <span>{ev.brazo} cm</span>
-                      {renderDelta(bDiff, false)}
-                    </td>
-                    <td className="py-3 px-3">
-                      <span>{ev.muslo} cm</span>
-                      {renderDelta(mDiff, false)}
-                    </td>
-                    <td className="py-3 px-3 font-semibold text-amber-400">{ev.porcentaje_grasa}%</td>
-                    <td className="py-3 px-3 text-gray-400 truncate max-w-[200px]">{ev.notas || '-'}</td>
+      {/* VISTA 1: FEEDBACK DE CARGAS & SESIONES REALES */}
+      {activeTab === 'cargas' && (
+        <WorkoutSessionProgress 
+          clientId={selectedClientId} 
+          clientName={currentClient?.nombre_completo} 
+        />
+      )}
+
+      {/* VISTA 2: SEGUIMIENTO ANTROPOMÉTRICO */}
+      {activeTab === 'antropometria' && (
+        <div className="space-y-6 w-full overflow-hidden">
+          {/* TARJETAS RESUMEN DE VARIACIONES (+/-) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-4">
+            
+            <div className="card-dark rounded-2xl p-3 sm:p-5 flex flex-col justify-between">
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[11px] sm:text-xs text-gray-400 font-semibold uppercase truncate">Peso Corporal</span>
+                <Scale className="w-4 h-4 text-brand-light shrink-0" />
+              </div>
+              <p className="text-xl sm:text-2xl font-black text-white mt-1.5 sm:mt-2 truncate">
+                {lastEval?.peso || 0} <span className="text-xs text-gray-400 font-normal">kg</span>
+              </p>
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] sm:text-xs font-bold">
+                {weightDelta <= 0 ? (
+                  <span className="text-emerald-400 flex items-center shrink-0">
+                    <ArrowDownRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {weightDelta} kg
+                  </span>
+                ) : (
+                  <span className="text-blue-400 flex items-center shrink-0">
+                    <ArrowUpRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> +{weightDelta} kg
+                  </span>
+                )}
+                <span className="text-[10px] text-gray-400 font-normal truncate">acumulado</span>
+              </div>
+            </div>
+
+            <div className="card-dark rounded-2xl p-3 sm:p-5 flex flex-col justify-between">
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[11px] sm:text-xs text-gray-400 font-semibold uppercase truncate">Cintura</span>
+                <Ruler className="w-4 h-4 text-emerald-400 shrink-0" />
+              </div>
+              <p className="text-xl sm:text-2xl font-black text-white mt-1.5 sm:mt-2 truncate">
+                {lastEval?.cintura || 0} <span className="text-xs text-gray-400 font-normal">cm</span>
+              </p>
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] sm:text-xs font-bold">
+                <span className="text-emerald-400 flex items-center shrink-0">
+                  <ArrowDownRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {waistDelta} cm
+                </span>
+                <span className="text-[10px] text-gray-400 font-normal truncate">reducción</span>
+              </div>
+            </div>
+
+            <div className="card-dark rounded-2xl p-3 sm:p-5 flex flex-col justify-between">
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[11px] sm:text-xs text-gray-400 font-semibold uppercase truncate">Brazo (Bíceps)</span>
+                <Ruler className="w-4 h-4 text-blue-400 shrink-0" />
+              </div>
+              <p className="text-xl sm:text-2xl font-black text-white mt-1.5 sm:mt-2 truncate">
+                {lastEval?.brazo || 0} <span className="text-xs text-gray-400 font-normal">cm</span>
+              </p>
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] sm:text-xs font-bold">
+                <span className="text-blue-400 flex items-center shrink-0">
+                  <ArrowUpRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> +{armDelta} cm
+                </span>
+                <span className="text-[10px] text-gray-400 font-normal truncate">hipertrofia</span>
+              </div>
+            </div>
+
+            <div className="card-dark rounded-2xl p-3 sm:p-5 flex flex-col justify-between">
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[11px] sm:text-xs text-gray-400 font-semibold uppercase truncate">% Grasa Est.</span>
+                <Award className="w-4 h-4 text-amber-400 shrink-0" />
+              </div>
+              <p className="text-xl sm:text-2xl font-black text-white mt-1.5 sm:mt-2 truncate">
+                {lastEval?.porcentaje_grasa || 0} <span className="text-xs text-gray-400 font-normal">%</span>
+              </p>
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] sm:text-xs font-bold">
+                <span className="text-emerald-400 flex items-center shrink-0">
+                  <ArrowDownRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {fatDelta}%
+                </span>
+                <span className="text-[10px] text-gray-400 font-normal truncate">mejora</span>
+              </div>
+            </div>
+
+          </div>
+
+          {/* GRÁFICO DE EVOLUCIÓN DE PESO */}
+          <div className="card-dark rounded-2xl p-4 sm:p-5 w-full overflow-hidden">
+            <div className="flex items-center justify-between mb-3 sm:mb-4">
+              <div>
+                <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-brand-light shrink-0" />
+                  <span className="truncate">Evolución de Peso (kg) - {currentClient?.nombre_completo}</span>
+                </h2>
+                <p className="text-[11px] sm:text-xs text-gray-400">Curva de descenso de peso y composición</p>
+              </div>
+            </div>
+
+            <div className="h-64 sm:h-80 w-full overflow-hidden">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={evaluations}
+                  margin={{ top: 10, right: 10, left: -25, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#272733" />
+                  <XAxis dataKey="fecha" stroke="#888" fontSize={10} tickLine={false} />
+                  <YAxis domain={['auto', 'auto']} stroke="#888" fontSize={10} tickLine={false} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#18181f',
+                      borderColor: '#272733',
+                      borderRadius: '0.75rem',
+                      color: '#fff',
+                      fontSize: '11px'
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="peso"
+                    name="Peso (kg)"
+                    stroke="#e50914"
+                    strokeWidth={3}
+                    dot={{ fill: '#e50914', r: 4 }}
+                    activeDot={{ r: 6 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* TABLA DE MEDIDAS CON VARIACIÓN (+/- CM) */}
+          <div className="card-dark rounded-2xl p-4 sm:p-5 w-full overflow-hidden">
+            <h2 className="text-sm sm:text-base font-bold text-white mb-3 flex items-center gap-2">
+              <Ruler className="w-4 h-4 text-brand-light shrink-0" />
+              <span>Historial Antropométrico Detallado</span>
+            </h2>
+
+            <div className="overflow-x-auto no-scrollbar -mx-4 sm:mx-0 px-4 sm:px-0">
+              <table className="w-full text-xs text-left min-w-[580px]">
+                <thead className="bg-dark-900 text-gray-400 uppercase text-[10px] border-b border-dark-700">
+                  <tr>
+                    <th className="py-2.5 px-3">Fecha</th>
+                    <th className="py-2.5 px-3">Peso (kg)</th>
+                    <th className="py-2.5 px-3">Cintura</th>
+                    <th className="py-2.5 px-3">Cadera</th>
+                    <th className="py-2.5 px-3">Brazo</th>
+                    <th className="py-2.5 px-3">Muslo</th>
+                    <th className="py-2.5 px-3">% Grasa</th>
+                    <th className="py-2.5 px-3">Notas</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                </thead>
+                <tbody className="divide-y divide-dark-700/60 text-gray-300">
+                  {evaluations.map((ev, index) => {
+                    const prev = index > 0 ? evaluations[index - 1] : null;
+                    const cDiff = prev ? (ev.cintura - prev.cintura).toFixed(1) : null;
+                    const hDiff = prev ? (ev.cadera - prev.cadera).toFixed(1) : null;
+                    const bDiff = prev ? (ev.brazo - prev.brazo).toFixed(1) : null;
+                    const mDiff = prev ? (ev.muslo - prev.muslo).toFixed(1) : null;
+
+                    return (
+                      <tr key={ev.id} className="hover:bg-dark-800/50 transition-colors">
+                        <td className="py-2.5 px-3 font-semibold text-white whitespace-nowrap">{ev.fecha}</td>
+                        <td className="py-2.5 px-3 font-bold text-brand-light whitespace-nowrap">{ev.peso} kg</td>
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          <span>{ev.cintura} cm</span>
+                          {renderDelta(cDiff, true)}
+                        </td>
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          <span>{ev.cadera} cm</span>
+                          {renderDelta(hDiff, true)}
+                        </td>
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          <span>{ev.brazo} cm</span>
+                          {renderDelta(bDiff, false)}
+                        </td>
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          <span>{ev.muslo} cm</span>
+                          {renderDelta(mDiff, false)}
+                        </td>
+                        <td className="py-2.5 px-3 font-semibold text-amber-400 whitespace-nowrap">{ev.porcentaje_grasa}%</td>
+                        <td className="py-2.5 px-3 text-gray-400 truncate max-w-[200px]">{ev.notas || '-'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* MODAL NUEVA EVALUACIÓN */}
       {isModalOpen && (

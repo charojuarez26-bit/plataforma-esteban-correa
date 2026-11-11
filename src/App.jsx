@@ -12,17 +12,28 @@ import FinancesView from './components/finance/FinancesView';
 import MedicalRecordsView from './views/MedicalRecordsView';
 import SettingsView from './components/settings/SettingsView';
 import StudentPortal from './components/student/StudentPortal';
+import StudentOnboardingView from './components/student/StudentOnboardingView';
+import { checkStudentOnboardingStatus } from './services/authService';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Menu } from 'lucide-react';
 import BrandLogoOfficial from './components/common/BrandLogoOfficial';
 
 function AppContent() {
-  const { session, loading, logout, setSession } = useAuth();
+  const { session, loading, logout, setSession, updateUser } = useAuth();
   const [currentView, setCurrentView] = useState('inicio');
   const [isNewClientModalOpen, setIsNewClientModalOpen] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [routineTargetClientId, setRoutineTargetClientId] = useState(null);
+
+  // Estados para Onboarding Obligatorio de Alumnos
+  const [checkingOnboarding, setCheckingOnboarding] = useState(false);
+  const [onboardingRequired, setOnboardingRequired] = useState(false);
+  const [onboardingStudent, setOnboardingStudent] = useState(null);
+  const [onboardingInitialCode, setOnboardingInitialCode] = useState('');
+  const [showDirectOnboarding, setShowDirectOnboarding] = useState(
+    typeof window !== 'undefined' && window.location.pathname === '/onboarding'
+  );
 
   // Mapeo de subrutas /admin/* a vistas internas
   const getViewFromPath = (path) => {
@@ -45,11 +56,60 @@ function AppContent() {
         setCurrentView(getViewFromPath(path));
       }
     } else if (session?.role === 'student') {
-      if (path.startsWith('/admin') || path === '/login' || path === '/') {
-        window.history.replaceState({}, '', '/portal-alumno');
+      if (!onboardingRequired && !checkingOnboarding) {
+        if (path.startsWith('/admin') || path === '/login' || path === '/') {
+          window.history.replaceState({}, '', '/portal-alumno');
+        }
       }
     }
-  }, [session?.role]);
+  }, [session?.role, onboardingRequired, checkingOnboarding]);
+
+  // Verificación de Perfil Obligatoria para Alumnos (Paso 1 y 2)
+  useEffect(() => {
+    let isMounted = true;
+    if (session?.role === 'student' && session.user?.id) {
+      if (session.onboardingVerified) {
+        setOnboardingRequired(false);
+        setCheckingOnboarding(false);
+        setOnboardingStudent(session.user);
+        return;
+      }
+      setCheckingOnboarding(true);
+      checkStudentOnboardingStatus(session.user.id, session.user)
+        .then((res) => {
+          if (isMounted) {
+            setOnboardingRequired(res.needsOnboarding);
+            setOnboardingStudent(res.client || session.user);
+            setCheckingOnboarding(false);
+          }
+        })
+        .catch((err) => {
+          console.warn('[App] Error verificando onboarding:', err);
+          if (isMounted) setCheckingOnboarding(false);
+        });
+    } else {
+      setOnboardingRequired(false);
+      setCheckingOnboarding(false);
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [session?.role, session?.user?.id, session?.onboardingVerified]);
+
+  // Guard de ruta: Si el alumno requiere onboarding, bloquear navegación hacia cualquier otra ruta
+  useEffect(() => {
+    if (session?.role === 'student') {
+      if (onboardingRequired) {
+        if (window.location.pathname !== '/onboarding') {
+          window.history.replaceState({}, '', '/onboarding');
+        }
+      } else if (!checkingOnboarding) {
+        if (window.location.pathname === '/onboarding') {
+          window.history.replaceState({}, '', '/portal-alumno');
+        }
+      }
+    }
+  }, [session?.role, onboardingRequired, checkingOnboarding]);
 
   useEffect(() => {
     // Escuchar navegación del historial del navegador (Back / Forward)
@@ -73,6 +133,10 @@ function AppContent() {
   }, [session]);
 
   const handleLoginSuccess = (userSession, redirectPath) => {
+    if (userSession?.role === 'student' && userSession?.user?.id) {
+      localStorage.setItem('active_student_id', userSession.user.id);
+      localStorage.setItem('alumno_session', JSON.stringify(userSession.user));
+    }
     setSession(userSession);
     if (userSession.role === 'coach') {
       const dest = redirectPath || '/admin';
@@ -85,6 +149,8 @@ function AppContent() {
   };
 
   const handleLogout = async () => {
+    localStorage.removeItem('active_student_id');
+    localStorage.removeItem('alumno_session');
     await logout();
     setCurrentView('inicio');
     setSelectedClientId(null);
@@ -119,17 +185,76 @@ function AppContent() {
     );
   }
 
-  // 1. REGLA DE PROTECCIÓN: Si no hay sesión, forzar /login y renderizar LoginView
+  // 1. REGLA DE PROTECCIÓN: Si no hay sesión, permitir Onboarding Directo o renderizar LoginView
   if (!session) {
+    if (showDirectOnboarding || window.location.pathname === '/onboarding') {
+      return (
+        <StudentOnboardingView
+          initialCode={onboardingInitialCode}
+          onComplete={(newStudent) => {
+            localStorage.setItem('active_student_id', newStudent.id);
+            localStorage.setItem('alumno_session', JSON.stringify(newStudent));
+            const studentSession = {
+              role: 'student',
+              user: newStudent,
+              token: `student-session-${newStudent.id}`,
+              onboardingVerified: true
+            };
+            handleLoginSuccess(studentSession, '/portal-alumno');
+            setShowDirectOnboarding(false);
+          }}
+          onBackToLogin={() => {
+            setShowDirectOnboarding(false);
+            window.history.replaceState({}, '', '/login');
+          }}
+        />
+      );
+    }
+
     if (window.location.pathname.startsWith('/admin') || window.location.pathname === '/portal-alumno') {
       window.history.replaceState({}, '', '/login');
     }
-    return <LoginView onLoginSuccess={handleLoginSuccess} />;
+    return (
+      <LoginView
+        onLoginSuccess={handleLoginSuccess}
+        onStartOnboarding={(code) => {
+          setOnboardingInitialCode(code || '');
+          setShowDirectOnboarding(true);
+          window.history.pushState({}, '', '/onboarding');
+        }}
+      />
+    );
   }
 
-  // 2. Si el rol es Alumno, mostrar el Portal Móvil del Cliente
+  // 2. Si el rol es Alumno: Verificar Onboarding Obligatorio antes de ingresar al Portal
   if (session.role === 'student') {
-    if (window.location.pathname.startsWith('/admin') || window.location.pathname === '/login' || window.location.pathname === '/') {
+    if (checkingOnboarding) {
+      return (
+        <div className="min-h-screen bg-dark-950 flex flex-col items-center justify-center text-white p-4">
+          <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-brand mb-3"></div>
+          <p className="text-xs text-gray-400 font-medium tracking-wide">Verificando estado de tu ficha técnica...</p>
+        </div>
+      );
+    }
+
+    if (onboardingRequired) {
+      return (
+        <StudentOnboardingView
+          student={onboardingStudent || session.user}
+          onComplete={(updatedStudent) => {
+            localStorage.setItem('active_student_id', updatedStudent.id);
+            localStorage.setItem('alumno_session', JSON.stringify(updatedStudent));
+            if (updateUser) updateUser(updatedStudent);
+            setOnboardingStudent(updatedStudent);
+            setOnboardingRequired(false);
+            window.history.replaceState({}, '', '/portal-alumno');
+          }}
+          onLogout={handleLogout}
+        />
+      );
+    }
+
+    if (window.location.pathname.startsWith('/admin') || window.location.pathname === '/login' || window.location.pathname === '/' || window.location.pathname === '/onboarding') {
       window.history.replaceState({}, '', '/portal-alumno');
     }
     return <StudentPortal student={session.user} onLogout={handleLogout} />;

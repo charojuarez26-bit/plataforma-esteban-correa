@@ -69,9 +69,31 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
       }
     });
 
+    // 3. Suscribirse en Tiempo Real a inserciones y actualizaciones en 'clients' y 'medical_records'
+    const realtimeChannel = supabase
+      .channel('realtime_clients_coach_updates')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'clients' },
+        (payload) => {
+          console.log('[ClientsView Realtime] Cambio en clients:', payload);
+          if (isMounted) loadClients();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'medical_records' },
+        (payload) => {
+          console.log('[ClientsView Realtime] Cambio en medical_records:', payload);
+          if (isMounted) loadClients();
+        }
+      )
+      .subscribe();
+
     return () => {
       isMounted = false;
       subscription?.unsubscribe();
+      supabase.removeChannel(realtimeChannel);
     };
   }, []);
 
