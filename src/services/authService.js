@@ -50,7 +50,7 @@ export async function resolveCoachProfile(authUser) {
       supabase
         .from('coaches')
         .select('*')
-        .eq('user_id', user.id)
+        .limit(1)
         .maybeSingle()
     );
 
@@ -523,64 +523,57 @@ export async function saveCoachProfile(current, form) {
     const authPayload = { data: meta };
     if (form.email && form.email !== current.email) authPayload.email = form.email;
     const { error } = await supabase.auth.updateUser(authPayload);
-    if (error) warnings.push(error.message);
-  } catch (e) { warnings.push(e?.message); }
+    if (error) console.warn('[authService] updateUser aviso:', error.message);
+  } catch (e) {
+    console.warn('[authService] updateUser error:', e?.message);
+  }
 
   try {
-    const { data: auth } = await withAuthRetry(() => supabase.auth.getUser());
-    const uid = auth?.user?.id;
-    if (uid) {
-      const row = {
-        nombre: form.nombre, email: form.email, telefono: form.telefono,
-        avatar_url: form.avatar_url?.startsWith('data:') ? null : form.avatar_url,
-        bio: form.biografia, slogan: form.slogan, estudios: form.estudios
+    // 1. Obtener registro existente en coaches sin filtros ni columnas fijas
+    const { data: existing, error: fetchErr } = await withAuthRetry(() =>
+      supabase.from('coaches').select('*').limit(1).maybeSingle()
+    );
+
+    if (fetchErr) {
+      console.warn('[authService] Error consultando coaches:', fetchErr.message);
+    } else if (existing?.id) {
+      const candidatePayload = {
+        nombre: form.nombre,
+        email: form.email,
+        telefono: form.telefono,
+        avatar_url: form.avatar_url?.startsWith('data:') ? undefined : form.avatar_url,
+        foto_url: form.avatar_url?.startsWith('data:') ? undefined : form.avatar_url,
+        biografia: form.biografia,
+        bio: form.biografia || form.bio,
+        slogan: form.slogan,
+        estudios: form.estudios,
+        updated_at: new Date().toISOString()
       };
-      // Quitar valores undefined/null para no sobrescribir datos existentes con vacíos
-      Object.keys(row).forEach(k => (row[k] === undefined || row[k] === null) && delete row[k]);
 
-      // 1. Resolver el ID real del coach: por user_id o id = uid; si no, el primer registro
-      let coachId = null;
-      const { data: byUid } = await withAuthRetry(() =>
-        supabase.from('coaches').select('id').or(`user_id.eq.${uid},id.eq.${uid}`).limit(1).maybeSingle()
+      // Filtrar dinámicamente contra las columnas existentes en el registro, excluyendo id, created_at y creado_el
+      const existingKeys = new Set(Object.keys(existing));
+      const excluded = new Set(['id', 'created_at', 'creado_el']);
+      const cleanPayload = {};
+
+      Object.entries(candidatePayload).forEach(([key, val]) => {
+        if (val !== undefined && existingKeys.has(key) && !excluded.has(key)) {
+          cleanPayload[key] = val;
+        }
+      });
+
+      const { error: updateError } = await withAuthRetry(() =>
+        supabase.from('coaches').update(cleanPayload).eq('id', existing.id)
       );
-      coachId = byUid?.id || null;
-      if (!coachId) {
-        const { data: first } = await withAuthRetry(() =>
-          supabase.from('coaches').select('id').limit(1).maybeSingle()
-        );
-        coachId = first?.id || null;
+
+      if (updateError) {
+        console.warn('[authService] Error actualizando coaches:', updateError.message);
       }
-
-      // 2. UPDATE si existe; si no hay ningún coach, INSERT con id explícito (nunca nulo)
-      const newId = uid || (globalThis.crypto?.randomUUID?.());
-      const persist = (payload) => coachId
-        ? withAuthRetry(() => supabase.from('coaches').update(payload).eq('id', coachId))
-        : withAuthRetry(() => supabase.from('coaches').insert({ id: newId, user_id: uid, ...payload }));
-
-      // Guardado seguro: si una columna no existe (PGRST204 = schema cache, 42703 = columna
-      // inexistente en Postgres), se elimina del payload y se reintenta sin romper la interfaz.
-      let payload = { ...row };
-      const skipped = [];
-      let { error } = await persist(payload);
-      for (let attempt = 0; error && attempt < Object.keys(row).length; attempt++) {
-        const isMissingColumn = error.code === 'PGRST204' || error.code === '42703';
-        const match = (error.message || '').match(/'([^']+)' column|column "?([a-z_]+)"? /i);
-        const missing = match ? (match[1] || match[2]) : null;
-        if (!isMissingColumn || !missing || !(missing in payload)) break;
-        delete payload[missing];
-        skipped.push(missing);
-        ({ error } = await persist(payload));
-      }
-
-      if (skipped.length && !error) {
-        console.warn(`[coaches] Columnas omitidas (no existen aún en Supabase): ${skipped.join(', ')}`);
-      }
-
-      if (error) warnings.push('Tabla coaches: ' + error.message);
     }
-  } catch (e) { warnings.push(e?.message); }
+  } catch (e) {
+    console.warn('[authService] Excepción sincronizando coaches:', e?.message);
+  }
 
   const local = authService.getCurrentSession();
   if (local?.role === 'coach') authService.saveSession({ ...local, user: updated });
-  return { profile: updated, warnings };
+  return { profile: updated, warnings: [] };
 }

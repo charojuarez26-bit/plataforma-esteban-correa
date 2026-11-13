@@ -1079,17 +1079,18 @@ export const dataService = {
         supabase
           .from('membership_plans')
           .select('*')
-          .order('precio', { ascending: false })
       );
 
-      if (!error && data && data.length > 0) {
+      if (!error && Array.isArray(data) && data.length > 0) {
         list = data;
+      } else if (error) {
+        console.error('[DataService] Error consultando membership_plans:', error);
       }
     } catch (e) {
-      console.warn('[DataService] Error consultando membership_plans:', e);
+      console.error('[DataService] Excepción consultando membership_plans:', e);
     }
 
-    // Fallback a localStorage y defaults
+    // Fallback a localStorage si Supabase no devolvió filas
     if (list.length === 0) {
       try {
         const local = localStorage.getItem('ec_membership_plans');
@@ -1100,58 +1101,127 @@ export const dataService = {
       } catch (e) {}
     }
 
-    if (list.length === 0) {
-      list = DEFAULT_MEMBERSHIP_PLANS;
-    }
-
-    // Asegurar que siempre contenga los 3 planes clave
+    // Mapear y normalizar garantizando los 3 planes oficiales
     const tipos = ['Presencial', 'Personalizado', 'A distancia'];
     const complete = tipos.map(tipo => {
-      const found = list.find(p => (p.tipo || '').toLowerCase() === tipo.toLowerCase()) ||
-                    DEFAULT_MEMBERSHIP_PLANS.find(p => p.tipo === tipo);
-      return found;
+      const defaultPlan = DEFAULT_MEMBERSHIP_PLANS.find(p => p.tipo === tipo) || {
+        tipo,
+        nombre: `Plan ${tipo}`,
+        precio: tipo === 'Personalizado' ? 45000 : tipo === 'Presencial' ? 38000 : 28000,
+        dias_vigencia: 30,
+        descripcion: ''
+      };
+
+      const found = list.find(p =>
+        (p.id && p.id === MEMBERSHIP_PLAN_IDS[tipo]) ||
+        (p.tipo || p.nombre || '').toLowerCase().includes(tipo.toLowerCase()) ||
+        (tipo === 'A distancia' && (p.tipo || p.nombre || '').toLowerCase().includes('online'))
+      );
+
+      if (found) {
+        const rawPrecio = Number(found.precio);
+        const resolvedPrecio = (!isNaN(rawPrecio) && rawPrecio > 0) ? rawPrecio : defaultPlan.precio;
+        return {
+          id: found.id || MEMBERSHIP_PLAN_IDS[tipo],
+          tipo,
+          nombre: found.nombre || defaultPlan.nombre,
+          precio: resolvedPrecio,
+          duracion_dias: found.duracion_dias || 30,
+          dias_vigencia: found.duracion_dias || found.dias_vigencia || 30,
+          activo: found.activo !== false,
+          descripcion: found.descripcion || defaultPlan.descripcion
+        };
+      }
+
+      return {
+        id: MEMBERSHIP_PLAN_IDS[tipo],
+        ...defaultPlan
+      };
     });
+
+    try {
+      localStorage.setItem('ec_membership_plans', JSON.stringify(complete));
+    } catch (e) {}
 
     return complete;
   },
 
   async saveMembershipPlanPrices(plansToUpdate) {
-    if (!Array.isArray(plansToUpdate)) return { success: false };
+    if (!Array.isArray(plansToUpdate)) return { success: false, errors: ['Formato inválido'] };
 
-    // 1. Guardar en localStorage de inmediato para respuesta offline/resiliente
-    try {
-      localStorage.setItem('ec_membership_plans', JSON.stringify(plansToUpdate));
-    } catch (e) {}
-
-    // 2. Actualizar en Supabase
     const errors = [];
+
     for (const p of plansToUpdate) {
       try {
-        const precioNum = parseFloat(p.precio) || 0;
-        const { error } = await withAuthRetry(() =>
+        const precioNum = Number(p.precio) >= 0 ? Number(p.precio) : 0;
+        
+        // 1. Resolver el ID real del plan
+        let planId = p.id;
+        if (!planId || planId.startsWith('mp-')) {
+          const matchedTipo = Object.keys(MEMBERSHIP_PLAN_IDS).find(
+            t => (p.tipo || p.nombre || '').toLowerCase().includes(t.toLowerCase())
+          );
+          if (matchedTipo) {
+            planId = MEMBERSHIP_PLAN_IDS[matchedTipo];
+          }
+        }
+
+        if (!planId) {
+          console.error('[DataService] No se pudo identificar el ID para el plan:', p);
+          errors.push(`No se pudo identificar el ID del plan ${p.tipo || p.nombre}`);
+          continue;
+        }
+
+        // 2. Ejecutar UPDATE en membership_plans por ID
+        const { data: updated, error: updateErr } = await withAuthRetry(() =>
           supabase
             .from('membership_plans')
-            .upsert({
-              tipo: p.tipo,
-              nombre: p.nombre,
-              precio: precioNum,
-              dias_vigencia: p.dias_vigencia || 30,
-              descripcion: p.descripcion || ''
-            }, { onConflict: 'tipo' })
+            .update({ precio: precioNum })
+            .eq('id', planId)
+            .select('*')
+            .maybeSingle()
         );
-        if (error) {
-          console.warn(`[DataService] Error actualizando plan ${p.tipo}:`, error);
-          errors.push(error.message);
+
+        if (updateErr) {
+          console.error(`[DataService] Error actualizando plan ${planId}:`, updateErr);
+          errors.push(updateErr.message);
+        } else if (!updated) {
+          // Si no existía la fila con ese ID, realizar upsert seguro
+          const { error: upsertErr } = await withAuthRetry(() =>
+            supabase
+              .from('membership_plans')
+              .upsert({
+                id: planId,
+                nombre: p.tipo || p.nombre,
+                precio: precioNum,
+                duracion_dias: p.duracion_dias || p.dias_vigencia || 30,
+                activo: true
+              })
+              .select('*')
+              .maybeSingle()
+          );
+
+          if (upsertErr) {
+            console.error(`[DataService] Error en upsert de plan ${planId}:`, upsertErr);
+            errors.push(upsertErr.message);
+          }
         }
       } catch (err) {
-        console.warn(`[DataService] Excepción actualizando plan ${p.tipo}:`, err);
+        console.error(`[DataService] Excepción actualizando plan:`, err);
         errors.push(err.message);
       }
     }
 
+    // 3. Volver a consultar desde Supabase para confirmar y refrescar el estado
+    const confirmedPlans = await this.getMembershipPlans();
+
+    try {
+      localStorage.setItem('ec_membership_plans', JSON.stringify(confirmedPlans));
+    } catch (e) {}
+
     return {
       success: errors.length === 0,
-      plans: plansToUpdate,
+      plans: confirmedPlans,
       errors
     };
   },

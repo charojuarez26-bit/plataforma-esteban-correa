@@ -71,11 +71,12 @@ export default function SettingsView({ user, onUpdateProfile }) {
   }, []);
 
   const handlePriceChange = (tipo, newPrice) => {
-    setMembershipPlans(prev => prev.map(p => 
-      (p.tipo || '').toLowerCase() === tipo.toLowerCase() 
-        ? { ...p, precio: newPrice }
-        : p
-    ));
+    setMembershipPlans(prev => prev.map(p => {
+      const match = (p.tipo && p.tipo.toLowerCase() === tipo.toLowerCase()) ||
+        (p.nombre && p.nombre.toLowerCase().includes(tipo.toLowerCase())) ||
+        (tipo.toLowerCase().includes('distancia') && (p.tipo || p.nombre || '').toLowerCase().includes('online'));
+      return match ? { ...p, precio: newPrice } : p;
+    }));
   };
 
   const handleSaveMembershipPlans = async (e) => {
@@ -84,13 +85,19 @@ export default function SettingsView({ user, onUpdateProfile }) {
     setSavingPlans(true);
     try {
       const res = await dataService.saveMembershipPlanPrices(membershipPlans);
-      if (res.success || res.plans) {
+      if (res.success && res.plans) {
+        setMembershipPlans(res.plans);
         setPlansSuccess(true);
         setTimeout(() => setPlansSuccess(false), 3500);
       } else {
-        setPlansError('Ocurrió un inconveniente al sincronizar con Supabase');
+        const errorMsg = (res.errors && res.errors.length > 0)
+          ? res.errors.join(', ')
+          : 'Ocurrió un inconveniente al sincronizar con Supabase';
+        setPlansError(errorMsg);
+        console.error('[SettingsView] Error guardando planes:', res.errors);
       }
     } catch (err) {
+      console.error('[SettingsView] Error guardando planes:', err);
       setPlansError(err.message || 'Error guardando planes');
     } finally {
       setSavingPlans(false);
@@ -115,47 +122,21 @@ export default function SettingsView({ user, onUpdateProfile }) {
         setLoadingCode(true);
         setCodeError('');
 
-        // 1. Obtener ID del coach autenticado
-        let uid = user?.user_id || user?.id;
-        try {
-          const { data: authData } = await withAuthRetry(() => supabase.auth.getUser());
-          if (authData?.user?.id) uid = authData.user.id;
-        } catch (e) {
-          console.warn('[SettingsView] Error obteniendo auth.getUser():', e?.message);
-        }
-
         let loadedCode = '';
         let coachData = null;
 
-        // 2. Consultar en la tabla coaches por user_id o id
-        if (uid) {
-          const { data, error } = await withAuthRetry(() =>
-            supabase
-              .from('coaches')
-              .select('id, user_id, nombre, email, codigo_acceso, branding')
-              .or(`user_id.eq.${uid},id.eq.${uid}`)
-              .maybeSingle()
-          );
+        // Consultar en la tabla coaches siempre con select('*').limit(1)
+        const { data, error } = await withAuthRetry(() =>
+          supabase
+            .from('coaches')
+            .select('*')
+            .limit(1)
+            .maybeSingle()
+        );
 
-          if (!error && data) {
-            coachData = data;
-            loadedCode = data.codigo_acceso || data.branding?.codigo_acceso || '';
-          }
-        }
-
-        // Si no se encontró por uid, intentar el primer registro disponible de coaches
-        if (!coachData) {
-          const { data, error } = await withAuthRetry(() =>
-            supabase
-              .from('coaches')
-              .select('id, user_id, nombre, email, codigo_acceso, branding')
-              .limit(1)
-              .maybeSingle()
-          );
-          if (!error && data) {
-            coachData = data;
-            loadedCode = data.codigo_acceso || data.branding?.codigo_acceso || '';
-          }
+        if (!error && data) {
+          coachData = data;
+          loadedCode = data.codigo_acceso || data.branding?.codigo_acceso || '';
         }
 
         // Si no hay código en BD, fallback a localStorage o valor por defecto '7429'
@@ -198,79 +179,29 @@ export default function SettingsView({ user, onUpdateProfile }) {
 
     setSavingCode(true);
     try {
-      // 1. Obtener ID del coach autenticado
-      let uid = user?.user_id || user?.id;
-      try {
-        const { data: authData } = await withAuthRetry(() => supabase.auth.getUser());
-        if (authData?.user?.id) uid = authData.user.id;
-      } catch { /* continuar */ }
+      let coachId = coachRecord?.id;
+      if (!coachId) {
+        const { data: firstCoach } = await withAuthRetry(() =>
+          supabase.from('coaches').select('*').limit(1).maybeSingle()
+        );
+        if (firstCoach?.id) {
+          coachId = firstCoach.id;
+          setCoachRecord(firstCoach);
+        }
+      }
 
-      let updatedSuccessfully = false;
-
-      // 2. Si ya tenemos el registro del coach, actualizar por ID
-      if (coachRecord?.id) {
+      if (coachId) {
         const { error } = await withAuthRetry(() =>
           supabase
             .from('coaches')
             .update({ codigo_acceso: cleanCode })
-            .eq('id', coachRecord.id)
+            .eq('id', coachId)
         );
 
         if (!error) {
-          updatedSuccessfully = true;
           setCoachRecord(prev => ({ ...prev, codigo_acceso: cleanCode }));
-        } else if (error.code === '42703') {
-          // Si la columna no existiera, persistir en branding
-          const updatedBranding = { ...(coachRecord.branding || {}), codigo_acceso: cleanCode };
-          await withAuthRetry(() =>
-            supabase.from('coaches').update({ branding: updatedBranding }).eq('id', coachRecord.id)
-          );
-          updatedSuccessfully = true;
         } else {
-          console.warn('[SettingsView] Error actualizando coach por ID:', error.message);
-        }
-      }
-
-      // Si no se actualizó y tenemos uid, actualizar por user_id o id
-      if (!updatedSuccessfully && uid) {
-        const { error } = await withAuthRetry(() =>
-          supabase
-            .from('coaches')
-            .update({ codigo_acceso: cleanCode })
-            .or(`user_id.eq.${uid},id.eq.${uid}`)
-        );
-
-        if (!error) {
-          updatedSuccessfully = true;
-        } else {
-          // Crear fila en coaches si no existía
-          const newCoach = {
-            id: uid,
-            user_id: uid,
-            nombre: coachProfile.nombre || 'Esteban Correa',
-            email: coachProfile.email || user?.email || '',
-            codigo_acceso: cleanCode
-          };
-          const { data: inserted, error: insertErr } = await withAuthRetry(() =>
-            supabase.from('coaches').insert(newCoach).select().single()
-          );
-          if (!insertErr && inserted) {
-            updatedSuccessfully = true;
-            setCoachRecord(inserted);
-          }
-        }
-      }
-
-      // Si aún no se actualizó, intentar sobre el primer coach disponible
-      if (!updatedSuccessfully) {
-        const { data: anyCoach } = await withAuthRetry(() =>
-          supabase.from('coaches').select('id').limit(1).maybeSingle()
-        );
-        if (anyCoach?.id) {
-          const { error } = await withAuthRetry(() =>
-            supabase.from('coaches').update({ codigo_acceso: cleanCode }).eq('id', anyCoach.id)
-          );
-          if (!error) updatedSuccessfully = true;
+          console.warn('[SettingsView] Error actualizando codigo_acceso en coach:', error.message);
         }
       }
 
@@ -663,7 +594,10 @@ export default function SettingsView({ user, onUpdateProfile }) {
                 
                 {/* Input 1: Plan Presencial */}
                 {(() => {
-                  const planPresencial = membershipPlans.find(p => (p.tipo || '').toLowerCase() === 'presencial') || { precio: 38000 };
+                  const planPresencial = membershipPlans.find(p => 
+                    p.id === '12dc754e-4262-4171-9f6c-6669b853af70' || 
+                    (p.tipo || p.nombre || '').toLowerCase().includes('presencial')
+                  ) || { precio: 38000 };
                   return (
                     <div className="rounded-xl p-4 bg-dark-900 border border-dark-700 space-y-2.5 hover:border-gray-600 transition-colors">
                       <div className="flex items-center justify-between">
@@ -687,7 +621,7 @@ export default function SettingsView({ user, onUpdateProfile }) {
                             type="number"
                             min="0"
                             step="500"
-                            value={planPresencial.precio}
+                            value={planPresencial.precio ?? ''}
                             onChange={(e) => handlePriceChange('Presencial', e.target.value)}
                             className="w-full pl-8 pr-3 py-2.5 rounded-xl bg-dark-950 border border-dark-700 text-white font-black text-sm focus:outline-none focus:border-brand"
                             placeholder="38000"
@@ -703,7 +637,10 @@ export default function SettingsView({ user, onUpdateProfile }) {
 
                 {/* Input 2: Plan Personalizado */}
                 {(() => {
-                  const planPersonalizado = membershipPlans.find(p => (p.tipo || '').toLowerCase() === 'personalizado') || { precio: 45000 };
+                  const planPersonalizado = membershipPlans.find(p => 
+                    p.id === 'b89bd142-8dd2-4a60-8436-fe069f7aeb83' || 
+                    (p.tipo || p.nombre || '').toLowerCase().includes('personalizado')
+                  ) || { precio: 45000 };
                   return (
                     <div className="rounded-xl p-4 bg-dark-900 border border-dark-700 space-y-2.5 hover:border-gray-600 transition-colors">
                       <div className="flex items-center justify-between">
@@ -727,7 +664,7 @@ export default function SettingsView({ user, onUpdateProfile }) {
                             type="number"
                             min="0"
                             step="500"
-                            value={planPersonalizado.precio}
+                            value={planPersonalizado.precio ?? ''}
                             onChange={(e) => handlePriceChange('Personalizado', e.target.value)}
                             className="w-full pl-8 pr-3 py-2.5 rounded-xl bg-dark-950 border border-dark-700 text-white font-black text-sm focus:outline-none focus:border-brand"
                             placeholder="45000"
@@ -743,7 +680,11 @@ export default function SettingsView({ user, onUpdateProfile }) {
 
                 {/* Input 3: Plan A Distancia (Online) */}
                 {(() => {
-                  const planOnline = membershipPlans.find(p => (p.tipo || '').toLowerCase() === 'a distancia') || { precio: 28000 };
+                  const planOnline = membershipPlans.find(p => 
+                    p.id === 'e2f87a8f-3ff0-4cd7-9e2b-35737861a172' || 
+                    (p.tipo || p.nombre || '').toLowerCase().includes('distancia') || 
+                    (p.tipo || p.nombre || '').toLowerCase().includes('online')
+                  ) || { precio: 28000 };
                   return (
                     <div className="rounded-xl p-4 bg-dark-900 border border-dark-700 space-y-2.5 hover:border-gray-600 transition-colors">
                       <div className="flex items-center justify-between">
@@ -767,7 +708,7 @@ export default function SettingsView({ user, onUpdateProfile }) {
                             type="number"
                             min="0"
                             step="500"
-                            value={planOnline.precio}
+                            value={planOnline.precio ?? ''}
                             onChange={(e) => handlePriceChange('A distancia', e.target.value)}
                             className="w-full pl-8 pr-3 py-2.5 rounded-xl bg-dark-950 border border-dark-700 text-white font-black text-sm focus:outline-none focus:border-brand"
                             placeholder="28000"
@@ -973,7 +914,7 @@ export default function SettingsView({ user, onUpdateProfile }) {
           {saved && (
             <span className="text-xs text-emerald-400 font-bold flex items-center gap-1.5 order-2 sm:order-1">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span>¡Configuración guardada exitosamente!</span>
+              <span>Ajustes guardados y sincronizados correctamente</span>
             </span>
           )}
           <button

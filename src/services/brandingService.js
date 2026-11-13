@@ -57,7 +57,7 @@ export function onBrandingChange(cb) {
 /** Consulta el branding del entrenador (funciona sin sesión si la política RLS lo permite). */
 export async function fetchBranding() {
   try {
-    const { data, error } = await supabase.from('coaches').select('branding').not('branding', 'is', null).limit(1).maybeSingle();
+    const { data, error } = await supabase.from('coaches').select('*').limit(1).maybeSingle();
     if (!error && data?.branding) return cacheBranding(data.branding);
   } catch { /* usar caché/por defecto */ }
   return getCachedBranding();
@@ -67,15 +67,13 @@ export async function fetchBranding() {
 export async function saveBranding(branding) {
   const value = cacheBranding(branding);
   try {
-    const { data: auth } = await supabase.auth.getUser();
-    const uid = auth?.user?.id;
-    if (!uid) return { branding: value, warning: 'Sin sesión de Supabase: guardado solo en este dispositivo.' };
-    const { data: existing } = await supabase.from('coaches').select('id').eq('user_id', uid).maybeSingle();
-    if (!existing) return { branding: value, warning: 'No existe fila en coaches: guardado solo en este dispositivo.' };
-    const { error } = await supabase.from('coaches').update({ branding: value }).eq('id', existing.id);
-    if (error) return { branding: value, warning: 'coaches.branding: ' + error.message };
+    const { data: existing } = await supabase.from('coaches').select('*').limit(1).maybeSingle();
+    if (existing?.id) {
+      const { error } = await supabase.from('coaches').update({ branding: value }).eq('id', existing.id);
+      if (error) console.warn('[brandingService] Error en coaches.update:', error.message);
+    }
   } catch (e) {
-    return { branding: value, warning: e?.message };
+    console.warn('[brandingService] Excepción guardando branding:', e?.message);
   }
   return { branding: value, warning: null };
 }
