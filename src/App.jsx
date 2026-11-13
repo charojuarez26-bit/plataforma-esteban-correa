@@ -56,11 +56,11 @@ function AppContent() {
         setCurrentView(getViewFromPath(path));
       }
     } else if (session?.role === 'student') {
-      if (!onboardingRequired && !checkingOnboarding) {
-        if (path.startsWith('/admin') || path === '/login' || path === '/') {
-          window.history.replaceState({}, '', '/portal-alumno');
-        }
+      if (path.startsWith('/admin') || path === '/login' || path === '/') {
+        window.history.replaceState({}, '', onboardingRequired ? '/onboarding' : '/portal-alumno');
       }
+    } else if (path.startsWith('/admin')) {
+      window.history.replaceState({}, '', '/login');
     }
   }, [session?.role, onboardingRequired, checkingOnboarding]);
 
@@ -117,13 +117,13 @@ function AppContent() {
       const path = window.location.pathname;
       if (path.startsWith('/admin')) {
         if (!session || session.role !== 'coach') {
-          window.history.replaceState({}, '', '/login');
+          window.history.replaceState({}, '', session?.role === 'student' ? '/portal-alumno' : '/login');
           return;
         }
         setCurrentView(getViewFromPath(path));
       } else if (path === '/portal-alumno') {
         if (!session || session.role !== 'student') {
-          window.history.replaceState({}, '', '/login');
+          window.history.replaceState({}, '', session?.role === 'coach' ? '/admin' : '/login');
         }
       }
     };
@@ -260,7 +260,18 @@ function AppContent() {
     return <StudentPortal student={session.user} onLogout={handleLogout} />;
   }
 
-  // 3. Si el rol es Entrenador (Admin), mostrar el Panel del Coach con navegación /admin/*
+  // 3. AISLAMIENTO ESTRICTO DE ROL: Solo el rol 'coach' puede acceder al Panel de Administración
+  if (session.role !== 'coach') {
+    if (window.location.pathname.startsWith('/admin')) {
+      window.history.replaceState({}, '', session.role === 'student' ? '/portal-alumno' : '/login');
+    }
+    if (session.role === 'student') {
+      return <StudentPortal student={session.user} onLogout={handleLogout} />;
+    }
+    return <LoginView onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  // 4. Si el rol es Entrenador (Admin), mostrar el Panel del Coach con navegación /admin/*
   if (window.location.pathname === '/portal-alumno' || window.location.pathname === '/login' || window.location.pathname === '/') {
     window.history.replaceState({}, '', '/admin');
   }

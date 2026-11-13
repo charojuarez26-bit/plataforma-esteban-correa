@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   UserPlus, 
   X, 
@@ -27,7 +27,8 @@ const INITIAL_FORM_DATA = {
   peso_actual: '',
   modalidad: 'Presencial',
   objetivo: 'Reducir % de grasa y ganar fuerza',
-  plan_actual: 'Plan 4x Semanal Personalizado',
+  plan_id: null,
+  plan_actual: null,
   dias_por_semana: 3,
   dias_asignados: ['Lunes', 'Miércoles', 'Viernes'],
   tipo_planificacion: 'Semanal',
@@ -36,6 +37,15 @@ const INITIAL_FORM_DATA = {
 
 export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpenProfile }) {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
+  const [membershipPlans, setMembershipPlans] = useState([]);
+
+  useEffect(() => {
+    let alive = true;
+    dataService.getMembershipPlans().then(plans => {
+      if (alive && Array.isArray(plans)) setMembershipPlans(plans);
+    }).catch(err => console.warn('[NewClientModal] Error cargando planes:', err));
+    return () => { alive = false; };
+  }, []);
 
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
@@ -94,7 +104,34 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
 
     setLoading(true);
     try {
-      const code = generateCode(formData.nombre_completo);
+      let code = '';
+      const initials = formData.nombre_completo
+        .trim()
+        .split(' ')
+        .filter(Boolean)
+        .map(w => w[0])
+        .slice(0, 2)
+        .join('')
+        .toUpperCase() || 'EC';
+
+      let isUnique = false;
+      let attempts = 0;
+      while (!isUnique && attempts < 25) {
+        attempts++;
+        const randomDigits = Math.floor(1000 + Math.random() * 9000);
+        const candidate = `${initials}-${randomDigits}`;
+        const { data: existing } = await supabase
+          .from('clients')
+          .select('id')
+          .eq('access_code', candidate)
+          .maybeSingle();
+        if (!existing) {
+          code = candidate;
+          isUnique = true;
+        }
+      }
+      if (!code) code = `${initials}-${Math.floor(1000 + Math.random() * 9000)}`;
+
       const currentSession = authService.getCurrentSession();
       
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -112,20 +149,46 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
         }
       }
 
+      const cleanNombre = (formData.nombre_completo || '').trim();
+      if (!cleanNombre) {
+        setErrorMessage('El nombre completo del alumno es obligatorio.');
+        return;
+      }
+      const cleanTelefono = (formData.telefono || '').trim();
+      if (!cleanTelefono) {
+        setErrorMessage('El teléfono o WhatsApp del alumno es obligatorio.');
+        return;
+      }
+
+      // Sanitización de campos numéricos opcionales (positivos o null)
+      const parseOptionalNumber = (val, isFloat = false) => {
+        if (val === null || val === undefined || String(val).trim() === '') return null;
+        const num = isFloat ? parseFloat(val) : parseInt(val, 10);
+        return (!isNaN(num) && isFinite(num) && num > 0) ? num : null;
+      };
+
+      const edadVal = parseOptionalNumber(formData.edad, false);
+      const alturaVal = parseOptionalNumber(formData.altura, true);
+      const pesoVal = parseOptionalNumber(formData.peso_actual, true);
+
       // Mapear estrictamente los campos de la tabla clients en Supabase
       const payload = {
         coach_id: coachId,
-        nombre_completo: formData.nombre_completo.trim(),
-        telefono: formData.telefono.trim(),
-        email: formData.email ? formData.email.trim() : null,
-        edad: formData.edad ? parseInt(formData.edad, 10) : null,
-        altura: formData.altura ? parseFloat(formData.altura) : null,
-        peso_actual: formData.peso_actual ? parseFloat(formData.peso_actual) : null,
+        nombre_completo: cleanNombre,
+        telefono: cleanTelefono,
+        email: formData.email && formData.email.trim() ? formData.email.trim() : null,
+        edad: edadVal,
+        altura: alturaVal,
+        peso_actual: pesoVal,
         modalidad: formData.modalidad || 'Presencial',
         objetivo: (formData.objetivo || 'Acondicionamiento físico general').trim(),
         access_code: code,
         estado: 'Activo',
-        foto_url: uploadedFotoUrl
+        foto_url: uploadedFotoUrl,
+        plan_id: formData.plan_id || null,
+        plan_actual: formData.plan_actual || null,
+        estado_pago: (formData.plan_id || formData.plan_actual) ? 'vencido' : 'sin_plan',
+        fecha_vencimiento: null
       };
 
       // Inserción directa en la tabla 'clients' de Supabase
@@ -137,8 +200,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
 
       if (error) {
         console.error("Error al guardar alumno en Supabase:", error);
-        setErrorMessage(error.message || 'Error al guardar alumno en Supabase');
-        alert(`Error al guardar alumno en Supabase: ${error.message}`);
+        setErrorMessage('No se pudo guardar el registro del alumno. Por favor verifica los datos.');
         return;
       }
 
@@ -174,8 +236,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
       onClose();
     } catch (err) {
       console.error("Error al guardar alumno en Supabase:", err);
-      setErrorMessage(err.message || 'Error inesperado al guardar alumno');
-      alert(`Error al guardar alumno en Supabase: ${err.message}`);
+      setErrorMessage('Error inesperado al guardar el alumno. Verifica la conexión.');
     } finally {
       setLoading(false);
     }
@@ -364,7 +425,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                   <input
                     type="text"
                     required
-                    placeholder="Ej: Sofía Ramírez"
+                    placeholder="Ej. Nombre y Apellido"
                     value={formData.nombre_completo}
                     onChange={(e) => setFormData({ ...formData, nombre_completo: e.target.value })}
                     className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-brand min-h-[44px]"
@@ -380,7 +441,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                     <input
                       type="text"
                       required
-                      placeholder="+54 9 11 4433-2211"
+                      placeholder="+54 9 11 0000-0000"
                       value={formData.telefono}
                       onChange={(e) => setFormData({ ...formData, telefono: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-brand min-h-[44px]"
@@ -392,7 +453,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                     </label>
                     <input
                       type="email"
-                      placeholder="sofia@email.com"
+                      placeholder="alumno@email.com"
                       value={formData.email}
                       onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-brand min-h-[44px]"
@@ -408,7 +469,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                     </label>
                     <input
                       type="number"
-                      placeholder="26"
+                      placeholder="Ej. 28"
                       value={formData.edad}
                       onChange={(e) => setFormData({ ...formData, edad: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white focus:outline-none focus:border-brand min-h-[44px]"
@@ -420,7 +481,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                     </label>
                     <input
                       type="number"
-                      placeholder="168"
+                      placeholder="Ej. 175"
                       value={formData.altura}
                       onChange={(e) => setFormData({ ...formData, altura: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white focus:outline-none focus:border-brand min-h-[44px]"
@@ -447,8 +508,31 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                   </div>
                 </div>
 
-                {/* Modalidad y Objetivo */}
+                {/* Plan de Membresía, Modalidad y Objetivo */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">
+                      Plan de Membresía
+                    </label>
+                    <select
+                      value={formData.plan_id || ''}
+                      onChange={(e) => {
+                        const selId = e.target.value;
+                        const found = membershipPlans.find(p => p.id === selId);
+                        setFormData(prev => ({
+                          ...prev,
+                          plan_id: selId || null,
+                          plan_actual: found ? found.nombre : null
+                        }));
+                      }}
+                      className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-sm text-white focus:outline-none focus:border-brand min-h-[44px]"
+                    >
+                      <option value="">Sin plan asignado</option>
+                      {membershipPlans.map(p => (
+                        <option key={p.id} value={p.id}>{p.nombre}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div>
                     <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">
                       Modalidad
@@ -463,7 +547,7 @@ export default function NewClientModal({ isOpen, onClose, onClientCreated, onOpe
                       <option value="Híbrido">Híbrido</option>
                     </select>
                   </div>
-                  <div className="sm:col-span-2">
+                  <div>
                     <label className="block text-[11px] font-semibold uppercase text-gray-300 mb-1">
                       Objetivo Principal *
                     </label>

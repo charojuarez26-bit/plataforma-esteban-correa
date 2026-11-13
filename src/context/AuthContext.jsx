@@ -134,7 +134,6 @@ export function AuthProvider({ children }) {
       }
 
       if (event === 'TOKEN_REFRESHED') {
-        console.log('Sesión renovada automáticamente');
         if (currentSession?.user) {
           const coachProfile = await resolveCoachProfile(currentSession.user);
           const updatedSession = {

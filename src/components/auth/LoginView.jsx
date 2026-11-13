@@ -54,9 +54,9 @@ export function LoginView({ onLoginSuccess, onStartOnboarding }) {
   const handleFirstTimeSubmit = async (e) => {
     if (e?.preventDefault) e.preventDefault();
     setError(null);
-    const code = studentPin.join('').trim();
+    const code = studentPin.join('').trim().toUpperCase();
 
-    if (code.length < 4) {
+    if (!code || code.length < 4) {
       setError('Por favor introduce los 4 dígitos del código de tu entrenador.');
       return;
     }
@@ -68,18 +68,7 @@ export function LoginView({ onLoginSuccess, onStartOnboarding }) {
         onStartOnboarding(code);
       }
     } catch (err) {
-      // Si el código pertenecía a un alumno ya registrado, permitirle ingresar directamente
-      try {
-        const alt = await authService.loginStudentBy4DigitCode(code);
-        if (alt.isComplete && alt.client && onLoginSuccess) {
-          localStorage.setItem('active_student_id', alt.client.id);
-          localStorage.setItem('alumno_session', JSON.stringify(alt.client));
-          onLoginSuccess(alt.session, '/portal-alumno');
-          return;
-        }
-      } catch { /* ignorar y mostrar error original */ }
-
-      setError(err.message || 'Código de 4 dígitos no reconocido. Solicítaselo a Esteban Correa.');
+      setError(err.message || 'Código de invitación de 4 dígitos no reconocido. Solicítaselo a Esteban Correa.');
     } finally {
       setLoading(false);
     }
@@ -90,9 +79,9 @@ export function LoginView({ onLoginSuccess, onStartOnboarding }) {
     if (e?.preventDefault) e.preventDefault();
     setError(null);
 
-    // 1. Aplicar .trim() tanto al nombre como al código
+    // 1. Coincidencia exacta: aplicamos .trim().toUpperCase() al código
     const cleanName = existingName.trim();
-    const cleanCode = existingCode.trim();
+    const cleanCode = existingCode.trim().toUpperCase();
 
     if (!cleanName) {
       setError('Por favor ingresa tu nombre y apellido.');
@@ -105,56 +94,45 @@ export function LoginView({ onLoginSuccess, onStartOnboarding }) {
 
     setLoading(true);
     try {
-      // 2 y 3. Consulta a Supabase utilizando .eq('access_code', cleanCode) e .ilike(...)
-      // Nota: En la tabla 'clients' la columna es 'nombre_completo' (se incluye fallback a 'nombre' por compatibilidad)
+      // 2. Consulta a Supabase utilizando .eq('access_code', cleanCode) (COINCIDENCIA EXACTA)
       let { data: alumnos, error: queryError } = await supabase
         .from('clients')
         .select('*')
-        .eq('access_code', cleanCode)
-        .ilike('nombre_completo', `%${cleanName}%`);
+        .eq('access_code', cleanCode);
 
-      // Fallback si la columna en la base de datos se llamara 'nombre'
-      if (queryError && (queryError.message?.includes('nombre_completo') || queryError.code === '42703')) {
-        const retry = await supabase
-          .from('clients')
-          .select('*')
-          .eq('access_code', cleanCode)
-          .ilike('nombre', `%${cleanName}%`);
-        alumnos = retry.data;
-        queryError = retry.error;
+      if (queryError) {
+        throw queryError;
       }
 
-      let alumno = alumnos && alumnos.length > 0 ? alumnos[0] : null;
-
-      // Tolerancia adicional para acentos/tildes (ej: Sofía vs Sofia) si el access_code coincide
-      if (!alumno && !queryError) {
-        const { data: byCode } = await supabase
-          .from('clients')
-          .select('*')
-          .eq('access_code', cleanCode);
-
-        if (byCode && byCode.length > 0) {
-          const normalize = (str) => (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-          const normInput = normalize(cleanName);
-          alumno = byCode.find(c => {
-            const normDb = normalize(c.nombre_completo || c.nombre || '');
-            return normDb.includes(normInput) || normInput.includes(normDb) || normInput.split(' ')[0] === normDb.split(' ')[0];
-          }) || null;
-        }
+      let alumno = null;
+      if (alumnos && alumnos.length > 0) {
+        const normalize = (str) => (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+        const normInput = normalize(cleanName);
+        alumno = alumnos.find(c => {
+          const normDb = normalize(c.nombre_completo || c.nombre || '');
+          return normDb.includes(normInput) || normInput.includes(normDb) || normInput.split(' ')[0] === normDb.split(' ')[0];
+        }) || alumnos[0];
       }
 
-      if (queryError || !alumno) {
-        throw new Error('No se encontró un alumno con ese nombre y código asignado. Verifica tus datos o consulta con Esteban Correa.');
+      if (!alumno) {
+        throw new Error('No se encontró un alumno con ese código asignado. Verifica los datos o consulta con Esteban Correa.');
       }
 
-      // 4. Si la consulta es exitosa, guardar en localStorage y redirigir
+      if ((alumno.estado || '').toLowerCase() === 'inactivo') {
+        throw new Error('Tu cuenta se encuentra pausada o inactiva. Comunícate con Esteban Correa.');
+      }
+
+      // 3. Si la consulta es exitosa, guardar en localStorage y redirigir
       localStorage.setItem('active_student_id', alumno.id);
       localStorage.setItem('alumno_session', JSON.stringify(alumno));
+
+      const status = await authService.checkStudentOnboardingStatus(alumno.id, alumno);
 
       const userSession = {
         role: 'student',
         user: alumno,
         token: `student-session-${alumno.id}`,
+        onboardingVerified: !status.needsOnboarding,
         loggedAt: new Date().toISOString()
       };
 
@@ -165,7 +143,7 @@ export function LoginView({ onLoginSuccess, onStartOnboarding }) {
       }
     } catch (err) {
       console.error('[LoginView] Error en login de alumno:', err);
-      setError(err.message || 'No se encontró un alumno con ese nombre y código. Verifica los datos o consulta con Esteban Correa.');
+      setError(err.message || 'No se encontró un alumno con ese código exacto y nombre. Verifica tus datos o consulta con Esteban Correa.');
     } finally {
       setLoading(false);
     }
@@ -372,15 +350,7 @@ export function LoginView({ onLoginSuccess, onStartOnboarding }) {
                       authService.verifyCoachInvitationCode(pasted).then(() => {
                         if (onStartOnboarding) onStartOnboarding(pasted);
                       }).catch((err) => {
-                        authService.loginStudentBy4DigitCode(pasted).then((result) => {
-                          if (result.isComplete && result.client && onLoginSuccess) {
-                            localStorage.setItem('active_student_id', result.client.id);
-                            localStorage.setItem('alumno_session', JSON.stringify(result.client));
-                            onLoginSuccess(result.session, '/portal-alumno');
-                          } else {
-                            setError(err.message);
-                          }
-                        }).catch(() => setError(err.message));
+                        setError(err.message || 'Código de invitación de 4 dígitos incorrecto. Solicítaselo a tu entrenador Esteban Correa.');
                       });
                     }
                   }}
@@ -408,15 +378,7 @@ export function LoginView({ onLoginSuccess, onStartOnboarding }) {
                           authService.verifyCoachInvitationCode(full).then(() => {
                             if (onStartOnboarding) onStartOnboarding(full);
                           }).catch((err) => {
-                            authService.loginStudentBy4DigitCode(full).then((result) => {
-                              if (result.isComplete && result.client && onLoginSuccess) {
-                                localStorage.setItem('active_student_id', result.client.id);
-                                localStorage.setItem('alumno_session', JSON.stringify(result.client));
-                                onLoginSuccess(result.session, '/portal-alumno');
-                              } else {
-                                setError(err.message);
-                              }
-                            }).catch(() => setError(err.message));
+                            setError(err.message || 'Código de invitación de 4 dígitos incorrecto. Solicítaselo a tu entrenador Esteban Correa.');
                           });
                         }
                       }}

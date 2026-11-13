@@ -174,7 +174,7 @@ export default function StudentOnboardingView({
   };
 
   // =========================================================================
-  // VERIFICACIÓN DEL CÓDIGO DE 4 DÍGITOS
+  // VERIFICACIÓN DEL CÓDIGO DE 4 DÍGITOS (INVITACIÓN DEL ENTRENADOR)
   // =========================================================================
   const handleVerify4DigitPin = async (rawCode = null) => {
     setPinError('');
@@ -187,45 +187,22 @@ export default function StudentOnboardingView({
 
     setIsVerifyingPin(true);
     try {
-      const result = await authService.loginStudentBy4DigitCode(code);
+      // Verificar código de invitación del entrenador (NUNCA loguear a un alumno existente)
+      const verified = await authService.verifyCoachInvitationCode(code);
 
-      // Si es un alumno existente que ya completó onboarding, redirige inmediatamente
-      if (result.isComplete && result.client) {
-        localStorage.setItem('active_student_id', result.client.id);
-        localStorage.setItem('alumno_session', JSON.stringify(result.client));
-        if (onComplete) {
-          onComplete(result.client);
-        }
-        return;
+      if (verified?.coachId) {
+        setResolvedCoachId(verified.coachId);
       }
-
-      // Si es un alumno existente pero falta completar ficha, precargar sus datos
-      if (result.client) {
-        setResolvedClientId(result.client.id);
-        setResolvedCoachId(result.client.coach_id || '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86');
-        setFormData(prev => ({
-          ...prev,
-          nombre_completo: result.client.nombre_completo || prev.nombre_completo,
-          telefono: result.client.telefono || prev.telefono,
-          edad: result.client.edad ? String(result.client.edad) : prev.edad,
-          altura: result.client.altura ? String(result.client.altura) : prev.altura,
-          peso_actual: result.client.peso_actual ? String(result.client.peso_actual) : prev.peso_actual,
-          objetivo: result.client.objetivo || prev.objetivo,
-          foto_url: result.client.foto_url || result.client.avatar_url || prev.foto_url
-        }));
-        if (result.client.foto_url || result.client.avatar_url) {
-          setPhotoPreview(result.client.foto_url || result.client.avatar_url);
-        }
-      } else if (result.coachId) {
-        setResolvedCoachId(result.coachId);
-        if (result.coachName) setResolvedCoachName(result.coachName);
+      if (verified?.coachName) {
+        setResolvedCoachName(verified.coachName);
       }
+      setResolvedClientId(null); // Asegura que siempre sea un registro nuevo
 
       // Avanzar al Asistente Paso 1 (Datos Personales)
       setStep(1);
     } catch (err) {
       console.error('[Onboarding PIN] Error:', err);
-      setPinError(err.message || 'Código de 4 dígitos no reconocido. Consúltalo con Esteban Correa por WhatsApp.');
+      setPinError(err.message || 'Código de invitación no reconocido. Consúltalo con Esteban Correa por WhatsApp.');
     } finally {
       setIsVerifyingPin(false);
     }
@@ -337,15 +314,14 @@ export default function StudentOnboardingView({
       const cleanNombre = formData.nombre_completo.trim();
       const cleanTelefono = formData.telefono.trim();
 
-      // Validar si existe un ID previo que sea un UUID válido estricto
+      // Validar si existe un ID previo que sea un UUID válido estricto (solo si viene de la prop student)
       const isValidUUID = (val) => {
         return typeof val === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
       };
 
-      const existingUUID = [resolvedClientId, student?.id].find(isValidUUID);
+      const existingUUID = (student?.id && isValidUUID(student.id)) ? student.id : null;
 
-      // Código de acceso (ej: 'EC-2025' o 'SR-9505')
-      const pinCode = pinDigits.join('') || '2025';
+      // Código de acceso nuevo y único garantizado (ej: 'EC-8492' o 'JP-4129')
       let accessCode = student?.access_code;
       if (!accessCode) {
         const initials = cleanNombre
@@ -355,7 +331,29 @@ export default function StudentOnboardingView({
           .slice(0, 2)
           .join('')
           .toUpperCase() || 'EC';
-        accessCode = `${initials}-${pinCode}`;
+
+        let isUnique = false;
+        let attempts = 0;
+        while (!isUnique && attempts < 25) {
+          attempts++;
+          const randomDigits = Math.floor(1000 + Math.random() * 9000);
+          const candidateCode = `${initials}-${randomDigits}`;
+
+          const { data: existing } = await supabase
+            .from('clients')
+            .select('id')
+            .eq('access_code', candidateCode)
+            .maybeSingle();
+
+          if (!existing) {
+            accessCode = candidateCode;
+            isUnique = true;
+          }
+        }
+
+        if (!accessCode) {
+          accessCode = `${initials}-${Math.floor(1000 + Math.random() * 9000)}`;
+        }
       }
 
       const pesoNumerico = formData.peso_actual ? parseFloat(formData.peso_actual) : null;
@@ -376,7 +374,9 @@ export default function StudentOnboardingView({
         estado: 'Activo',
         foto_url: formData.foto_url || null,
         avatar_url: formData.foto_url || null,
-        onboarding_completado: true
+        onboarding_completado: true,
+        estado_pago: 'vencido',
+        fecha_vencimiento: null
       };
 
       let savedClient = null;

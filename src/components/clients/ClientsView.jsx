@@ -9,6 +9,7 @@ import ClientAvatar from '../common/ClientAvatar';
 import { CheckCircle2, AlertTriangle, RefreshCw, Sparkles, DollarSign } from 'lucide-react';
 import { supabase, withAuthRetry, isAuthError } from '../../lib/supabaseClient';
 import { dataService } from '../../services/dataService';
+import { calcularEstadoPago } from '../../utils/paymentUtils';
 
 export default function ClientsView({ isModalOpen, onCloseModal, selectedClientId, onClearSelectedClient, onCreateRoutine }) {
   const [clients, setClients] = useState([]);
@@ -75,16 +76,14 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'clients' },
-        (payload) => {
-          console.log('[ClientsView Realtime] Cambio en clients:', payload);
+        () => {
           if (isMounted) loadClients();
         }
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'medical_records' },
-        (payload) => {
-          console.log('[ClientsView Realtime] Cambio en medical_records:', payload);
+        () => {
           if (isMounted) loadClients();
         }
       )
@@ -138,8 +137,9 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
         const photo = c.foto_url || meta.foto_url || meta.avatar_url || c.avatar_url || null;
         const activeRoutine = (c.routines || []).find(r => r.activa);
         const routineName = activeRoutine ? activeRoutine.nombre : null;
-        const fechaVenc = c.fecha_vencimiento || meta.fecha_vencimiento || null;
-        const estadoPago = c.estado_pago || meta.estado_pago || (fechaVenc ? 'al_dia' : 'sin_plan');
+        const fechaVenc = c.fecha_vencimiento !== undefined ? c.fecha_vencimiento : null;
+        const planActual = c.plan_actual !== undefined ? c.plan_actual : null;
+        const estadoPago = calcularEstadoPago({ ...c, fecha_vencimiento: fechaVenc, plan_actual: planActual });
 
         return {
           ...c,
@@ -149,7 +149,7 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
           rutina_activa: routineName,
           tiene_rutina: Boolean(routineName),
           notas: meta.notas || c.notas || '',
-          plan_actual: meta.plan_actual || c.plan_actual || 'Plan Personalizado',
+          plan_actual: planActual,
           fecha_vencimiento: fechaVenc,
           estado_pago: estadoPago,
           dias_por_semana: meta.dias_por_semana || c.dias_por_semana || 3,
@@ -371,7 +371,7 @@ export default function ClientsView({ isModalOpen, onCloseModal, selectedClientI
             <div className="p-3 rounded-xl bg-gray-950/70 border border-gray-800 text-left space-y-1.5 text-xs text-gray-400">
               <div className="flex items-center justify-between">
                 <span>Plan asignado:</span>
-                <span className="font-semibold text-white">{transitionClient.plan_actual || 'Plan 4x Semanal Personalizado'}</span>
+                <span className="font-semibold text-white">{transitionClient.plan_actual || 'Sin plan asignado'}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Código móvil:</span>

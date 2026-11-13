@@ -46,7 +46,7 @@ export default function ClientsListView({
     altura: '',
     modalidad: 'Presencial',
     objetivo: '',
-    plan_actual: 'Plan 4x Semanal Personalizado',
+    plan_actual: null,
     notas: ''
   });
 
@@ -63,7 +63,7 @@ export default function ClientsListView({
       altura: '',
       modalidad: 'Presencial',
       objetivo: '',
-      plan_actual: 'Plan 4x Semanal Personalizado',
+      plan_actual: null,
       notas: ''
     });
   };

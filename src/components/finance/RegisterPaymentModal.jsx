@@ -14,8 +14,7 @@ import { dataService } from '../../services/dataService';
 import { 
   calcularDiasParaVencer, 
   formatearFechaPago, 
-  calcularNuevaFechaVencimiento, 
-  DEFAULT_PLANS 
+  calcularNuevaFechaVencimiento 
 } from '../../utils/paymentUtils';
 import ClientAvatar from '../common/ClientAvatar';
 
@@ -35,6 +34,7 @@ export default function RegisterPaymentModal({
   const [selectedClient, setSelectedClient] = useState(null);
   const [paymentForm, setPaymentForm] = useState({
     client_id: '',
+    plan_id: '',
     plan_nombre: '',
     monto: '',
     metodo: 'Transferencia',
@@ -44,7 +44,7 @@ export default function RegisterPaymentModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // 1. Inicializar lista de alumnos y planes disponibles
+  // 1. Inicializar lista de alumnos y planes disponibles (desde public.membership_plans)
   useEffect(() => {
     let active = true;
 
@@ -69,13 +69,24 @@ export default function RegisterPaymentModal({
         }
       }
 
-      let finalPlans = trainingPlans && trainingPlans.length > 0 ? trainingPlans : [];
+      let finalPlans = [];
+      try {
+        const mPlans = await dataService.getMembershipPlans();
+        finalPlans = (mPlans || []).filter(p => p.activo !== false);
+      } catch (e) {
+        console.warn('[RegisterPaymentModal] Error cargando membership_plans:', e);
+      }
+
+      if (finalPlans.length === 0 && trainingPlans && trainingPlans.length > 0) {
+        finalPlans = trainingPlans.filter(p => p.activo !== false);
+      }
+
       if (finalPlans.length === 0) {
-        try {
-          finalPlans = dataService.getTrainingPlans() || DEFAULT_PLANS;
-        } catch {
-          finalPlans = DEFAULT_PLANS;
-        }
+        finalPlans = [
+          { id: '12dc754e-4262-4171-9f6c-6669b853af70', nombre: 'Presencial', duracion_dias: 30 },
+          { id: 'b89bd142-8dd2-4a60-8436-fe069f7aeb83', nombre: 'Personalizado', duracion_dias: 30 },
+          { id: 'e2f87a8f-3ff0-4cd7-9e2b-35737861a172', nombre: 'A distancia', duracion_dias: 30 }
+        ];
       }
 
       if (!active) return;
@@ -107,27 +118,31 @@ export default function RegisterPaymentModal({
 
     setSelectedClient(target || null);
 
-    // Determinar plan inicial
-    const currentPlans = plans.length > 0 ? plans : DEFAULT_PLANS;
+    // Determinar plan inicial desde membership_plans
+    const currentPlans = plans.length > 0 ? plans : [];
     let matchedPlan = null;
     if (initialPlanId) {
       matchedPlan = currentPlans.find(p => p.id === initialPlanId || p.nombre === initialPlanId);
     }
-    if (!matchedPlan && target?.plan_actual) {
-      matchedPlan = currentPlans.find(p => p.nombre === target.plan_actual);
+    if (!matchedPlan && target?.plan_id) {
+      matchedPlan = currentPlans.find(p => p.id === target.plan_id);
     }
-    if (!matchedPlan) {
+    if (!matchedPlan && target?.plan_actual) {
+      matchedPlan = currentPlans.find(p => p.nombre?.toLowerCase() === target.plan_actual?.toLowerCase());
+    }
+    if (!matchedPlan && currentPlans.length > 0) {
       matchedPlan = currentPlans[0];
     }
 
-    const defaultPrice = matchedPlan?.precio || 38000;
-    const defaultDias = matchedPlan?.dias_vigencia || 30;
-    const defaultPlanNombre = target?.plan_actual || matchedPlan?.nombre || 'Plan 3x Semanal Personalizado';
+    const defaultPlanNombre = matchedPlan?.nombre || target?.plan_actual || 'Presencial';
+    const defaultPlanId = matchedPlan?.id || target?.plan_id || '';
+    const defaultDias = matchedPlan?.duracion_dias || matchedPlan?.dias_vigencia || 30;
 
     setPaymentForm({
       client_id: target?.id || '',
+      plan_id: defaultPlanId,
       plan_nombre: defaultPlanNombre,
-      monto: String(defaultPrice),
+      monto: '', // Vacío por defecto para que el entrenador ingrese el importe libremente
       metodo: 'Transferencia',
       dias_vigencia: defaultDias,
       fecha_pago: new Date().toISOString().split('T')[0]
@@ -142,29 +157,40 @@ export default function RegisterPaymentModal({
     const found = availableClients.find(c => c.id === clientId);
     setSelectedClient(found || null);
 
-    // Buscar plan que coincida con el plan_actual del alumno
-    const currentPlans = plans.length > 0 ? plans : DEFAULT_PLANS;
-    const matchedPlan = currentPlans.find(p => p.nombre === found?.plan_actual) || currentPlans[0];
+    const currentPlans = plans.length > 0 ? plans : [];
+    let matchedPlan = null;
+    if (found?.plan_id) {
+      matchedPlan = currentPlans.find(p => p.id === found.plan_id);
+    }
+    if (!matchedPlan && found?.plan_actual) {
+      matchedPlan = currentPlans.find(p => p.nombre?.toLowerCase() === found.plan_actual?.toLowerCase());
+    }
+    if (!matchedPlan && currentPlans.length > 0) {
+      matchedPlan = currentPlans[0];
+    }
 
     setPaymentForm(prev => ({
       ...prev,
       client_id: clientId,
-      plan_nombre: found?.plan_actual || matchedPlan?.nombre || prev.plan_nombre,
-      monto: matchedPlan ? String(matchedPlan.precio) : prev.monto,
-      dias_vigencia: matchedPlan ? (matchedPlan.dias_vigencia || 30) : prev.dias_vigencia
+      plan_id: matchedPlan?.id || found?.plan_id || '',
+      plan_nombre: matchedPlan?.nombre || found?.plan_actual || prev.plan_nombre || 'Presencial',
+      // Nunca autocompletar monto: conservar lo que el usuario escribió o dejar vacío
+      dias_vigencia: matchedPlan?.duracion_dias || matchedPlan?.dias_vigencia || 30
     }));
   };
 
-  // Manejar cambio de plan de entrenamiento
-  const handlePlanChange = (planNombre) => {
-    const currentPlans = plans.length > 0 ? plans : DEFAULT_PLANS;
-    const found = currentPlans.find(p => p.nombre === planNombre);
+  // Manejar cambio de plan de membresía
+  const handlePlanChange = (planIdentifier) => {
+    const currentPlans = plans.length > 0 ? plans : [];
+    const found = currentPlans.find(p => p.id === planIdentifier || p.nombre === planIdentifier);
+    const duracion = found?.duracion_dias || found?.dias_vigencia || 30;
 
     setPaymentForm(prev => ({
       ...prev,
-      plan_nombre: planNombre,
-      monto: found ? String(found.precio) : prev.monto,
-      dias_vigencia: found ? (found.dias_vigencia || 30) : 30
+      plan_id: found?.id || '',
+      plan_nombre: found ? found.nombre : planIdentifier,
+      // Nunca autocompletar monto: no hay tarifas fijas precargadas
+      dias_vigencia: duracion
     }));
   };
 
@@ -175,7 +201,8 @@ export default function RegisterPaymentModal({
 
   const nuevaFechaCalculada = calcularNuevaFechaVencimiento(
     selectedClient?.fecha_vencimiento,
-    paymentForm.dias_vigencia
+    paymentForm.dias_vigencia,
+    paymentForm.fecha_pago
   );
 
   const handleSubmit = async (e) => {
@@ -187,8 +214,10 @@ export default function RegisterPaymentModal({
       return;
     }
 
-    if (!paymentForm.monto || parseFloat(paymentForm.monto) <= 0) {
-      setErrorMessage('Ingresa un monto válido.');
+    const montoRaw = String(paymentForm.monto || '').trim();
+    const montoNum = Number(montoRaw);
+    if (!montoRaw || isNaN(montoNum) || !isFinite(montoNum) || montoNum <= 0) {
+      setErrorMessage('Ingresa un monto válido estrictamente mayor a 0 ($ ARS).');
       return;
     }
 
@@ -199,12 +228,14 @@ export default function RegisterPaymentModal({
 
     setIsSubmitting(true);
     try {
+      const diasNum = parseInt(paymentForm.dias_vigencia, 10);
       const result = await dataService.recordClientPayment({
         clientId: paymentForm.client_id,
+        planId: paymentForm.plan_id || null,
         planNombre: paymentForm.plan_nombre,
-        monto: parseFloat(paymentForm.monto),
+        monto: montoNum,
         metodo: paymentForm.metodo,
-        diasVigencia: parseInt(paymentForm.dias_vigencia, 10) || 30,
+        diasVigencia: (!isNaN(diasNum) && diasNum > 0) ? diasNum : 30,
         fechaPago: paymentForm.fecha_pago
       });
 
@@ -346,17 +377,17 @@ export default function RegisterPaymentModal({
 
             <div>
               <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1 block">
-                Plan de Entrenamiento *
+                Plan de Membresía *
               </label>
               <select
-                value={paymentForm.plan_nombre}
+                value={paymentForm.plan_id || paymentForm.plan_nombre}
                 onChange={(e) => handlePlanChange(e.target.value)}
                 className="w-full py-1.5 px-3 text-xs sm:text-sm rounded-lg bg-gray-800/80 border border-gray-700 text-white font-semibold focus:outline-none focus:border-brand"
                 required
               >
-                {(plans.length > 0 ? plans : DEFAULT_PLANS).map(p => (
-                  <option key={p.id || p.nombre} value={p.nombre}>
-                    {p.nombre} (${Number(p.precio).toLocaleString('es-AR')})
+                {plans.map(p => (
+                  <option key={p.id || p.nombre} value={p.id || p.nombre}>
+                    {p.nombre}
                   </option>
                 ))}
               </select>
@@ -367,7 +398,7 @@ export default function RegisterPaymentModal({
           <div className="grid grid-cols-2 gap-2.5">
             <div>
               <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1 block">
-                Monto (ARS) *
+                Monto ($ ARS) *
               </label>
               <div className="relative">
                 <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">$</span>
@@ -376,7 +407,7 @@ export default function RegisterPaymentModal({
                   value={paymentForm.monto}
                   onChange={(e) => setPaymentForm(prev => ({ ...prev, monto: e.target.value }))}
                   className="w-full pl-6 pr-2.5 py-1.5 text-xs sm:text-sm rounded-lg bg-gray-800/80 border border-gray-700 text-white font-mono font-bold focus:outline-none focus:border-brand"
-                  placeholder="38000"
+                  placeholder="Ingrese monto a cobrar"
                   required
                   min="0"
                 />

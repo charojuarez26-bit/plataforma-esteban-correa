@@ -73,8 +73,6 @@ export default function MedicalRecordsView() {
 
       if (errFichas) throw errFichas;
 
-      console.log('Fichas cargadas en entrenador:', fichasData);
-
       // 3. Crear mapa indexado estrictamente por client_id real (insensible a espacios en blanco y descartando ceros)
       const fichasMap = {};
       (fichasData || []).forEach(f => {
@@ -389,7 +387,7 @@ export default function MedicalRecordsView() {
                               {client.nombre_completo}
                             </p>
                             <span className="text-[11px] text-gray-400 block truncate">
-                              {client.plan_actual || 'Plan Personalizado'}
+                              {client.plan_actual || 'Sin plan asignado'}
                             </span>
                           </div>
                         </div>
@@ -534,7 +532,7 @@ export default function MedicalRecordsView() {
                     {selectedRecordClient.nombre_completo}
                   </h2>
                   <p className="text-xs text-gray-400">
-                    Ficha de Salud y Antecedentes • {selectedRecordClient.plan_actual || 'Plan Personalizado'}
+                    Ficha de Salud y Antecedentes • {selectedRecordClient.plan_actual || 'Sin plan asignado'}
                   </p>
                 </div>
               </div>

@@ -48,7 +48,8 @@ export default function EditClientModal({
     altura: '',
     peso_actual: '',
     modalidad: 'Presencial',
-    plan_actual: 'Presencial',
+    plan_id: '',
+    plan_actual: '',
     objetivo: OBJETIVOS[0],
     estado: 'Activo',
     routine_id: '',
@@ -98,7 +99,8 @@ export default function EditClientModal({
         ? String(currentClient.peso_actual) 
         : '',
       modalidad: currentClient.modalidad || 'Presencial',
-      plan_actual: currentClient.plan_actual || 'Presencial',
+      plan_id: currentClient.plan_id || '',
+      plan_actual: currentClient.plan_actual || '',
       objetivo: currentClient.objetivo || OBJETIVOS[0],
       estado: currentClient.estado || 'Activo',
       routine_id: activeRoutine?.id || '',
@@ -189,19 +191,16 @@ export default function EditClientModal({
         }
       }
 
-      // 2. Parseo y formateo estricto del payload hacia Supabase (tabla 'clients')
-      const parsedEdad = formData.edad && formData.edad.toString().trim() !== ''
-        ? parseInt(formData.edad, 10)
-        : null;
+      // 2. Parseo y sanitización estricta del payload hacia Supabase (tabla 'clients')
+      const parseOptionalNumber = (val, isFloat = false) => {
+        if (val === null || val === undefined || String(val).trim() === '') return null;
+        const num = isFloat ? parseFloat(val) : parseInt(val, 10);
+        return (!isNaN(num) && isFinite(num) && num > 0) ? num : null;
+      };
 
-      const parsedAltura = formData.altura && formData.altura.toString().trim() !== ''
-        ? parseFloat(formData.altura)
-        : null;
-
-      // Crítico: enviar null en lugar de string vacío para evitar rechazo en columna NUMERIC de PostgreSQL
-      const parsedPeso = formData.peso_actual && formData.peso_actual.toString().trim() !== '' 
-        ? parseFloat(formData.peso_actual) 
-        : null;
+      const parsedEdad = parseOptionalNumber(formData.edad, false);
+      const parsedAltura = parseOptionalNumber(formData.altura, true);
+      const parsedPeso = parseOptionalNumber(formData.peso_actual, true);
 
       const payloadUpdate = {
         nombre_completo: nombreCompleto,
@@ -211,7 +210,8 @@ export default function EditClientModal({
         altura: parsedAltura,
         peso_actual: parsedPeso,
         modalidad: formData.modalidad || 'Presencial',
-        plan_actual: formData.plan_actual || 'Presencial',
+        plan_id: formData.plan_id || null,
+        plan_actual: formData.plan_actual || null,
         objetivo: (formData.objetivo || 'Acondicionamiento físico general').trim(),
         estado: formData.estado || 'Activo',
         foto_url: finalFotoUrl
@@ -421,13 +421,22 @@ export default function EditClientModal({
               <div>
                 <label className={labelCls}>Plan Asignado</label>
                 <select
-                  name="plan_actual"
-                  value={formData.plan_actual}
-                  onChange={handleChange}
+                  name="plan_id"
+                  value={formData.plan_id || (membershipPlans.find(p => p.nombre === formData.plan_actual)?.id) || ''}
+                  onChange={(e) => {
+                    const selId = e.target.value;
+                    const found = membershipPlans.find(p => p.id === selId);
+                    setFormData(prev => ({
+                      ...prev,
+                      plan_id: selId || null,
+                      plan_actual: found ? found.nombre : null
+                    }));
+                  }}
                   className={inputCls}
                 >
-                  {planOptions.map((p) => (
-                    <option key={p} value={p}>{p}</option>
+                  <option value="">Sin plan asignado</option>
+                  {membershipPlans.map((p) => (
+                    <option key={p.id} value={p.id}>{p.nombre}</option>
                   ))}
                 </select>
               </div>

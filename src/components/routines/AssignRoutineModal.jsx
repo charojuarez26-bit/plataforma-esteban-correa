@@ -241,9 +241,7 @@ export default function AssignRoutineModal({
       onClose();
     } catch (err) {
       console.error('Error al asignar rutina en Supabase:', err);
-      const msg = err?.message || 'Error al persistir la rutina en Supabase';
-      setErrorMessage(msg);
-      alert(`Error al asignar rutina: ${msg}`);
+      setErrorMessage('No se pudo asignar la rutina seleccionada. Por favor, verifica la conexión e intenta de nuevo.');
       setIsSubmitting(false);
     }
   };

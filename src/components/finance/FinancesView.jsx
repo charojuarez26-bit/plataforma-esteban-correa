@@ -40,9 +40,7 @@ import { dataService } from '../../services/dataService';
 import { 
   calcularEstadoPago, 
   diasRestantesParaVencimiento, 
-  formatearFechaPago,
-  DEFAULT_MEMBERSHIP_PLANS,
-  DEFAULT_PLANS 
+  formatearFechaPago
 } from '../../utils/paymentUtils';
 import ClientAvatar from '../common/ClientAvatar';
 
@@ -145,14 +143,14 @@ export default function FinancesView() {
       if (plansRes?.data && plansRes.data.length > 0) {
         setMembershipPlans(plansRes.data);
       } else {
-        setMembershipPlans(DEFAULT_MEMBERSHIP_PLANS);
+        setMembershipPlans([]);
       }
 
       // Normalizar pagos para visualización fluida
       const normalizedPayments = (pagosData || []).map(p => {
         const clientObj = p.clients || {};
         const alumnoNombre = clientObj.nombre_completo || 'Alumno';
-        const planNombre = p.notas || clientObj.plan_actual || 'Plan Personalizado';
+        const planNombre = p.notas || clientObj.plan_actual || 'Sin plan asignado';
         const metodo = p.metodo_pago || 'Transferencia';
         const vto = p.fecha_vencimiento || p.periodo_hasta || clientObj.fecha_vencimiento || null;
 
@@ -305,22 +303,11 @@ export default function FinancesView() {
     }
   };
 
-  // 4. Mapeo de Precios para proyección y vencimientos
-  const getPriceForPlan = (planName) => {
-    if (!planName) return 38000;
-    const lower = planName.toLowerCase();
-    if (lower.includes('personalizado')) return 45000;
-    if (lower.includes('distancia') || lower.includes('online')) return 28000;
-    if (lower.includes('presencial')) return 38000;
-    
-    // Buscar en membershipPlans o DEFAULT_PLANS
-    const foundMem = membershipPlans.find(m => m.nombre && m.nombre.toLowerCase().includes(lower));
-    if (foundMem && foundMem.precio > 0) return foundMem.precio;
-
-    const foundDef = DEFAULT_PLANS.find(p => p.nombre && p.nombre.toLowerCase().includes(lower));
-    if (foundDef && foundDef.precio > 0) return foundDef.precio;
-
-    return 38000; // Valor de base del plan estándar
+  // 4. Obtener el último importe real registrado para un alumno
+  const getLastClientPaymentAmount = (clientId) => {
+    if (!clientId) return 0;
+    const clientPay = payments.find(p => p.client_id === clientId && p.monto > 0);
+    return clientPay ? clientPay.monto : 0;
   };
 
   // 5. CÁLCULO DE KPIS
@@ -346,20 +333,17 @@ export default function FinancesView() {
       .filter(p => p.fecha_pago >= monStr && p.fecha_pago <= sunStr)
       .reduce((acc, p) => acc + (p.monto || 0), 0);
 
-    // C. Proyección Mensual Teórica
-    // Suma teórica de los planes asignados a los alumnos activos en 'clients'
+    // C. Proyección Mensual basada en los últimos cobros reales de cada alumno activo
     const activeClients = clients.filter(c => (c.estado || 'Activo').toLowerCase() === 'activo');
     const proyeccionMensual = activeClients.reduce((acc, c) => {
-      const price = getPriceForPlan(c.plan_actual);
-      return acc + price;
+      return acc + getLastClientPaymentAmount(c.id);
     }, 0);
 
-    // D. Por Cobrar / Vencido
-    // Alumnos en estado vencido o por vencer
+    // D. Por Cobrar / Vencido (Monto de cuota habitual de alumnos con cuota vencida o por vencer)
     const porCobrarVencido = activeClients.reduce((acc, c) => {
-      const estado = c.estado_pago || calcularEstadoPago(c.fecha_vencimiento);
-      if (estado === 'vencido' || estado === 'por_vencer') {
-        return acc + getPriceForPlan(c.plan_actual);
+      const estado = calcularEstadoPago(c);
+      if (estado === 'vencido' || estado === 'por_vencer' || estado === 'pendiente') {
+        return acc + getLastClientPaymentAmount(c.id);
       }
       return acc;
     }, 0);
@@ -371,20 +355,14 @@ export default function FinancesView() {
       porCobrarVencido,
       activeClientsCount: activeClients.length
     };
-  }, [filteredPayments, payments, clients, membershipPlans]);
+  }, [filteredPayments, payments, clients]);
 
   // 6. DATOS PARA GRÁFICOS
 
   // Gráfico 1: Evolución de Ingresos (Barras Cronológicas agrupadas)
   const chartEvolucion = useMemo(() => {
     if (filteredPayments.length === 0) {
-      // Mock dinámico de referencia visual si aún no hay registros suficientes en el filtro
-      return [
-        { periodo: 'Sem 1', ingresos: 0 },
-        { periodo: 'Sem 2', ingresos: 0 },
-        { periodo: 'Sem 3', ingresos: 0 },
-        { periodo: 'Sem 4', ingresos: 0 }
-      ];
+      return [];
     }
 
     // Agrupar por mes o por fecha si el rango es corto
@@ -434,15 +412,17 @@ export default function FinancesView() {
       }
     });
 
-    // Si aún no hay pagos en el período, calcular distribución teórica según alumnos activos
+    // Si aún no hay pagos en el período, calcular distribución según cobros habituales de alumnos activos
     if (presencial === 0 && personalizado === 0 && distancia === 0 && otros === 0) {
       clients.forEach(c => {
         const plan = (c.plan_actual || '').toLowerCase();
-        const price = getPriceForPlan(c.plan_actual);
-        if (plan.includes('presencial')) presencial += price;
-        else if (plan.includes('personalizado')) personalizado += price;
-        else if (plan.includes('distancia') || plan.includes('online')) distancia += price;
-        else otros += price;
+        const price = getLastClientPaymentAmount(c.id);
+        if (price > 0) {
+          if (plan.includes('presencial')) presencial += price;
+          else if (plan.includes('personalizado')) personalizado += price;
+          else if (plan.includes('distancia') || plan.includes('online')) distancia += price;
+          else otros += price;
+        }
       });
     }
 

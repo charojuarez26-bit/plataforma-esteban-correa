@@ -166,7 +166,7 @@ export const authService = {
   // 2. ACCESO EXCLUSIVO DEL ALUMNO (PASSWORDLESS REAL - FLUJO DUAL)
   async loginAlumno({ nombre, codigo }) {
     const cleanName = (nombre || '').trim();
-    const cleanCode = (codigo || '').trim();
+    const cleanCode = (codigo || '').trim().toUpperCase();
 
     if (!cleanName) {
       throw new Error('Por favor ingresa tu nombre y apellido.');
@@ -178,53 +178,27 @@ export const authService = {
     let client = null;
 
     try {
-      // 1. Consulta directa con .eq('access_code', cleanCode) e .ilike sobre nombre_completo
+      // 1. Consulta directa con coincidencia EXACTA (.eq, nunca .ilike con %)
       let { data: matches, error } = await supabase
         .from('clients')
         .select('*')
-        .eq('access_code', cleanCode)
-        .ilike('nombre_completo', `%${cleanName}%`);
-
-      if (error && (error.message?.includes('nombre_completo') || error.code === '42703')) {
-        const retry = await supabase
-          .from('clients')
-          .select('*')
-          .eq('access_code', cleanCode)
-          .ilike('nombre', `%${cleanName}%`);
-        matches = retry.data;
-        error = retry.error;
-      }
+        .eq('access_code', cleanCode);
 
       if (!error && matches && matches.length > 0) {
-        client = matches[0];
+        const normalize = (str) => (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+        const searchNorm = normalize(cleanName);
+        const firstWord = searchNorm.split(' ')[0];
+        client = matches.find(c => {
+          const dbNorm = normalize(c.nombre_completo || c.nombre || '');
+          return dbNorm.includes(searchNorm) || searchNorm.includes(dbNorm) || dbNorm.includes(firstWord) || searchNorm.includes(dbNorm.split(' ')[0]);
+        }) || matches[0];
       }
     } catch (e) {
-      console.warn('[authService] Error buscando en clients por nombre y código:', e?.message);
-    }
-
-    // 2. Si no se encontró por ilike (ej. acentos o tildes), buscar por access_code directo y comparar nombre con normalización
-    if (!client) {
-      try {
-        const { data: codeMatches } = await supabase
-          .from('clients')
-          .select('*')
-          .eq('access_code', cleanCode);
-
-        if (codeMatches && codeMatches.length > 0) {
-          const normalize = (str) => (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-          const searchNorm = normalize(cleanName);
-          const firstWord = searchNorm.split(' ')[0];
-          const matched = codeMatches.find(c => {
-            const dbNorm = normalize(c.nombre_completo || c.nombre || '');
-            return dbNorm.includes(searchNorm) || searchNorm.includes(dbNorm) || dbNorm.includes(firstWord) || searchNorm.includes(dbNorm.split(' ')[0]);
-          });
-          if (matched) client = matched;
-        }
-      } catch { /* fallback */ }
+      console.warn('[authService] Error buscando en clients por código exacto:', e?.message);
     }
 
     if (!client) {
-      throw new Error('No se encontró un alumno con ese nombre y código asignado. Consulta con tu entrenador Esteban Correa.');
+      throw new Error('No se encontró un alumno con ese código asignado. Consulta con tu entrenador Esteban Correa.');
     }
 
     if ((client.estado || '').toLowerCase() === 'inactivo') {
@@ -287,16 +261,6 @@ export const authService = {
       };
     }
 
-    // 3. Códigos predeterminados de fallback
-    if (cleanCode === '7429' || cleanCode === '2025' || cleanCode === '0000') {
-      return {
-        valid: true,
-        coachId: '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86',
-        coachName: 'Esteban Correa',
-        code: cleanCode
-      };
-    }
-
     throw new Error('Código de 4 dígitos incorrecto. Solicítaselo a tu entrenador Esteban Correa.');
   },
 
@@ -314,18 +278,18 @@ export const authService = {
     return checkStudentOnboardingStatus(studentId, studentData);
   },
 
-  // ACCESO Y LOGIN EXCLUSIVO POR CÓDIGO DE 4 DÍGITOS
+  // ACCESO Y LOGIN POR CÓDIGO EXACTO DE ALUMNO
   async loginStudentBy4DigitCode(code) {
     const cleanCode = (code || '').trim().toUpperCase();
     if (!cleanCode || cleanCode.length < 4) {
-      throw new Error('Por favor ingresa un código de 4 dígitos.');
+      throw new Error('Por favor ingresa tu código asignado.');
     }
 
-    // 1. Verificar si coincide con un alumno existente (ej. '9505' o 'EC-9505')
+    // 1. Coincidencia EXACTA con un alumno existente (ej. 'JP-7429' o 'EC-9505')
     const { data: existingClient } = await supabase
       .from('clients')
       .select('*')
-      .or(`access_code.eq.${cleanCode},access_code.ilike.%-${cleanCode},access_code.ilike.%${cleanCode}`)
+      .eq('access_code', cleanCode)
       .maybeSingle();
 
     if (existingClient) {
@@ -345,34 +309,7 @@ export const authService = {
       return { isComplete: false, client: existingClient, coachId: existingClient.coach_id || '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86' };
     }
 
-    // 2. Consultar en la tabla coaches por codigo_acceso
-    let coachId = '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86';
-    let coachName = 'Esteban Correa';
-
-    // Chequeo en localStorage si coincide con el código guardado del entrenador
-    const localCode = typeof window !== 'undefined' ? localStorage.getItem('coach_access_code') : null;
-    if (localCode && localCode === cleanCode) {
-      return { isComplete: false, isNew: true, coachId, coachName, code: cleanCode };
-    }
-
-    try {
-      const { data: coachData, error } = await supabase
-        .from('coaches')
-        .select('id, nombre, codigo_acceso')
-        .eq('codigo_acceso', cleanCode)
-        .maybeSingle();
-
-      if (!error && coachData?.id) {
-        coachId = coachData.id;
-        coachName = coachData.nombre || coachName;
-        return { isComplete: false, isNew: true, coachId, coachName, code: cleanCode };
-      }
-    } catch {
-      // Graceful fallback si la columna no existe en coaches
-    }
-
-    // 3. Asignación al coach principal por defecto
-    return { isComplete: false, isNew: true, coachId, coachName, code: cleanCode };
+    throw new Error('No se encontró un alumno con ese código asignado. Consulta con tu entrenador Esteban Correa.');
   }
 };
 

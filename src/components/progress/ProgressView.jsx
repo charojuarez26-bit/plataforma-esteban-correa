@@ -210,10 +210,12 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                 <Scale className="w-4 h-4 text-brand-light shrink-0" />
               </div>
               <p className="text-xl sm:text-2xl font-black text-white mt-1.5 sm:mt-2 truncate">
-                {lastEval?.peso || 0} <span className="text-xs text-gray-400 font-normal">kg</span>
+                {lastEval?.peso ? `${lastEval.peso} ` : '- '}<span className="text-xs text-gray-400 font-normal">kg</span>
               </p>
               <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] sm:text-xs font-bold">
-                {weightDelta <= 0 ? (
+                {evaluations.length === 0 ? (
+                  <span className="text-gray-500 text-[10px] font-normal">Sin mediciones</span>
+                ) : weightDelta <= 0 ? (
                   <span className="text-emerald-400 flex items-center shrink-0">
                     <ArrowDownRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {weightDelta} kg
                   </span>
@@ -222,7 +224,7 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                     <ArrowUpRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> +{weightDelta} kg
                   </span>
                 )}
-                <span className="text-[10px] text-gray-400 font-normal truncate">acumulado</span>
+                {evaluations.length > 0 && <span className="text-[10px] text-gray-400 font-normal truncate">acumulado</span>}
               </div>
             </div>
 
@@ -232,13 +234,19 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                 <Ruler className="w-4 h-4 text-emerald-400 shrink-0" />
               </div>
               <p className="text-xl sm:text-2xl font-black text-white mt-1.5 sm:mt-2 truncate">
-                {lastEval?.cintura || 0} <span className="text-xs text-gray-400 font-normal">cm</span>
+                {lastEval?.cintura ? `${lastEval.cintura} ` : '- '}<span className="text-xs text-gray-400 font-normal">cm</span>
               </p>
               <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] sm:text-xs font-bold">
-                <span className="text-emerald-400 flex items-center shrink-0">
-                  <ArrowDownRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {waistDelta} cm
-                </span>
-                <span className="text-[10px] text-gray-400 font-normal truncate">reducción</span>
+                {evaluations.length === 0 ? (
+                  <span className="text-gray-500 text-[10px] font-normal">Sin mediciones</span>
+                ) : (
+                  <>
+                    <span className="text-emerald-400 flex items-center shrink-0">
+                      <ArrowDownRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {waistDelta} cm
+                    </span>
+                    <span className="text-[10px] text-gray-400 font-normal truncate">reducción</span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -248,13 +256,19 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                 <Ruler className="w-4 h-4 text-blue-400 shrink-0" />
               </div>
               <p className="text-xl sm:text-2xl font-black text-white mt-1.5 sm:mt-2 truncate">
-                {lastEval?.brazo || 0} <span className="text-xs text-gray-400 font-normal">cm</span>
+                {lastEval?.brazo ? `${lastEval.brazo} ` : '- '}<span className="text-xs text-gray-400 font-normal">cm</span>
               </p>
               <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] sm:text-xs font-bold">
-                <span className="text-blue-400 flex items-center shrink-0">
-                  <ArrowUpRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> +{armDelta} cm
-                </span>
-                <span className="text-[10px] text-gray-400 font-normal truncate">hipertrofia</span>
+                {evaluations.length === 0 ? (
+                  <span className="text-gray-500 text-[10px] font-normal">Sin mediciones</span>
+                ) : (
+                  <>
+                    <span className="text-blue-400 flex items-center shrink-0">
+                      <ArrowUpRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> +{armDelta} cm
+                    </span>
+                    <span className="text-[10px] text-gray-400 font-normal truncate">hipertrofia</span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -264,13 +278,19 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                 <Award className="w-4 h-4 text-amber-400 shrink-0" />
               </div>
               <p className="text-xl sm:text-2xl font-black text-white mt-1.5 sm:mt-2 truncate">
-                {lastEval?.porcentaje_grasa || 0} <span className="text-xs text-gray-400 font-normal">%</span>
+                {lastEval?.porcentaje_grasa ? `${lastEval.porcentaje_grasa} ` : '- '}<span className="text-xs text-gray-400 font-normal">%</span>
               </p>
               <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] sm:text-xs font-bold">
-                <span className="text-emerald-400 flex items-center shrink-0">
-                  <ArrowDownRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {fatDelta}%
-                </span>
-                <span className="text-[10px] text-gray-400 font-normal truncate">mejora</span>
+                {evaluations.length === 0 ? (
+                  <span className="text-gray-500 text-[10px] font-normal">Sin mediciones</span>
+                ) : (
+                  <>
+                    <span className="text-emerald-400 flex items-center shrink-0">
+                      <ArrowDownRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {fatDelta}%
+                    </span>
+                    <span className="text-[10px] text-gray-400 font-normal truncate">mejora</span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -289,34 +309,41 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
             </div>
 
             <div className="h-64 sm:h-80 w-full overflow-hidden">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={evaluations}
-                  margin={{ top: 10, right: 10, left: -25, bottom: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#272733" />
-                  <XAxis dataKey="fecha" stroke="#888" fontSize={10} tickLine={false} />
-                  <YAxis domain={['auto', 'auto']} stroke="#888" fontSize={10} tickLine={false} />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#18181f',
-                      borderColor: '#272733',
-                      borderRadius: '0.75rem',
-                      color: '#fff',
-                      fontSize: '11px'
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="peso"
-                    name="Peso (kg)"
-                    stroke="#e50914"
-                    strokeWidth={3}
-                    dot={{ fill: '#e50914', r: 4 }}
-                    activeDot={{ r: 6 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+              {evaluations.length === 0 ? (
+                <div className="h-full w-full flex flex-col items-center justify-center text-gray-500 text-xs gap-2">
+                  <TrendingUp className="w-8 h-8 opacity-30 text-gray-400" />
+                  <span>Sin registros de peso para graficar</span>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={evaluations}
+                    margin={{ top: 10, right: 10, left: -25, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#272733" />
+                    <XAxis dataKey="fecha" stroke="#888" fontSize={10} tickLine={false} />
+                    <YAxis domain={['auto', 'auto']} stroke="#888" fontSize={10} tickLine={false} />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#18181f',
+                        borderColor: '#272733',
+                        borderRadius: '0.75rem',
+                        color: '#fff',
+                        fontSize: '11px'
+                      }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="peso"
+                      name="Peso (kg)"
+                      stroke="#e50914"
+                      strokeWidth={3}
+                      dot={{ fill: '#e50914', r: 4 }}
+                      activeDot={{ r: 6 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
             </div>
           </div>
 
@@ -342,38 +369,46 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-dark-700/60 text-gray-300">
-                  {evaluations.map((ev, index) => {
-                    const prev = index > 0 ? evaluations[index - 1] : null;
-                    const cDiff = prev ? (ev.cintura - prev.cintura).toFixed(1) : null;
-                    const hDiff = prev ? (ev.cadera - prev.cadera).toFixed(1) : null;
-                    const bDiff = prev ? (ev.brazo - prev.brazo).toFixed(1) : null;
-                    const mDiff = prev ? (ev.muslo - prev.muslo).toFixed(1) : null;
+                  {evaluations.length === 0 ? (
+                    <tr>
+                      <td colSpan="8" className="py-8 text-center text-gray-500 text-xs">
+                        Sin evaluaciones antropométricas registradas
+                      </td>
+                    </tr>
+                  ) : (
+                    evaluations.map((ev, index) => {
+                      const prev = index > 0 ? evaluations[index - 1] : null;
+                      const cDiff = prev ? (ev.cintura - prev.cintura).toFixed(1) : null;
+                      const hDiff = prev ? (ev.cadera - prev.cadera).toFixed(1) : null;
+                      const bDiff = prev ? (ev.brazo - prev.brazo).toFixed(1) : null;
+                      const mDiff = prev ? (ev.muslo - prev.muslo).toFixed(1) : null;
 
-                    return (
-                      <tr key={ev.id} className="hover:bg-dark-800/50 transition-colors">
-                        <td className="py-2.5 px-3 font-semibold text-white whitespace-nowrap">{ev.fecha}</td>
-                        <td className="py-2.5 px-3 font-bold text-brand-light whitespace-nowrap">{ev.peso} kg</td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          <span>{ev.cintura} cm</span>
-                          {renderDelta(cDiff, true)}
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          <span>{ev.cadera} cm</span>
-                          {renderDelta(hDiff, true)}
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          <span>{ev.brazo} cm</span>
-                          {renderDelta(bDiff, false)}
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          <span>{ev.muslo} cm</span>
-                          {renderDelta(mDiff, false)}
-                        </td>
-                        <td className="py-2.5 px-3 font-semibold text-amber-400 whitespace-nowrap">{ev.porcentaje_grasa}%</td>
-                        <td className="py-2.5 px-3 text-gray-400 truncate max-w-[200px]">{ev.notas || '-'}</td>
-                      </tr>
-                    );
-                  })}
+                      return (
+                        <tr key={ev.id} className="hover:bg-dark-800/50 transition-colors">
+                          <td className="py-2.5 px-3 font-semibold text-white whitespace-nowrap">{ev.fecha}</td>
+                          <td className="py-2.5 px-3 font-bold text-brand-light whitespace-nowrap">{ev.peso} kg</td>
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            <span>{ev.cintura} cm</span>
+                            {renderDelta(cDiff, true)}
+                          </td>
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            <span>{ev.cadera} cm</span>
+                            {renderDelta(hDiff, true)}
+                          </td>
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            <span>{ev.brazo} cm</span>
+                            {renderDelta(bDiff, false)}
+                          </td>
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            <span>{ev.muslo} cm</span>
+                            {renderDelta(mDiff, false)}
+                          </td>
+                          <td className="py-2.5 px-3 font-semibold text-amber-400 whitespace-nowrap">{ev.porcentaje_grasa}%</td>
+                          <td className="py-2.5 px-3 text-gray-400 truncate max-w-[200px]">{ev.notas || '-'}</td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
@@ -423,7 +458,7 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                       type="number"
                       step="0.1"
                       required
-                      placeholder="81.5"
+                      placeholder="Ej. 75.0"
                       value={formData.peso}
                       onChange={(e) => setFormData({ ...formData, peso: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-xs text-white min-h-[44px]"
@@ -437,7 +472,7 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                     <input
                       type="number"
                       step="0.5"
-                      placeholder="86"
+                      placeholder="Ej. 80"
                       value={formData.cintura}
                       onChange={(e) => setFormData({ ...formData, cintura: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-lg px-2 py-1.5 text-xs text-white min-h-[38px]"
@@ -448,7 +483,7 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                     <input
                       type="number"
                       step="0.5"
-                      placeholder="100"
+                      placeholder="Ej. 95"
                       value={formData.cadera}
                       onChange={(e) => setFormData({ ...formData, cadera: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-lg px-2 py-1.5 text-xs text-white min-h-[38px]"
@@ -459,7 +494,7 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                     <input
                       type="number"
                       step="0.5"
-                      placeholder="38"
+                      placeholder="Ej. 35"
                       value={formData.brazo}
                       onChange={(e) => setFormData({ ...formData, brazo: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-lg px-2 py-1.5 text-xs text-white min-h-[38px]"
@@ -470,7 +505,7 @@ export default function ProgressView({ defaultTab = 'cargas' }) {
                     <input
                       type="number"
                       step="0.5"
-                      placeholder="62"
+                      placeholder="Ej. 55"
                       value={formData.muslo}
                       onChange={(e) => setFormData({ ...formData, muslo: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-lg px-2 py-1.5 text-xs text-white min-h-[38px]"

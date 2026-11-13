@@ -557,8 +557,8 @@ export default function StudentPortal({ student, onLogout }) {
     setTimeout(() => setCopiedKey(null), 2500);
   };
 
-  const estadoPago = currentStudent.estado_pago || calcularEstadoPago(currentStudent.fecha_vencimiento);
-  const configPago = getEstadoPagoConfig(estadoPago);
+  const estadoPago = calcularEstadoPago(currentStudent);
+  const configPago = getEstadoPagoConfig(estadoPago, currentStudent);
   const diffDias = diasRestantesParaVencimiento(currentStudent.fecha_vencimiento);
 
   // Verificación estricta de cuota activa y vigente con normalización local
@@ -775,7 +775,7 @@ export default function StudentPortal({ student, onLogout }) {
                       Mi Membresía
                     </span>
                     <h3 className="text-base sm:text-lg font-black text-white truncate">
-                      {currentPlan?.nombre || currentStudent.plan_actual || 'Plan Personalizado'}
+                      {currentPlan?.nombre || currentStudent.plan_actual || 'Sin plan asignado'}
                     </h3>
                   </div>
                 </div>
@@ -793,10 +793,14 @@ export default function StudentPortal({ student, onLogout }) {
                   Valor mensual del plan
                 </span>
                 <p className="text-2xl sm:text-3xl font-black text-white font-mono tracking-tight mt-0.5">
-                  {currentPlan?.precio ? formatearPrecioARS(currentPlan.precio) : '$45.000'}
-                  <span className="text-xs sm:text-sm font-bold text-gray-400 ml-1.5 font-sans">
-                    / mes
-                  </span>
+                  {payments.length > 0 && payments[0]?.monto 
+                    ? formatearPrecioARS(payments[0].monto) 
+                    : (currentPlan?.precio ? formatearPrecioARS(currentPlan.precio) : '-')}
+                  {payments.length > 0 && payments[0]?.monto && (
+                    <span className="text-xs sm:text-sm font-bold text-gray-400 ml-1.5 font-sans">
+                      / mes
+                    </span>
+                  )}
                 </p>
               </div>
 
@@ -809,7 +813,9 @@ export default function StudentPortal({ student, onLogout }) {
                     Fecha de Inicio
                   </span>
                   <span className="text-xs sm:text-sm font-extrabold text-white block">
-                    {formatearFechaPago(currentStudent.fecha_inicio_rutina || currentStudent.creado_el || currentStudent.created_at || '2026-10-15')}
+                    {(currentStudent.fecha_inicio_rutina || currentStudent.creado_el || currentStudent.created_at)
+                      ? formatearFechaPago(currentStudent.fecha_inicio_rutina || currentStudent.creado_el || currentStudent.created_at)
+                      : 'Sin registrar'}
                   </span>
                 </div>
 
@@ -1064,7 +1070,7 @@ export default function StudentPortal({ student, onLogout }) {
                   <Dumbbell className="w-5 h-5 text-brand" />
                   {routine.nombre}
                 </h2>
-                <p className="text-xs text-gray-400 mt-0.5">{routine.objetivo || routine.descripcion || 'Plan personalizado con sobrecarga progresiva'}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{routine.objetivo || routine.descripcion || 'Sin descripción adicional'}</p>
               </div>
 
               {/* Ficha del Esquema Semanal / Mensual del Alumno */}
@@ -1510,7 +1516,7 @@ export default function StudentPortal({ student, onLogout }) {
                     Membresía Asignada
                   </span>
                   <h3 className="text-lg font-black text-white mt-0.5">
-                    {currentStudent.plan_actual || 'Plan 3x Semanal Personalizado'}
+                    {currentStudent.plan_actual || 'Sin plan asignado'}
                   </h3>
                   <p className="text-xs text-gray-400 mt-0.5">
                     Modalidad: {currentStudent.modalidad || 'Presencial'} con seguimiento personalizado
@@ -1527,8 +1533,12 @@ export default function StudentPortal({ student, onLogout }) {
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-gray-400">Valor que abonas:</span>
                   <span className="font-mono font-black text-white text-base">
-                    {currentPlan?.precio ? formatearPrecioARS(currentPlan.precio) : '$45.000'}
-                    <span className="text-xs text-gray-400 font-sans font-normal ml-1">/ mes</span>
+                    {payments.length > 0 && payments[0]?.monto 
+                      ? formatearPrecioARS(payments[0].monto) 
+                      : (currentPlan?.precio ? formatearPrecioARS(currentPlan.precio) : '-')}
+                    {payments.length > 0 && payments[0]?.monto && (
+                      <span className="text-xs text-gray-400 font-sans font-normal ml-1">/ mes</span>
+                    )}
                   </span>
                 </div>
 
@@ -1537,7 +1547,9 @@ export default function StudentPortal({ student, onLogout }) {
                   <div className="bg-dark-900 p-2.5 rounded-lg border border-dark-700">
                     <span className="text-[10px] font-bold uppercase text-gray-400 block mb-0.5">Fecha de Inicio</span>
                     <strong className="text-white block">
-                      {formatearFechaPago(currentStudent.fecha_inicio_rutina || currentStudent.creado_el || currentStudent.created_at || '2026-10-15')}
+                      {(currentStudent.fecha_inicio_rutina || currentStudent.creado_el || currentStudent.created_at)
+                        ? formatearFechaPago(currentStudent.fecha_inicio_rutina || currentStudent.creado_el || currentStudent.created_at)
+                        : 'Sin registrar'}
                     </strong>
                   </div>
                   <div className="bg-dark-900 p-2.5 rounded-lg border border-dark-700">

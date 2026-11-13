@@ -41,8 +41,15 @@ import {
 import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
 import EditClientModal from './EditClientModal';
+import RegisterPaymentModal from '../finance/RegisterPaymentModal';
 import MedicalRecordViewOnly from '../medical/MedicalRecordViewOnly';
 import WorkoutSessionProgress from '../progress/WorkoutSessionProgress';
+import { 
+  calcularEstadoPago, 
+  getEstadoPagoConfig, 
+  obtenerNombrePlanAlumno, 
+  formatearFechaPago 
+} from '../../utils/paymentUtils';
 
 export default function ClientDetailView({ client: initialClient, onBack, onUpdateClient, onCreateRoutine }) {
   const [client, setClient] = useState(initialClient);
@@ -66,9 +73,13 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
   const [totalSessions, setTotalSessions] = useState([]);
   const [clientAppointments, setClientAppointments] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [membershipPlans, setMembershipPlans] = useState([]);
   const [notesText, setNotesText] = useState(client?.notas || '');
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [notesSuccess, setNotesSuccess] = useState(false);
+
+  // Modal Registrar Cobro
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
 
   // Modal Editar Perfil y Estados de Fotografía / Edición
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -113,7 +124,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
         modalidad: client.modalidad || 'Presencial',
         objetivo: client.objetivo || '',
         estado: client.estado || 'Activo',
-        plan_actual: client.plan_actual || 'Presencial',
+        plan_actual: client.plan_actual || '',
         dias_por_semana: client.dias_por_semana || 3,
         dias_asignados: client.dias_asignados || ['Lunes', 'Miércoles', 'Viernes'],
         tipo_planificacion: client.tipo_planificacion || 'Semanal',
@@ -124,7 +135,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
 
   const loadClientData = async (clientId) => {
     try {
-      const [evals, rout, pays, exList, allRoutines, weekSessions, sessionsList, appointmentsList, medRec] = await Promise.all([
+      const [evals, rout, pays, exList, allRoutines, weekSessions, sessionsList, appointmentsList, medRec, mPlans] = await Promise.all([
         dataService.getEvaluations(clientId),
         dataService.getRoutineForClient(clientId),
         dataService.getPayments(clientId),
@@ -133,16 +144,19 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
         dataService.getWeeklySessionsForClient(clientId, new Date()),
         dataService.getTrainingSessionsForClient(clientId),
         dataService.getAppointments(),
-        dataService.getMedicalRecord(clientId)
+        dataService.getMedicalRecord(clientId),
+        dataService.getMembershipPlans()
       ]);
 
       setEvaluations(evals || []);
       setRoutine(rout || null);
+      setPayments(pays || []);
       setCatalogExercises(exList || []);
       setLibraryRoutines(allRoutines || []);
       setWeeklySessions(Array.isArray(weekSessions) ? weekSessions : (weekSessions?.sessions || []));
       setTotalSessions(sessionsList || []);
       setMedicalRecord(medRec || null);
+      setMembershipPlans(mPlans || []);
 
       const clientApts = (appointmentsList || []).filter(apt =>
         apt.client_id === clientId ||
@@ -216,6 +230,44 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
   const handleGoToRoutineCreator = () => {
     if (onCreateRoutine && client?.id) {
       onCreateRoutine(client.id);
+    }
+  };
+
+  const handlePaymentSuccess = async (result) => {
+    const nuevaFecha = result?.nuevaFechaVencimiento;
+    const nuevoPlan = result?.payment?.plan_nombre || client?.plan_actual;
+    const nuevoPlanId = result?.payment?.plan_id || client?.plan_id;
+
+    setClient(prev => ({
+      ...prev,
+      fecha_vencimiento: nuevaFecha,
+      plan_actual: nuevoPlan,
+      plan_id: nuevoPlanId,
+      estado_pago: 'al_dia'
+    }));
+
+    if (client?.id) {
+      try {
+        const updatedPayments = await dataService.getClientPayments(client.id);
+        setPayments(updatedPayments || []);
+      } catch (e) {
+        if (result?.payment) {
+          setPayments(prev => [result.payment, ...prev]);
+        }
+      }
+    }
+
+    setProfileSuccessMsg(`¡Cobro registrado con éxito! Cuota al día hasta el ${formatearFechaPago(nuevaFecha)}`);
+    setTimeout(() => setProfileSuccessMsg(null), 4000);
+
+    if (onUpdateClient) {
+      onUpdateClient({
+        ...client,
+        fecha_vencimiento: nuevaFecha,
+        plan_actual: nuevoPlan,
+        plan_id: nuevoPlanId,
+        estado_pago: 'al_dia'
+      });
     }
   };
 
@@ -410,6 +462,16 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsPaymentModalOpen(true)}
+            className="px-3.5 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 font-bold text-xs shadow-md transition-all flex items-center gap-1.5"
+            title="Registrar cobro de cuota"
+          >
+            <CreditCard className="w-4 h-4 text-emerald-400" />
+            <span>Registrar Cobro</span>
+          </button>
+
           <a
             href={whatsappUrl}
             target="_blank"
@@ -514,28 +576,50 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
               <Target className="w-4 h-4 text-brand-light" /> Objetivo Principal
             </span>
             <p className="text-sm font-bold text-white line-clamp-2">
-              {client?.objetivo || 'Reducir % de grasa y ganar fuerza'}
+              {client?.objetivo || 'Sin objetivo definido'}
             </p>
-            <p className="text-[11px] text-emerald-400 font-semibold pt-1">
-              Enfocado en déficit calórico y sobrecarga progresiva
+            <p className="text-[11px] text-gray-400 font-medium pt-1">
+              Modalidad: <span className="text-white font-semibold">{client?.modalidad || 'Presencial'}</span>
             </p>
           </div>
 
           {/* Tarjeta 2: Plan Actual */}
-          <div className="p-4 rounded-xl bg-dark-900 border border-dark-700/80 space-y-1.5">
-            <span className="text-[11px] uppercase font-bold text-gray-400 flex items-center gap-1.5">
-              <CreditCard className="w-4 h-4 text-emerald-400" /> Plan Actual
-            </span>
-            <p className="text-sm font-bold text-white">
-              {client?.plan_actual || 'Plan Presencial'}
-            </p>
-            <div className="flex items-center justify-between pt-1">
-              <span className="text-[11px] text-gray-400">Vto: 28/11/2026</span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                Al Día
-              </span>
-            </div>
-          </div>
+          {(() => {
+            const planNombre = obtenerNombrePlanAlumno(client, membershipPlans);
+            const estado = calcularEstadoPago(client, payments);
+            const config = getEstadoPagoConfig(estado, client);
+            const esSinPlan = planNombre === 'Sin plan asignado';
+
+            return (
+              <div className="p-4 rounded-xl bg-dark-900 border border-dark-700/80 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] uppercase font-bold text-gray-400 flex items-center gap-1.5">
+                    <CreditCard className="w-4 h-4 text-emerald-400" /> Plan Actual
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsPaymentModalOpen(true)}
+                    className="text-[10px] font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-0.5 hover:underline"
+                  >
+                    <span>+ Cobrar</span>
+                  </button>
+                </div>
+                <p className={`text-sm font-bold ${esSinPlan ? 'text-gray-400 italic' : 'text-white'}`}>
+                  {planNombre}
+                </p>
+                <div className="flex items-center justify-between pt-1">
+                  <span className={`text-[11px] ${client?.fecha_vencimiento ? 'text-gray-400' : 'text-gray-500 italic'}`}>
+                    {client?.fecha_vencimiento 
+                      ? `Vto: ${formatearFechaPago(client.fecha_vencimiento)}`
+                      : 'Sin fecha asignada'}
+                  </span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${config.badgeClass}`}>
+                    {config.label}
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Tarjeta 3: Última Evaluación */}
           <div className="p-4 rounded-xl bg-dark-900 border border-dark-700/80 space-y-1.5">
@@ -550,12 +634,25 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                 Ver detalle
               </button>
             </div>
-            <p className="text-sm font-bold text-white">
-              {lastEval ? `${lastEval.peso} kg • ${lastEval.porcentaje_grasa || 17.2}% Grasa` : '81.5 kg • 17.2% Grasa'}
-            </p>
-            <p className="text-[11px] text-gray-400 pt-1">
-              Fecha: {lastEval ? lastEval.fecha : '2024-04-25'} ({evaluations.length} mediciones)
-            </p>
+            {lastEval ? (
+              <>
+                <p className="text-sm font-bold text-white">
+                  {lastEval.peso} kg{lastEval.porcentaje_grasa ? ` • ${lastEval.porcentaje_grasa}% Grasa` : ''}
+                </p>
+                <p className="text-[11px] text-gray-400 pt-1">
+                  Fecha: {lastEval.fecha} ({evaluations.length} medicion{evaluations.length > 1 ? 'es' : ''})
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-gray-500 italic">
+                  Sin evaluaciones registradas
+                </p>
+                <p className="text-[11px] text-gray-500 pt-1">
+                  0 mediciones
+                </p>
+              </>
+            )}
           </div>
 
         </div>
@@ -863,7 +960,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                       Activa
                     </span>
                   </div>
-                  <p className="text-xs text-gray-400 mt-0.5">{routine.objetivo || routine.descripcion || 'Plan personalizado con sobrecarga progresiva'}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{routine.objetivo || routine.descripcion || 'Sin descripción adicional'}</p>
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1168,6 +1265,14 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                 </h3>
                 <p className="text-xs text-gray-400">Registros sincronizados con la tabla client_payments de Supabase</p>
               </div>
+              <button
+                type="button"
+                onClick={() => setIsPaymentModalOpen(true)}
+                className="px-3.5 py-1.5 rounded-xl bg-brand hover:bg-brand-dark text-white font-bold text-xs shadow-glow-red transition-all flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Registrar Cobro</span>
+              </button>
             </div>
 
             <div className="space-y-2.5">
@@ -1352,7 +1457,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                       type="number"
                       step="0.1"
                       required
-                      placeholder="81.5"
+                      placeholder="Ej. 75.0"
                       value={newEvalData.peso}
                       onChange={(e) => setNewEvalData({ ...newEvalData, peso: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-xl px-3 py-2 text-base sm:text-xs text-white min-h-[44px]"
@@ -1366,7 +1471,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                     <input
                       type="number"
                       step="0.5"
-                      placeholder="86"
+                      placeholder="Ej. 80"
                       value={newEvalData.cintura}
                       onChange={(e) => setNewEvalData({ ...newEvalData, cintura: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-lg px-2 py-2 text-base sm:text-xs text-white min-h-[44px]"
@@ -1377,7 +1482,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                     <input
                       type="number"
                       step="0.5"
-                      placeholder="100"
+                      placeholder="Ej. 95"
                       value={newEvalData.cadera}
                       onChange={(e) => setNewEvalData({ ...newEvalData, cadera: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-lg px-2 py-2 text-base sm:text-xs text-white min-h-[44px]"
@@ -1388,7 +1493,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                     <input
                       type="number"
                       step="0.5"
-                      placeholder="38"
+                      placeholder="Ej. 35"
                       value={newEvalData.brazo}
                       onChange={(e) => setNewEvalData({ ...newEvalData, brazo: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-lg px-2 py-2 text-base sm:text-xs text-white min-h-[44px]"
@@ -1399,7 +1504,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                     <input
                       type="number"
                       step="0.5"
-                      placeholder="62"
+                      placeholder="Ej. 55"
                       value={newEvalData.muslo}
                       onChange={(e) => setNewEvalData({ ...newEvalData, muslo: e.target.value })}
                       className="w-full bg-dark-900 border border-dark-700 rounded-lg px-2 py-2 text-base sm:text-xs text-white min-h-[44px]"
@@ -1658,7 +1763,7 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                           )}
                         </div>
                         <p className="text-xs text-zinc-400 mt-1 line-clamp-1">
-                          {rout.descripcion || 'Sobrecarga progresiva y enfoque en hipertrofia muscular.'}
+                          {rout.descripcion || 'Planificación de ejercicios'}
                         </p>
                         <p className="text-[11px] text-zinc-500 mt-0.5">
                           {totalExercises > 0 ? `${totalExercises} ejercicios planificados` : 'Esquema estructurado por días'}
@@ -1710,6 +1815,15 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
           </div>
         </div>
       )}
+
+      {/* Modal Registrar Cobro */}
+      <RegisterPaymentModal
+        isOpen={isPaymentModalOpen}
+        onClose={() => setIsPaymentModalOpen(false)}
+        initialClient={client}
+        trainingPlans={membershipPlans}
+        onPaymentSuccess={handlePaymentSuccess}
+      />
 
     </div>
   );

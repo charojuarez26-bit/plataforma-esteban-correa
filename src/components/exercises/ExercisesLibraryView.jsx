@@ -299,7 +299,8 @@ export default function ExercisesLibraryView() {
       setExerciseToDelete(null);
       setTotalCount((prev) => Math.max(0, prev - 1));
     } catch (err) {
-      alert('Error eliminando ejercicio: ' + (err.message || 'Ocurrió un error'));
+      console.error('Error al eliminar ejercicio:', err);
+      alert('No se pudo eliminar el ejercicio. Por favor, intenta de nuevo.');
     }
   };
 

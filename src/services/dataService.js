@@ -1,4 +1,4 @@
-import { supabase, withAuthRetry, isAuthError } from '../lib/supabaseClient';
+import { supabase, withAuthRetry } from '../lib/supabaseClient';
 import {
   calcularEstadoPago,
   calcularNuevaFechaVencimiento,
@@ -6,13 +6,6 @@ import {
   DEFAULT_PLANS,
   DEFAULT_MEMBERSHIP_PLANS
 } from '../utils/paymentUtils';
-import {
-  INITIAL_EXERCISES,
-  INITIAL_EVALUATIONS,
-  INITIAL_PAYMENTS,
-  WEEKLY_CHART_DATA,
-  MONTHLY_INCOME_DATA
-} from '../data/mockData';
 
 export const MEMBERSHIP_PLAN_IDS = {
   'Presencial': '12dc754e-4262-4171-9f6c-6669b853af70',
@@ -52,11 +45,25 @@ function enrichClient(c) {
   } catch (e) {
     // ignore
   }
-  const photo = c.foto_url || meta.foto_url || meta.avatar_url || null;
+  const photo = c.foto_url || c.avatar_url || meta.foto_url || meta.avatar_url || null;
   const activeRoutine = (c.routines || []).find(r => r.activa);
   const routineName = activeRoutine ? activeRoutine.nombre : (c.rutina_activa || null);
-  const fechaVenc = c.fecha_vencimiento || meta.fecha_vencimiento || null;
-  const estadoPago = c.estado_pago || meta.estado_pago || calcularEstadoPago(fechaVenc);
+
+  // Columnas reales de Supabase son estrictas y prioritarias (no inventar plan ni sobreescribir null)
+  const fechaVenc = c.fecha_vencimiento !== undefined ? c.fecha_vencimiento : null;
+  const planActual = c.plan_actual !== undefined ? c.plan_actual : null;
+  const planId = c.plan_id !== undefined ? c.plan_id : null;
+  const estadoPagoDb = c.estado_pago !== undefined ? c.estado_pago : null;
+
+  const clientNormalized = {
+    ...c,
+    fecha_vencimiento: fechaVenc,
+    plan_actual: planActual,
+    plan_id: planId,
+    estado_pago: estadoPagoDb
+  };
+
+  const estadoPago = calcularEstadoPago(clientNormalized);
   const fechaIni = c.fecha_inicio || meta.fecha_inicio || null;
   const fechaIniRut = c.fecha_inicio_rutina || meta.fecha_inicio_rutina || fechaIni;
 
@@ -67,8 +74,8 @@ function enrichClient(c) {
     rutina_activa: routineName,
     tiene_rutina: Boolean(routineName),
     notas: meta.notas || c.notas || '',
-    plan_actual: c.plan_actual || meta.plan_actual || 'Presencial',
-    plan_id: c.plan_id || meta.plan_id || null,
+    plan_actual: planActual,
+    plan_id: planId,
     fecha_inicio: fechaIni,
     fecha_inicio_rutina: fechaIniRut,
     fecha_vencimiento: fechaVenc,
@@ -271,17 +278,52 @@ export const dataService = {
 
       // Planes por vencer o vencidos en tiempo real según fecha_vencimiento de los alumnos
       const expiringPlansCount = clients.filter(c => {
-        const est = c.estado_pago || calcularEstadoPago(c.fecha_vencimiento);
+        const est = calcularEstadoPago(c);
         return est === 'por_vencer' || est === 'vencido';
       }).length;
+
+      // Ingresos reales por mes (últimos 6 meses) a partir de client_payments de Supabase
+      const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+      const now = new Date();
+      const last6Months = [];
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const y = d.getFullYear();
+        const m = d.getMonth();
+        const key = `${monthNames[m]} ${String(y).slice(2)}`;
+        last6Months.push({ mes: key, year: y, monthIndex: m, total: 0 });
+      }
+
+      payments.forEach(p => {
+        if (!p.fecha_pago) return;
+        const parts = p.fecha_pago.split('-');
+        if (parts.length < 2) return;
+        const yearNum = parseInt(parts[0], 10);
+        const monthNum = parseInt(parts[1], 10) - 1;
+        const found = last6Months.find(m => m.year === yearNum && m.monthIndex === monthNum);
+        if (found) {
+          found.total += parseFloat(p.monto) || 0;
+        }
+      });
+
+      const monthlyIncome = last6Months.map(({ mes, total }) => ({ mes, total }));
+
+      // Actividad semanal real a partir de appointments / turnos
+      let weeklyChart = [];
+      try {
+        const weeklyResult = await this.getWeeklyActivity();
+        weeklyChart = weeklyResult?.chart || [];
+      } catch (wErr) {
+        console.warn('[DataService] Error obteniendo weeklyActivity:', wErr);
+      }
 
       return {
         activeClients: activeClientsCount,
         todayWorkouts: todayCount,
         pendingEvaluations: pendingEvaluationsCount,
         expiringPlans: expiringPlansCount,
-        weeklyChart: WEEKLY_CHART_DATA,
-        monthlyIncome: MONTHLY_INCOME_DATA,
+        weeklyChart,
+        monthlyIncome,
         clientsList: clients,
         paymentsList: payments,
         evaluationsList: evaluations
@@ -293,8 +335,8 @@ export const dataService = {
         todayWorkouts: 0,
         pendingEvaluations: 0,
         expiringPlans: 0,
-        weeklyChart: WEEKLY_CHART_DATA,
-        monthlyIncome: MONTHLY_INCOME_DATA,
+        weeklyChart: [],
+        monthlyIncome: [],
         clientsList: [],
         paymentsList: [],
         evaluationsList: []
@@ -454,7 +496,34 @@ export const dataService = {
   },
 
   async addClient(clientData) {
-    const code = clientData.access_code || `EC-${Math.floor(1000 + Math.random() * 9000)}`;
+    let code = clientData.access_code;
+    if (!code) {
+      const initials = (clientData.nombre_completo || 'EC')
+        .split(' ')
+        .filter(Boolean)
+        .map(w => w[0])
+        .slice(0, 2)
+        .join('')
+        .toUpperCase() || 'EC';
+
+      let isUnique = false;
+      let attempts = 0;
+      while (!isUnique && attempts < 25) {
+        attempts++;
+        const randomDigits = Math.floor(1000 + Math.random() * 9000);
+        const candidate = `${initials}-${randomDigits}`;
+        const { data: existing } = await supabase
+          .from('clients')
+          .select('id')
+          .eq('access_code', candidate)
+          .maybeSingle();
+        if (!existing) {
+          code = candidate;
+          isUnique = true;
+        }
+      }
+      if (!code) code = `${initials}-${Math.floor(1000 + Math.random() * 9000)}`;
+    }
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const coachId = (clientData.coach_id && uuidRegex.test(clientData.coach_id))
       ? clientData.coach_id
@@ -474,7 +543,10 @@ export const dataService = {
       objetivo: (clientData.objetivo || 'Acondicionamiento físico general').trim(),
       access_code: code,
       estado: clientData.estado || 'Activo',
-      foto_url: photoUrl
+      foto_url: photoUrl,
+      plan_actual: clientData.plan_actual || null,
+      fecha_vencimiento: clientData.fecha_vencimiento || null,
+      estado_pago: clientData.estado_pago || (clientData.plan_actual ? 'vencido' : 'sin_plan')
     };
 
     const { data, error } = await supabase
@@ -659,17 +731,17 @@ export const dataService = {
         return query;
       });
 
-      if (!error && data && data.length > 0) {
+      if (!error && Array.isArray(data)) {
         return data;
+      }
+      if (error) {
+        console.warn('[DataService] Error consultando evaluations en Supabase:', error);
       }
     } catch (err) {
       console.warn('[DataService] Error en getEvaluations Supabase:', err);
     }
 
-    if (clientId) {
-      return INITIAL_EVALUATIONS.filter(e => e.client_id === clientId);
-    }
-    return INITIAL_EVALUATIONS;
+    return [];
   },
 
   async addEvaluation(evalData) {
@@ -750,7 +822,7 @@ export const dataService = {
           const vto = item.fecha_vencimiento || item.periodo_hasta || clientObj.fecha_vencimiento || null;
           return {
             ...item,
-            plan_nombre: item.notas || clientObj.plan_actual || 'Plan Personalizado',
+            plan_nombre: item.notas || clientObj.plan_actual || 'Sin plan asignado',
             metodo: item.metodo_pago || 'Transferencia',
             estado: 'Pagado',
             fecha_vencimiento: vto,
@@ -768,6 +840,10 @@ export const dataService = {
 
     // Fallback seguro: array vacío para evitar romper la interfaz
     return [];
+  },
+
+  async getClientPayments(clientId) {
+    return this.getPayments(clientId);
   },
 
   async addPayment(payData) {
@@ -823,8 +899,13 @@ export const dataService = {
    * 3. Actualiza en clients la nueva fecha_vencimiento (+30 días por defecto o días del plan).
    * 4. Actualiza el estado a 'al_dia'.
    */
-  async recordClientPayment({ clientId, planNombre, monto, metodo = 'Transferencia', diasVigencia = 30, fechaPago = null }) {
+  async recordClientPayment({ clientId, planId = null, planNombre, monto, metodo = 'Transferencia', diasVigencia = 30, fechaPago = null }) {
     if (!clientId) throw new Error('El ID del alumno es obligatorio');
+
+    const numMonto = Number(monto);
+    if (isNaN(numMonto) || !isFinite(numMonto) || numMonto <= 0) {
+      throw new Error('El monto a cobrar debe ser un número válido estrictamente mayor a 0');
+    }
 
     const client = await this.getClientById(clientId);
 
@@ -842,7 +923,21 @@ export const dataService = {
     }
 
     const fechaPagoFinal = fechaPago || new Date().toISOString().split('T')[0];
-    const nuevaFechaVencimiento = calcularNuevaFechaVencimiento(client?.fecha_vencimiento, diasVigencia);
+    const nuevaFechaVencimiento = calcularNuevaFechaVencimiento(client?.fecha_vencimiento, diasVigencia, fechaPagoFinal);
+
+    // Resolver plan_id si no vino especificado
+    let resolvedPlanId = planId;
+    const finalPlanNombre = planNombre || client?.plan_actual || null;
+    if (!resolvedPlanId && finalPlanNombre) {
+      try {
+        const mPlans = await this.getMembershipPlans();
+        const found = mPlans.find(p => 
+          p.nombre?.toLowerCase() === finalPlanNombre.toLowerCase() || 
+          p.tipo?.toLowerCase() === finalPlanNombre.toLowerCase()
+        );
+        if (found) resolvedPlanId = found.id;
+      } catch (e) {}
+    }
 
     const paymentPayload = {
       client_id: clientId,
@@ -852,7 +947,7 @@ export const dataService = {
       periodo_desde: fechaPagoFinal,
       periodo_hasta: nuevaFechaVencimiento,
       fecha_vencimiento: nuevaFechaVencimiento,
-      notas: planNombre || client?.plan_actual || 'Plan 3x Semanal Personalizado'
+      notas: finalPlanNombre || 'Cuota de Entrenamiento'
     };
 
     let createdPayment = null;
@@ -871,6 +966,7 @@ export const dataService = {
         createdPayment = {
           ...cpData,
           plan_nombre: cpData.notas || paymentPayload.notas,
+          plan_id: resolvedPlanId,
           metodo: cpData.metodo_pago || paymentPayload.metodo_pago,
           estado: 'Pagado',
           client_name: client?.nombre_completo || 'Alumno'
@@ -887,16 +983,18 @@ export const dataService = {
         id: `pay-${Date.now()}`,
         ...paymentPayload,
         plan_nombre: paymentPayload.notas,
+        plan_id: resolvedPlanId,
         metodo: paymentPayload.metodo_pago,
         estado: 'Pagado',
         client_name: client?.nombre_completo || 'Alumno'
       };
     }
 
-    // 3. Actualizar en clients la nueva fecha_vencimiento, plan_actual y estado a 'al_dia'
+    // 3. Actualizar en clients la nueva fecha_vencimiento, plan_id, plan_actual y estado a 'al_dia'
     await this.updateClient(clientId, {
       fecha_vencimiento: nuevaFechaVencimiento,
-      plan_actual: paymentPayload.notas,
+      plan_id: resolvedPlanId || client?.plan_id || null,
+      plan_actual: finalPlanNombre || client?.plan_actual || null,
       estado_pago: 'al_dia'
     });
 
@@ -1107,8 +1205,9 @@ export const dataService = {
       const defaultPlan = DEFAULT_MEMBERSHIP_PLANS.find(p => p.tipo === tipo) || {
         tipo,
         nombre: `Plan ${tipo}`,
-        precio: tipo === 'Personalizado' ? 45000 : tipo === 'Presencial' ? 38000 : 28000,
+        precio: null,
         dias_vigencia: 30,
+        duracion_dias: 30,
         descripcion: ''
       };
 
@@ -1119,8 +1218,8 @@ export const dataService = {
       );
 
       if (found) {
-        const rawPrecio = Number(found.precio);
-        const resolvedPrecio = (!isNaN(rawPrecio) && rawPrecio > 0) ? rawPrecio : defaultPlan.precio;
+        const rawPrecio = found.precio !== null && found.precio !== undefined ? Number(found.precio) : null;
+        const resolvedPrecio = (rawPrecio !== null && !isNaN(rawPrecio) && rawPrecio > 0) ? rawPrecio : null;
         return {
           id: found.id || MEMBERSHIP_PLAN_IDS[tipo],
           tipo,
@@ -1135,7 +1234,8 @@ export const dataService = {
 
       return {
         id: MEMBERSHIP_PLAN_IDS[tipo],
-        ...defaultPlan
+        ...defaultPlan,
+        precio: null
       };
     });
 
@@ -1260,13 +1360,13 @@ export const dataService = {
     if (client && !plan) {
       const allPlans = await this.getMembershipPlans();
       const planName = (client.plan_actual || '').toLowerCase();
-      const modName = (client.modalidad || '').toLowerCase();
 
-      plan = allPlans.find(p => p.id === client.membership_plan_id) ||
-             allPlans.find(p => planName.includes(p.tipo.toLowerCase())) ||
-             allPlans.find(p => modName.includes(p.tipo.toLowerCase())) ||
-             allPlans.find(p => p.tipo === 'Personalizado') ||
-             allPlans[0];
+      if (client.plan_id) {
+        plan = allPlans.find(p => p.id === client.plan_id) || null;
+      }
+      if (!plan && planName && planName !== 'sin plan' && planName !== 'sin plan asignado') {
+        plan = allPlans.find(p => p.nombre?.toLowerCase() === planName || p.tipo?.toLowerCase() === planName) || null;
+      }
     }
 
     return {
@@ -1360,31 +1460,7 @@ export const dataService = {
   },
 
   async seedInitialExercises() {
-    try {
-      const coachId = '00000000-0000-0000-0000-000000000001';
-      const payload = INITIAL_EXERCISES.map(ex => ({
-        coach_id: coachId,
-        nombre: ex.nombre,
-        grupo_muscular: ex.grupo_muscular,
-        imagen_url: ex.imagen_url,
-        video_url: ex.video_url || null,
-        instrucciones: ex.instrucciones,
-        errores_comunes: ex.errores_comunes || null
-      }));
-
-      const { data, error } = await supabase
-        .from('exercises')
-        .insert(payload)
-        .select()
-        .order('nombre', { ascending: true });
-
-      if (!error && data && data.length > 0) {
-        return data;
-      }
-    } catch (err) {
-      console.warn('[DataService] Error en seedInitialExercises:', err);
-    }
-    return INITIAL_EXERCISES;
+    return [];
   },
 
   async addExercise(exerciseData) {
@@ -1641,7 +1717,6 @@ export const dataService = {
           ]
         },
         {
-          dia_numero: 3,
           dia_numero: 3,
           dia_nombre: 'Día 3 (Miércoles): Piernas Enfoque Anterior',
           dia: 'Día 3 (Miércoles): Piernas Enfoque Anterior',

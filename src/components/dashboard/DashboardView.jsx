@@ -31,10 +31,10 @@ import ClientAvatar from '../common/ClientAvatar';
 
 export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavigateToClient }) {
   const [metrics, setMetrics] = useState({
-    activeClients: 48,
-    todayWorkouts: 12,
-    pendingEvaluations: 3,
-    expiringPlans: 5,
+    activeClients: 0,
+    todayWorkouts: 0,
+    pendingEvaluations: 0,
+    expiringPlans: 0,
     weeklyChart: [],
     clientsList: [],
     paymentsList: []
@@ -146,8 +146,8 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
             <span className="text-3xl font-display font-black text-white">
               {metrics.activeClients}
             </span>
-            <span className="text-xs font-semibold text-emerald-400 flex items-center gap-0.5">
-              <ArrowUpRight className="w-3.5 h-3.5" /> +8% este mes
+            <span className="text-xs font-semibold text-emerald-400">
+              Registrados
             </span>
           </div>
           <p className="text-[11px] text-gray-400 mt-2">Alumnos registrados</p>

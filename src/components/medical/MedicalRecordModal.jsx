@@ -87,7 +87,6 @@ export default function MedicalRecordModal({
     try {
       setIsSubmitting(true);
       const cleanStudentId = String(clientId).trim();
-      console.log('Enviando ficha médica para alumno UUID:', cleanStudentId);
 
       const saved = await dataService.saveMedicalRecord({
         clientId: cleanStudentId,
@@ -105,16 +104,12 @@ export default function MedicalRecordModal({
         throw new Error('No se pudo confirmar el guardado en la base de datos.');
       }
 
-      console.log('Ficha médica confirmada en Supabase con éxito:', saved);
-
       // Solo si el guardado en Supabase fue exitoso, se notifica y se cierra
       if (onSaved) onSaved(saved);
       if (onClose) onClose();
     } catch (err) {
       console.error('Error crítico al guardar ficha médica en Supabase:', err);
-      const msg = err.message || 'No se pudo guardar la ficha médica en el servidor.';
-      setErrorMsg(msg);
-      alert('No se pudo guardar la ficha médica en el servidor: ' + msg);
+      setErrorMsg('No se pudo guardar la ficha médica en el servidor. Por favor, intenta nuevamente.');
     } finally {
       setIsSubmitting(false);
     }

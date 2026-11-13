@@ -27,19 +27,60 @@ export const normalizarFechaLocal = (fechaString) => {
 };
 
 /**
- * 1. LÓGICA DE ESTADOS DE PAGO (Helper dinámico):
- * - Si no tiene fecha: Retorna 'sin_plan'.
- * - Si faltan más de 5 días para la fecha: 'al_dia' (verde).
- * - Si faltan entre 1 y 5 días: 'por_vencer' (amarillo/naranja).
- * - Si la fecha es hoy o anterior: 'vencido' (rojo).
+ * 1. LÓGICA DE ESTADOS DE PAGO (Función pura para alumno o fecha de vencimiento):
+ * - Usa estrictamente client.estado_pago, client.fecha_vencimiento y client_payments.
+ * - NUNCA usa client.estado ("Activo" / "Inactivo").
+ * - Si no tiene fecha_vencimiento válida o client.estado_pago === 'vencido':
+ *   - Retorna 'vencido' (rojo) y NUNCA 'al_dia'.
+ * - Si tiene fecha_vencimiento:
+ *   - Si diffDias <= 0: 'vencido' (rojo).
+ *   - Si diffDias entre 1 y 5: 'por_vencer' (amarillo).
+ *   - Si diffDias > 5: 'al_dia' (verde).
  */
-export function calcularEstadoPago(fechaVencimiento) {
-  if (!fechaVencimiento) return 'sin_plan';
+export function calcularEstadoPago(alumnoOrFecha, payments = []) {
+  if (!alumnoOrFecha) return 'vencido';
+
+  let clientObj = null;
+  let fechaVencimiento = null;
+  let estadoPagoDb = null;
+
+  if (typeof alumnoOrFecha === 'object' && !(alumnoOrFecha instanceof Date)) {
+    clientObj = alumnoOrFecha;
+    fechaVencimiento = clientObj.fecha_vencimiento;
+    estadoPagoDb = clientObj.estado_pago;
+  } else {
+    fechaVencimiento = alumnoOrFecha;
+  }
+
+  // Si se proveen pagos de la tabla client_payments, buscar registros estrictamente de este cliente
+  if (clientObj && clientObj.id && Array.isArray(payments) && payments.length > 0) {
+    const clientPayments = payments.filter(p => p.client_id === clientObj.id);
+    if (clientPayments.length > 0) {
+      const latestPay = clientPayments[0];
+      fechaVencimiento = fechaVencimiento || latestPay.fecha_vencimiento || latestPay.periodo_hasta;
+    }
+  }
+
+  const rawEstado = String(estadoPagoDb || '').toLowerCase().trim();
+
+  // 1. Ausencia de fecha de vencimiento válida o "Sin fecha asignada"
+  const sinFecha = !fechaVencimiento || 
+    fechaVencimiento === 'Sin fecha asignada' || 
+    String(fechaVencimiento).trim() === '' || 
+    String(fechaVencimiento).toLowerCase() === 'null' ||
+    String(fechaVencimiento).toLowerCase() === 'undefined';
+
+  // Si fecha_vencimiento es null o estado_pago es 'vencido', siempre 'vencido' (nunca 'al_dia')
+  if (sinFecha || rawEstado === 'vencido') {
+    return 'vencido';
+  }
 
   const hoy = normalizarFechaLocal(new Date().toISOString().split('T')[0]);
   const fechaVenc = normalizarFechaLocal(fechaVencimiento);
 
-  if (!fechaVenc || isNaN(fechaVenc.getTime())) return 'sin_plan';
+  if (!fechaVenc || isNaN(fechaVenc.getTime())) {
+    return 'vencido';
+  }
 
   const diffMs = fechaVenc.getTime() - hoy.getTime();
   const diffDias = Math.round(diffMs / (1000 * 60 * 60 * 24));
@@ -54,9 +95,37 @@ export function calcularEstadoPago(fechaVencimiento) {
 }
 
 /**
+ * Obtiene el nombre real del plan del alumno sin inventar defaults si ambos son null.
+ */
+export function obtenerNombrePlanAlumno(client, membershipPlans = [], trainingPlans = []) {
+  if (!client) return 'Sin plan asignado';
+
+  const planActual = client.plan_actual;
+  if (planActual && 
+      String(planActual).trim() !== '' && 
+      String(planActual).toLowerCase() !== 'sin plan' && 
+      String(planActual).toLowerCase() !== 'sin plan asignado' &&
+      String(planActual).toLowerCase() !== 'null' &&
+      String(planActual).toLowerCase() !== 'undefined') {
+    return planActual;
+  }
+
+  // Buscar por plan_id en membership_plans o trainingPlans
+  if (client.plan_id) {
+    const foundMem = (membershipPlans || []).find(p => p.id === client.plan_id);
+    if (foundMem) return foundMem.nombre || foundMem.tipo;
+
+    const foundTrain = (trainingPlans || []).find(p => p.id === client.plan_id);
+    if (foundTrain) return foundTrain.nombre;
+  }
+
+  return 'Sin plan asignado';
+}
+
+/**
  * Devuelve la configuración visual (badge, colores, etiqueta) según el estado de pago.
  */
-export function getEstadoPagoConfig(estado) {
+export function getEstadoPagoConfig(estado, client = null) {
   switch (estado) {
     case 'al_dia':
       return {
@@ -78,18 +147,17 @@ export function getEstadoPagoConfig(estado) {
         bgSubtle: 'bg-amber-500/10',
         textClass: 'text-amber-400'
       };
-    case 'vencido':
+    case 'pendiente':
       return {
-        key: 'vencido',
-        label: 'Vencido',
-        color: 'red',
-        badgeClass: 'bg-red-500/15 text-red-400 border border-red-500/30',
-        dotClass: 'bg-red-400',
-        bgSubtle: 'bg-red-500/10',
-        textClass: 'text-red-400'
+        key: 'pendiente',
+        label: 'Pendiente',
+        color: 'amber',
+        badgeClass: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+        dotClass: 'bg-amber-400',
+        bgSubtle: 'bg-amber-500/10',
+        textClass: 'text-amber-400'
       };
     case 'sin_plan':
-    default:
       return {
         key: 'sin_plan',
         label: 'Sin Plan',
@@ -98,6 +166,17 @@ export function getEstadoPagoConfig(estado) {
         dotClass: 'bg-gray-400',
         bgSubtle: 'bg-gray-500/10',
         textClass: 'text-gray-400'
+      };
+    case 'vencido':
+    default:
+      return {
+        key: 'vencido',
+        label: 'Vencido',
+        color: 'red',
+        badgeClass: 'bg-red-500/15 text-red-400 border border-red-500/30',
+        dotClass: 'bg-red-400',
+        bgSubtle: 'bg-red-500/10',
+        textClass: 'text-red-400'
       };
   }
 }
@@ -155,8 +234,8 @@ export function formatearFechaPago(fechaStr, { extendida = false } = {}) {
  * Si la fecha de vencimiento actual es posterior a hoy, suma a partir de esa fecha.
  * Si ya venció o no tiene fecha, suma a partir de hoy.
  */
-export function calcularNuevaFechaVencimiento(fechaVencimientoActual, diasVigencia = 30) {
-  const hoy = normalizarFechaLocal(new Date().toISOString().split('T')[0]);
+export function calcularNuevaFechaVencimiento(fechaVencimientoActual, diasVigencia = 30, fechaInicio = null) {
+  const hoy = normalizarFechaLocal(fechaInicio || new Date().toISOString().split('T')[0]);
   let baseDate = new Date(hoy);
 
   if (fechaVencimientoActual) {
@@ -208,59 +287,63 @@ export function generarEnlaceWhatsAppCobro({ telefono, nombre, plan, fechaVencim
 }
 
 /**
- * Datos bancarios por defecto de Esteban Correa.
+ * Datos bancarios iniciales de Esteban Correa.
  */
 export const DEFAULT_BANK_DETAILS = {
-  alias: 'ESTEBAN.TRAINER.MP',
-  cbu: '0000003100012345678901',
+  alias: '',
+  cbu: '',
   banco: 'Mercado Pago',
   titular: 'Esteban Correa',
-  telefono: '+54 9 11 2345-6789'
+  telefono: ''
 };
 
 /**
- * Planes de entrenamiento por defecto.
+ * Categorías de planes por defecto (sin precios fijos).
  */
 export const DEFAULT_PLANS = [
-  { id: 'plan-1', nombre: 'Plan 3x Semanal Personalizado', precio: 38000, dias_vigencia: 30, descripcion: '3 sesiones semanales con seguimiento y rutina personalizada' },
-  { id: 'plan-2', nombre: 'Plan 4x Semanal Personalizado', precio: 45000, dias_vigencia: 30, descripcion: '4 sesiones semanales de alta intensidad con control antropométrico' },
-  { id: 'plan-3', nombre: 'Plan Fuerza Femenina 3x', precio: 38000, dias_vigencia: 30, descripcion: 'Enfoque en hipertrofia y fuerza para tren inferior y core' },
-  { id: 'plan-4', nombre: 'Plan Online & Seguimiento', precio: 28000, dias_vigencia: 30, descripcion: 'Rutina virtual con soporte diario por WhatsApp' }
+  { id: '12dc754e-4262-4171-9f6c-6669b853af70', nombre: 'Presencial', precio: null, duracion_dias: 30, dias_vigencia: 30, descripcion: 'Entrenamiento presencial' },
+  { id: 'b89bd142-8dd2-4a60-8436-fe069f7aeb83', nombre: 'Personalizado', precio: null, duracion_dias: 30, dias_vigencia: 30, descripcion: 'Planificación personalizada' },
+  { id: 'e2f87a8f-3ff0-4cd7-9e2b-35737861a172', nombre: 'A distancia', precio: null, duracion_dias: 30, dias_vigencia: 30, descripcion: 'Asesoría a distancia' }
 ];
 
 /**
- * Los 3 planes oficiales de membresía de Esteban Correa:
- * 'Presencial', 'Personalizado', 'A distancia'
+ * Los 3 planes oficiales de membresía de Esteban Correa en Supabase:
+ * 'Presencial', 'Personalizado', 'A distancia' (precio: null)
  */
 export const DEFAULT_MEMBERSHIP_PLANS = [
   { 
-    id: 'mp-presencial', 
+    id: '12dc754e-4262-4171-9f6c-6669b853af70', 
     tipo: 'Presencial', 
-    nombre: 'Plan Presencial', 
-    precio: 38000, 
+    nombre: 'Presencial', 
+    precio: null, 
+    duracion_dias: 30,
     dias_vigencia: 30, 
     descripcion: 'Entrenamiento guiado en sala con supervisión técnica presencial' 
   },
   { 
-    id: 'mp-personalizado', 
+    id: 'b89bd142-8dd2-4a60-8436-fe069f7aeb83', 
     tipo: 'Personalizado', 
-    nombre: 'Plan Personalizado', 
-    precio: 45000, 
+    nombre: 'Personalizado', 
+    precio: null, 
+    duracion_dias: 30,
     dias_vigencia: 30, 
     descripcion: 'Planificación integral 1 a 1 y seguimiento antropométrico mensual' 
   },
   { 
-    id: 'mp-adistancia', 
+    id: 'e2f87a8f-3ff0-4cd7-9e2b-35737861a172', 
     tipo: 'A distancia', 
-    nombre: 'Plan A Distancia (Online)', 
-    precio: 28000, 
+    nombre: 'A distancia', 
+    precio: null, 
+    duracion_dias: 30,
     dias_vigencia: 30, 
     descripcion: 'Rutina virtual con seguimiento diario por WhatsApp y corrección en video' 
   }
 ];
 
 export function formatearPrecioARS(monto) {
-  const num = parseFloat(monto) || 0;
+  if (monto === null || monto === undefined || monto === '') return '-';
+  const num = parseFloat(monto);
+  if (isNaN(num)) return '-';
   return `$${num.toLocaleString('es-AR')}`;
 }
 
