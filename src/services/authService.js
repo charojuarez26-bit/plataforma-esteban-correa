@@ -76,11 +76,6 @@ export async function resolveCoachProfile(authUser) {
       localStorage.setItem('coach_phone', profile.telefono);
       localStorage.setItem('coach_whatsapp', profile.telefono);
     }
-    const folder = user?.id || profile.user_id || profile.id || '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86';
-    const jsonBlob = new Blob([JSON.stringify(profile)], { type: 'application/json' });
-    supabase.storage.from('avatars').upload(`${folder}/coach-profile.json`, jsonBlob, {
-      upsert: true, contentType: 'application/json', cacheControl: '60'
-    }).catch(() => {});
   } catch {}
 
   return profile;
@@ -581,11 +576,6 @@ export async function saveCoachProfile(current, form) {
       localStorage.setItem('coach_phone', updated.telefono);
       localStorage.setItem('coach_whatsapp', updated.telefono);
     }
-    const folder = updated.user_id || updated.id || current?.id || '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86';
-    const jsonBlob = new Blob([JSON.stringify(updated)], { type: 'application/json' });
-    supabase.storage.from('avatars').upload(`${folder}/coach-profile.json`, jsonBlob, {
-      upsert: true, contentType: 'application/json', cacheControl: '60'
-    }).catch(() => {});
   } catch {}
   return { profile: updated, warnings: [] };
 }

@@ -263,43 +263,27 @@ export default function StudentPortal({ student, onLogout }) {
     let isMounted = true;
     async function fetchCoach() {
       try {
-        const { data: coachData, error: coachError } = await supabase
+        const { data, error } = await supabase
           .from('coaches')
           .select('*')
           .limit(1)
-          .single();
-        console.log("Respuesta de Supabase (Coach Data):", coachData);
-        if (coachError) console.error("Error de Supabase al traer coach:", coachError);
+          .maybeSingle();
 
-        if (coachData && isMounted) {
-          setCoachProfile(coachData);
-          if (coachData.telefono) {
-            setCoachPhone(coachData.telefono);
-            try { localStorage.setItem('coach_phone', coachData.telefono); } catch {}
-          }
-          try { localStorage.setItem('coach_public_profile', JSON.stringify(coachData)); } catch {}
-          return;
-        }
-
-        // Fallback desde Storage público si RLS bloquea la lectura anónima de la tabla coaches
-        try {
-          const target = currentStudent || student || authUser;
-          const coachFolder = target?.coach_id || '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86';
-          const { data: pubData } = supabase.storage.from('avatars').getPublicUrl(`${coachFolder}/coach-profile.json`);
-          if (pubData?.publicUrl) {
-            const resp = await fetch(`${pubData.publicUrl}?t=${Date.now()}`);
-            if (resp.ok) {
-              const mirroredCoach = await resp.json();
-              if (mirroredCoach && mirroredCoach.nombre && isMounted) {
-                console.log("Coach Data recuperado de espejo público en Storage:", mirroredCoach);
-                setCoachProfile(mirroredCoach);
-                if (mirroredCoach.telefono) setCoachPhone(mirroredCoach.telefono);
-                try { localStorage.setItem('coach_public_profile', JSON.stringify(mirroredCoach)); } catch {}
-                return;
-              }
+        if (error) {
+          console.error("Error de Supabase al traer coach:", error);
+        } else if (data) {
+          console.log("Coach data obtenida:", data);
+          if (isMounted) {
+            setCoachProfile(data);
+            if (data.telefono) {
+              setCoachPhone(data.telefono);
+              try { localStorage.setItem('coach_phone', data.telefono); } catch {}
             }
+            try { localStorage.setItem('coach_public_profile', JSON.stringify(data)); } catch {}
           }
-        } catch {}
+        } else {
+          console.warn("No se encontró ningún coach. Verifica las políticas RLS en Supabase.");
+        }
       } catch (err) {
         console.error("Error de Supabase al traer coach:", err);
       }
@@ -389,33 +373,19 @@ export default function StudentPortal({ student, onLogout }) {
 
     // Cargar dinámicamente los datos del coach desde Supabase
     try {
-      const { data: coachData, error: coachError } = await supabase
+      const { data, error } = await supabase
         .from('coaches')
         .select('*')
         .limit(1)
-        .single();
-      console.log("Respuesta de Supabase (Coach Data):", coachData);
-      if (coachError) console.error("Error de Supabase al traer coach:", coachError);
+        .maybeSingle();
 
-      let resolvedCoach = coachData || null;
-
-      // Si no se obtuvo de Supabase (ej. RLS para rol anon), verificar espejo en Storage o caché local válida
-      if (!resolvedCoach) {
-        try {
-          const cached = localStorage.getItem('coach_public_profile');
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            if (parsed && parsed.role !== 'student' && !parsed.access_code) {
-              resolvedCoach = parsed;
-            }
-          }
-        } catch {}
-      }
-
-      if (resolvedCoach) {
-        setCoachProfile(resolvedCoach);
-        try { localStorage.setItem('coach_public_profile', JSON.stringify(resolvedCoach)); } catch {}
-        const fetchedPhone = resolvedCoach.telefono || resolvedCoach.whatsapp || resolvedCoach.phone || resolvedCoach.bank_details?.telefono;
+      if (error) {
+        console.error("Error de Supabase al traer coach:", error);
+      } else if (data) {
+        console.log("Coach data obtenida:", data);
+        setCoachProfile(data);
+        try { localStorage.setItem('coach_public_profile', JSON.stringify(data)); } catch {}
+        const fetchedPhone = data.telefono || data.whatsapp || data.phone || data.bank_details?.telefono;
         if (fetchedPhone) {
           setCoachPhone(fetchedPhone);
           try {
@@ -423,13 +393,21 @@ export default function StudentPortal({ student, onLogout }) {
             localStorage.setItem('coach_whatsapp', fetchedPhone);
           } catch {}
         }
-        if (resolvedCoach.bank_details) {
-          setBankDetails(prev => ({ ...prev, ...resolvedCoach.bank_details }));
+        if (data.bank_details) {
+          setBankDetails(prev => ({ ...prev, ...data.bank_details }));
         }
-      } else if (authUser?.role === 'coach') {
-        // NUNCA asignar el alumno activo como coachProfile
-        setCoachProfile(authUser);
-        try { localStorage.setItem('coach_public_profile', JSON.stringify(authUser)); } catch {}
+      } else {
+        console.warn("No se encontró ningún coach. Verifica las políticas RLS en Supabase.");
+        try {
+          const cached = localStorage.getItem('coach_public_profile');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (parsed && parsed.role !== 'student' && !parsed.access_code) {
+              setCoachProfile(parsed);
+              if (parsed.telefono) setCoachPhone(parsed.telefono);
+            }
+          }
+        } catch {}
       }
     } catch (coachErr) {
       console.error("Error de Supabase al traer coach:", coachErr);
