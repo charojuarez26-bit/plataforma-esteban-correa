@@ -35,6 +35,40 @@ export function LoginView({ onLoginSuccess, onStartOnboarding }) {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [coachPhone, setCoachPhone] = useState(() => {
+    try {
+      return localStorage.getItem('coach_phone') || null;
+    } catch {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    async function loadCoachPhone() {
+      try {
+        const { data } = await supabase.from('coaches').select('*').limit(1).maybeSingle();
+        if (data) {
+          const tel = data.telefono || data.phone || data.whatsapp || data.bank_details?.telefono;
+          if (tel) {
+            setCoachPhone(tel);
+            try { localStorage.setItem('coach_phone', tel); } catch {}
+          }
+        }
+      } catch (e) {
+        console.warn('[LoginView] Error cargando teléfono del coach:', e);
+      }
+    }
+    loadCoachPhone();
+  }, []);
+
+  const cleanCoachPhone = (() => {
+    const rawPhone = coachPhone || (typeof window !== 'undefined' ? (localStorage.getItem('coach_phone') || localStorage.getItem('coach_whatsapp')) : '') || '';
+    let cleanPhone = rawPhone.replace(/\D/g, '');
+    if (cleanPhone && cleanPhone.length === 10 && !cleanPhone.startsWith('54')) {
+      cleanPhone = `549${cleanPhone}`;
+    }
+    return cleanPhone;
+  })();
 
   useEffect(() => {
     try {
@@ -306,7 +340,15 @@ export function LoginView({ onLoginSuccess, onStartOnboarding }) {
                 </button>
 
                 <p className="text-[11px] text-gray-500 text-center pt-2">
-                  ¿Dudas sobre cómo ingresar? Consulta con Esteban Correa por WhatsApp.
+                  ¿Dudas sobre cómo ingresar?{' '}
+                  <a
+                    href={cleanCoachPhone ? `https://wa.me/${cleanCoachPhone}?text=${encodeURIComponent('Hola Esteban, tengo dudas sobre cómo ingresar a mi cuenta de alumno.')}` : '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-brand-light font-bold hover:underline transition-colors"
+                  >
+                    Consulta con Esteban Correa por WhatsApp
+                  </a>.
                 </p>
               </div>
             )}

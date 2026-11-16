@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import BrandLogo, { MotivationalSlogan } from '../common/BrandLogo';
 import { 
@@ -33,8 +33,12 @@ import {
   Share2,
   Download,
   Loader2,
-  FileDown
+  FileDown,
+  Zap,
+  Award
 } from 'lucide-react';
+import { toPng, toBlob } from 'html-to-image';
+import WorkoutShareStory from './WorkoutShareStory';
 import { generateWorkoutSummaryImage } from '../../utils/workoutShareCard';
 import { exportRoutineToPdf } from '../../utils/routinePdfExporter';
 import { 
@@ -61,6 +65,7 @@ import ExerciseTechniqueModal from '../exercises/ExerciseTechniqueModal';
 import ClientAvatar from '../common/ClientAvatar';
 import StaticGif from '../common/StaticGif';
 import AboutModal from '../AboutModal';
+import CoachProfileModal from './CoachProfileModal';
 import MedicalRecordModal from '../medical/MedicalRecordModal';
 import MedicalRecordViewOnly from '../medical/MedicalRecordViewOnly';
 
@@ -103,6 +108,19 @@ export default function StudentPortal({ student, onLogout }) {
   const [currentPlan, setCurrentPlan] = useState(null);
   const [activeSection, setActiveSection] = useState('home'); // 'home' | 'routine' | 'progress' | 'plan' | 'salud'
   const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
+  const [isCoachModalOpen, setIsCoachModalOpen] = useState(false);
+  const [coachProfile, setCoachProfile] = useState(() => {
+    try {
+      const pub = localStorage.getItem('coach_public_profile');
+      if (pub) return JSON.parse(pub);
+      const ses = localStorage.getItem('ec_trainer_auth_session');
+      if (ses) {
+        const p = JSON.parse(ses);
+        if (p?.user?.role === 'coach' || p?.user?.nombre) return p.user;
+      }
+    } catch {}
+    return null;
+  });
   const [routine, setRoutine] = useState(null);
   const [evaluations, setEvaluations] = useState([]);
   const [payments, setPayments] = useState([]);
@@ -121,6 +139,13 @@ export default function StudentPortal({ student, onLogout }) {
 
   // Datos bancarios del coach y estado de copia
   const [bankDetails, setBankDetails] = useState(DEFAULT_BANK_DETAILS);
+  const [coachPhone, setCoachPhone] = useState(() => {
+    try {
+      return localStorage.getItem('coach_phone') || null;
+    } catch {
+      return null;
+    }
+  });
   const [copiedKey, setCopiedKey] = useState(null);
 
   // Seguimiento de Rutina: Fecha de inicio
@@ -137,11 +162,13 @@ export default function StudentPortal({ student, onLogout }) {
   const [entrenamientosDeHoy, setEntrenamientosDeHoy] = useState([]);
   const [sessionComments, setSessionComments] = useState('');
 
-  // Modal de Resumen y Compartir en Stories (HTML5 Canvas 9:16)
+  // Modal de Resumen y Compartir en Stories (HTML5 Canvas / html-to-image 9:16)
   const [showShareModal, setShowShareModal] = useState(false);
   const [isGeneratingShareImage, setIsGeneratingShareImage] = useState(false);
   const [shareImageData, setShareImageData] = useState(null); // { blob, file, dataUrl }
   const [shareFeedback, setShareFeedback] = useState(null);
+  const [shareWorkoutData, setShareWorkoutData] = useState(null);
+  const storyCardRef = useRef(null);
 
   // Exportación / Descarga de Rutina a PDF (A4)
   const [isExportingRoutinePdf, setIsExportingRoutinePdf] = useState(false);
@@ -225,6 +252,46 @@ export default function StudentPortal({ student, onLogout }) {
     loadStudentData();
   }, [student, authUser]);
 
+  // Consulta reactiva a Supabase para cargar el perfil del Coach
+  useEffect(() => {
+    let isMounted = true;
+    async function fetchCoach() {
+      try {
+        const target = currentStudent || student || authUser;
+        let query = supabase.from('coaches').select('*');
+        if (target?.coach_id) {
+          query = query.eq('id', target.coach_id);
+        }
+        const { data, error } = await query.limit(1).maybeSingle();
+        if (!error && data && isMounted) {
+          setCoachProfile(data);
+          if (data.telefono) {
+            setCoachPhone(data.telefono);
+            try { localStorage.setItem('coach_phone', data.telefono); } catch {}
+          }
+          try { localStorage.setItem('coach_public_profile', JSON.stringify(data)); } catch {}
+          return;
+        }
+
+        // Si no se encontró por coach_id, consultar el primer entrenador
+        const { data: firstCoach } = await supabase.from('coaches').select('*').limit(1).maybeSingle();
+        if (firstCoach && isMounted) {
+          setCoachProfile(firstCoach);
+          if (firstCoach.telefono) {
+            setCoachPhone(firstCoach.telefono);
+            try { localStorage.setItem('coach_phone', firstCoach.telefono); } catch {}
+          }
+          try { localStorage.setItem('coach_public_profile', JSON.stringify(firstCoach)); } catch {}
+        }
+      } catch (err) {
+        console.warn('[StudentPortal] Error consultando coaches en Supabase:', err);
+      }
+    }
+
+    fetchCoach();
+    return () => { isMounted = false; };
+  }, [currentStudent?.coach_id, student?.coach_id, authUser?.coach_id]);
+
   const loadStudentData = async () => {
     const target = currentStudent || student || authUser;
     if (!target?.id) return;
@@ -237,6 +304,26 @@ export default function StudentPortal({ student, onLogout }) {
     setRoutine(r);
     setEvaluations(ev);
     setPayments(studentPayments);
+
+    try {
+      const allPlans = await dataService.getMembershipPlans();
+      if (Array.isArray(allPlans) && allPlans.length > 0) {
+        const studentPlanId = target.plan_id || target.membership_plan_id;
+        const studentPlanName = target.plan_actual || target.plan_nombre || target.plan_name || target.plan_type;
+        const matched = allPlans.find(pl => 
+          (studentPlanId && pl.id === studentPlanId) ||
+          (studentPlanName && (
+            String(pl.nombre || '').toLowerCase() === String(studentPlanName).toLowerCase() ||
+            String(pl.tipo || '').toLowerCase() === String(studentPlanName).toLowerCase()
+          ))
+        );
+        if (matched) {
+          setCurrentPlan(matched);
+        }
+      }
+    } catch (errPlan) {
+      console.warn('Error cargando plan de membresía del alumno:', errPlan);
+    }
 
     try {
       const sLogs = await dataService.getClientSessionLogs(studentId);
@@ -282,6 +369,38 @@ export default function StudentPortal({ student, onLogout }) {
 
     const banks = dataService.getBankDetails();
     setBankDetails(banks);
+
+    // Cargar dinámicamente el teléfono y datos del coach desde Supabase
+    try {
+      let coachQuery = supabase.from('coaches').select('*');
+      if (target?.coach_id) {
+        coachQuery = coachQuery.eq('id', target.coach_id);
+      }
+      const { data: coachData } = await coachQuery.limit(1).maybeSingle();
+
+      if (coachData) {
+        setCoachProfile(coachData);
+        try { localStorage.setItem('coach_public_profile', JSON.stringify(coachData)); } catch {}
+        const fetchedPhone = coachData.telefono || coachData.whatsapp || coachData.phone || coachData.bank_details?.telefono;
+        if (fetchedPhone) {
+          setCoachPhone(fetchedPhone);
+          try {
+            localStorage.setItem('coach_phone', fetchedPhone);
+            localStorage.setItem('coach_whatsapp', fetchedPhone);
+          } catch {}
+        }
+        if (coachData.bank_details) {
+          setBankDetails(prev => ({ ...prev, ...coachData.bank_details }));
+        }
+      } else if (authUser?.telefono || authUser?.whatsapp || authUser?.phone || authUser?.role === 'coach') {
+        const authPhone = authUser.telefono || authUser.whatsapp || authUser.phone;
+        if (authPhone) setCoachPhone(authPhone);
+        setCoachProfile(authUser);
+        try { localStorage.setItem('coach_public_profile', JSON.stringify(authUser)); } catch {}
+      }
+    } catch (coachErr) {
+      console.warn('[StudentPortal] Error consultando teléfono del coach en Supabase:', coachErr);
+    }
 
     // 1. Verificar si el campo fecha_inicio / fecha_inicio_rutina ya está definido
     let sDate = target.fecha_inicio || target.fecha_inicio_rutina;
@@ -583,6 +702,12 @@ export default function StudentPortal({ student, onLogout }) {
               ? exerciseLogs[`${item.id}_reps`]
               : (item.repeticiones || 10));
 
+          const actualIntensity = (
+            exerciseLogs[`${item.id}_actual_intensity`] !== undefined && exerciseLogs[`${item.id}_actual_intensity`] !== ''
+          ) ? exerciseLogs[`${item.id}_actual_intensity`] : (exerciseLogs[`${item.id}_intensity`] || '');
+
+          const recommendedIntensity = item.recommended_intensity || item.intensidad_recomendada || '';
+
           exercisesForLog.push({
             exercise_name: item.exercise?.nombre || 'Ejercicio',
             prescribed_sets: totalSets,
@@ -591,6 +716,8 @@ export default function StudentPortal({ student, onLogout }) {
             actual_sets: 1, // 1 serie individual registrada
             actual_reps: actualReps,
             actual_weight: actualWeight,
+            recommended_intensity: recommendedIntensity,
+            actual_intensity: actualIntensity,
             set_number: sIdx + 1,
             is_completed: isDone
           });
@@ -644,6 +771,31 @@ export default function StudentPortal({ student, onLogout }) {
     setShareFeedback(null);
 
     try {
+      // Helper robusto para calcular reps limpias (evita multiplicar "10-12" como 1012 reps)
+      const parseCleanReps = (val) => {
+        if (typeof val === 'number') {
+          return isNaN(val) ? 10 : Math.max(1, Math.min(150, Math.round(val)));
+        }
+        if (!val) return 10;
+        const matches = String(val).match(/\d+/g);
+        if (!matches || matches.length === 0) return 10;
+        const nums = matches.map(n => parseInt(n, 10)).filter(n => !isNaN(n) && n > 0 && n <= 150);
+        if (nums.length === 0) return 10;
+        return Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
+      };
+
+      // Helper robusto para calcular peso limpio en kg
+      const parseCleanWeight = (val) => {
+        if (typeof val === 'number') {
+          return isNaN(val) ? 0 : Math.max(0, Math.min(1000, val));
+        }
+        if (!val) return 0;
+        const match = String(val).replace(',', '.').match(/[-+]?[0-9]*\.?[0-9]+/);
+        if (!match) return 0;
+        const num = parseFloat(match[0]);
+        return isNaN(num) ? 0 : Math.max(0, Math.min(1000, num));
+      };
+
       // 1. Mapear datos ejecutados de cada ejercicio del día
       let totalCompletedSetsCount = 0;
       let totalCalculatedVolume = 0;
@@ -665,22 +817,22 @@ export default function StudentPortal({ student, onLogout }) {
             const setPesoInput = exerciseLogs[`${item.id}_set_${sIdx}_peso`];
             const setRepsInput = exerciseLogs[`${item.id}_set_${sIdx}_reps`];
             const weightVal = (setPesoInput !== undefined && setPesoInput !== '')
-              ? parseFloat(setPesoInput)
+              ? parseCleanWeight(setPesoInput)
               : ((exerciseLogs[`${item.id}_peso`] !== undefined && exerciseLogs[`${item.id}_peso`] !== '')
-                ? parseFloat(exerciseLogs[`${item.id}_peso`])
-                : (parseFloat(item.peso_sugerido) || 0));
+                ? parseCleanWeight(exerciseLogs[`${item.id}_peso`])
+                : parseCleanWeight(item.peso_sugerido));
 
             const repsVal = (setRepsInput !== undefined && setRepsInput !== '')
-              ? parseInt(setRepsInput, 10)
+              ? parseCleanReps(setRepsInput)
               : ((exerciseLogs[`${item.id}_reps`] !== undefined && exerciseLogs[`${item.id}_reps`] !== '')
-                ? parseInt(exerciseLogs[`${item.id}_reps`], 10)
-                : (parseInt(String(item.repeticiones || '10').replace(/\D/g, ''), 10) || 10));
+                ? parseCleanReps(exerciseLogs[`${item.id}_reps`])
+                : parseCleanReps(item.repeticiones || 10));
 
-            if (!isNaN(weightVal) && weightVal > 0) {
+            if (weightVal > 0 && repsVal > 0) {
               if (weightVal > maxWeight) maxWeight = weightVal;
               totalCalculatedVolume += (weightVal * repsVal);
             }
-            if (!isNaN(repsVal) && repsVal > 0) {
+            if (repsVal > 0) {
               lastReps = repsVal;
               totalCalculatedReps += repsVal;
             }
@@ -710,7 +862,7 @@ export default function StudentPortal({ student, onLogout }) {
       }
 
       const workoutSummaryData = {
-        studentName: currentStudent?.nombre_completo || student?.nombre_completo || 'Atleta',
+        studentName: currentStudent?.nombre_completo || student?.nombre_completo || userName || 'Atleta',
         routineName: routine?.nombre || 'Rutina Personalizada',
         dayName: currentDay.dia || `Día ${selectedDayIndex + 1}`,
         weekNumber: routine?.total_weeks > 1 ? selectedWeek : null,
@@ -718,11 +870,50 @@ export default function StudentPortal({ student, onLogout }) {
         totalSets: totalCompletedSetsCount,
         completedExercisesCount: completedExercisesNum || currentDay.ejercicios?.length || 0,
         totalExercisesCount: currentDay.ejercicios?.length || 0,
-        totalVolumeKg: totalCalculatedVolume,
+        totalVolumeKg: Math.round(totalCalculatedVolume),
         totalReps: totalCalculatedReps
       };
 
-      const generated = await generateWorkoutSummaryImage(workoutSummaryData);
+      setShareWorkoutData(workoutSummaryData);
+
+      // Esperar brevemente a que el DOM monte WorkoutShareStory con los datos
+      await new Promise(resolve => setTimeout(resolve, 250));
+
+      let generated = null;
+
+      // 2. Intentar generar imagen con html-to-image desde el componente WorkoutShareStory
+      if (storyCardRef.current) {
+        try {
+          const dataUrl = await toPng(storyCardRef.current, {
+            cacheBust: true,
+            pixelRatio: 1,
+            width: 1080,
+            height: 1920
+          });
+
+          const blob = await toBlob(storyCardRef.current, {
+            cacheBust: true,
+            pixelRatio: 1,
+            width: 1080,
+            height: 1920
+          });
+
+          if (blob && dataUrl) {
+            const file = new File([blob], `entrenamiento-${new Date().toISOString().slice(0, 10)}.png`, {
+              type: 'image/png'
+            });
+            generated = { blob, file, dataUrl };
+          }
+        } catch (storyRenderErr) {
+          console.warn('html-to-image falló al renderizar componente, usando canvas de respaldo:', storyRenderErr);
+        }
+      }
+
+      // Si html-to-image no estuviese disponible o fallara, usar canvas fallback
+      if (!generated) {
+        generated = await generateWorkoutSummaryImage(workoutSummaryData);
+      }
+
       setShareImageData(generated);
     } catch (err) {
       console.error('Error generando tarjeta de entrenamiento:', err);
@@ -829,15 +1020,56 @@ export default function StudentPortal({ student, onLogout }) {
   const vencFecha = normalizarFechaLocal(activeStudent?.fecha_vencimiento);
   const tieneAccesoActivo = Boolean(vencFecha && vencFecha.getTime() >= hoyFecha.getTime());
 
-  const coachPhone = import.meta.env.VITE_COACH_WHATSAPP || bankDetails?.telefono || '5491155550199';
-  let cleanCoachPhone = String(coachPhone).replace(/[^0-9]/g, '');
-  if (!cleanCoachPhone.startsWith('54') && cleanCoachPhone.length === 10) {
+  // Sanitización universal del teléfono del coach para WhatsApp
+  const rawCoachPhone = coachProfile?.telefono || coachProfile?.whatsapp || coachProfile?.phone || coachPhone || bankDetails?.telefono || (typeof window !== 'undefined' ? (localStorage.getItem('coach_phone') || localStorage.getItem('coach_whatsapp')) : null);
+  const rawPhone = rawCoachPhone || '';
+  let cleanCoachPhone = rawPhone.replace(/\D/g, '');
+  if (cleanCoachPhone && cleanCoachPhone.length === 10 && !cleanCoachPhone.startsWith('54')) {
     cleanCoachPhone = `549${cleanCoachPhone}`;
   }
 
-  const whatsappUrl = `https://wa.me/${cleanCoachPhone}?text=Hola%20Esteban,%20soy%20${encodeURIComponent(userName)}%20(C%C3%B3digo:%20${accessCode}).%20Te%20escribo%20por%20mi%20entrenamiento!`;
+  const whatsappUrl = cleanCoachPhone ? `https://wa.me/${cleanCoachPhone}?text=Hola%20Esteban,%20soy%20${encodeURIComponent(userName)}%20(C%C3%B3digo:%20${accessCode}).%20Te%20escribo%20por%20mi%20entrenamiento!` : '#';
   const msgComprobante = `¡Hola Esteban! Ya realicé la transferencia de mi cuota de ${activeStudent?.plan_actual || 'entrenamiento'}. Te adjunto el comprobante por acá. Alumno: ${userName}`;
-  const comprobanteWhatsAppUrl = `https://wa.me/${cleanCoachPhone}?text=${encodeURIComponent(msgComprobante)}`;
+  const comprobanteWhatsAppUrl = cleanCoachPhone ? `https://wa.me/${cleanCoachPhone}?text=${encodeURIComponent(msgComprobante)}` : '#';
+
+  const studentProfile = activeStudent;
+
+  // Nombre y descripción dinámicos del plan de membresía del alumno
+  const studentPlanName = studentProfile?.plan_name || studentProfile?.plan_actual || studentProfile?.plan_nombre || studentProfile?.plan_type || currentPlan?.nombre || 'Plan no asignado';
+  const studentPlanDescription = studentProfile?.modalidad
+    ? `Modalidad: ${studentProfile.modalidad} con seguimiento personalizado`
+    : (studentProfile?.plan_description || studentProfile?.plan_descripcion || currentPlan?.descripcion || 'Modalidad: Presencial con seguimiento personalizado');
+
+  // Valor numérico del plan / Cuota mensual que abona el alumno
+  const planPrice = useMemo(() => {
+    if (studentProfile?.plan_price != null && studentProfile?.plan_price !== '') {
+      const parsed = Number(studentProfile.plan_price);
+      if (!isNaN(parsed)) return parsed;
+    }
+    if (studentProfile?.precio != null && studentProfile?.precio !== '') {
+      const parsed = Number(studentProfile.precio);
+      if (!isNaN(parsed)) return parsed;
+    }
+    if (studentProfile?.monto != null && studentProfile?.monto !== '') {
+      const parsed = Number(studentProfile.monto);
+      if (!isNaN(parsed)) return parsed;
+    }
+    if (Array.isArray(payments) && payments.length > 0 && payments[0]?.monto != null) {
+      const parsed = Number(payments[0].monto);
+      if (!isNaN(parsed)) return parsed;
+    }
+    if (currentPlan?.precio != null && currentPlan?.precio !== '') {
+      const parsed = Number(currentPlan.precio);
+      if (!isNaN(parsed)) return parsed;
+    }
+    // Valores de cuota por defecto según la modalidad / plan del alumno si Supabase no tiene monto asignado
+    const planNameLower = String(studentPlanName || studentProfile?.modalidad || '').toLowerCase();
+    if (planNameLower.includes('personalizado') || planNameLower.includes('4x') || planNameLower.includes('3x')) return 45000;
+    if (planNameLower.includes('presencial')) return 38000;
+    if (planNameLower.includes('distancia') || planNameLower.includes('online') || planNameLower.includes('virtual')) return 28000;
+
+    return null;
+  }, [studentProfile, payments, currentPlan, studentPlanName]);
 
   return (
     <div className="min-h-screen bg-dark-950 bg-[radial-gradient(circle_at_top_right,_var(--tw-gradient-stops))] from-red-900/10 via-transparent to-transparent text-gray-100 flex flex-col justify-between max-w-md mx-auto relative border-x border-dark-800 shadow-2xl overflow-x-hidden">
@@ -858,6 +1090,14 @@ export default function StudentPortal({ student, onLogout }) {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsCoachModalOpen(true)}
+            title="Perfil de mi Entrenador"
+            className="p-1.5 rounded-lg text-gray-400 hover:text-amber-400 hover:bg-dark-800 transition-all min-h-[38px] min-w-[38px] flex items-center justify-center border border-transparent hover:border-dark-700 active:scale-95"
+          >
+            <Award className="w-4 h-4 text-amber-400" />
+          </button>
           <button
             type="button"
             onClick={() => setIsAboutModalOpen(true)}
@@ -907,19 +1147,30 @@ export default function StudentPortal({ student, onLogout }) {
               </div>
 
               <div className="mt-3.5 pt-2.5 border-t border-white/10 flex items-center justify-between text-xs text-gray-300">
-                <span className="truncate max-w-[65%]">🎯 {activeStudent.objetivo || 'Acondicionamiento Físico'}</span>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-emerald-400 font-bold">{activeStudent.estado || 'Activo'}</span>
-                  <button
-                    onClick={onLogout}
-                    title="Cerrar sesión en este dispositivo"
-                    className="text-[11px] text-gray-400 hover:text-red-400 flex items-center gap-1 pl-2 border-l border-white/10 transition-colors"
-                  >
-                    <LogOut className="w-3 h-3" />
-                    <span className="hidden sm:inline">Salir</span>
-                  </button>
-                </div>
+                <span className="truncate max-w-[65%] inline-flex items-center">
+                  <Dumbbell className="w-3.5 h-3.5 mr-1.5 text-brand-light shrink-0" />
+                  <span className="truncate">{activeStudent.objetivo || 'Acondicionamiento Físico'}</span>
+                </span>
+                <span className="text-emerald-400 font-bold shrink-0">{activeStudent.estado || 'Activo'}</span>
               </div>
+
+              {/* Acceso al Perfil del Coach */}
+              <button
+                type="button"
+                onClick={() => setIsCoachModalOpen(true)}
+                className="mt-3 w-full flex items-center justify-between px-3 py-2 rounded-xl bg-dark-950/60 hover:bg-dark-950/90 border border-brand/25 hover:border-brand/50 text-xs text-gray-300 hover:text-white transition-all group active:scale-[0.99]"
+              >
+                <div className="flex items-center gap-2 truncate">
+                  <div className="w-5 h-5 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
+                    <Award className="w-3 h-3" />
+                  </div>
+                  <span className="font-bold text-white text-xs truncate">Coach {coachProfile?.full_name || coachProfile?.nombre || 'Esteban Correa'}</span>
+                  <span className="text-[10px] text-gray-400 hidden sm:inline">• Perfil y certificaciones</span>
+                </div>
+                <span className="text-[11px] font-semibold text-brand-light flex items-center gap-1 shrink-0 ml-2">
+                  Ver perfil <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+                </span>
+              </button>
             </div>
 
             {/* ACCESOS PRINCIPALES ESTILO CUADRÍCULA (Mobile-First) */}
@@ -1038,7 +1289,7 @@ export default function StudentPortal({ student, onLogout }) {
                       Mi Membresía
                     </span>
                     <h3 className="text-base sm:text-lg font-black text-white truncate">
-                      {currentPlan?.nombre || currentStudent.plan_actual || 'Sin plan asignado'}
+                      {studentPlanName}
                     </h3>
                   </div>
                 </div>
@@ -1056,10 +1307,8 @@ export default function StudentPortal({ student, onLogout }) {
                   Valor mensual del plan
                 </span>
                 <p className="text-2xl sm:text-3xl font-black text-white font-mono tracking-tight mt-0.5">
-                  {payments.length > 0 && payments[0]?.monto 
-                    ? formatearPrecioARS(payments[0].monto) 
-                    : (currentPlan?.precio ? formatearPrecioARS(currentPlan.precio) : '-')}
-                  {payments.length > 0 && payments[0]?.monto && (
+                  {planPrice != null ? formatearPrecioARS(planPrice) : '-'}
+                  {planPrice != null && (
                     <span className="text-xs sm:text-sm font-bold text-gray-400 ml-1.5 font-sans">
                       / mes
                     </span>
@@ -1557,8 +1806,8 @@ export default function StudentPortal({ student, onLogout }) {
                       <ChevronRight className="w-4 h-4 text-brand" />
                     </button>
 
-                    {/* Series & Carga */}
-                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    {/* Parámetros de Carga & Intensidad Recomendada */}
+                    <div className={`grid ${(item.recommended_intensity || item.intensidad_recomendada) ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} gap-2 text-center text-xs`}>
                       <div className="p-2 rounded-xl bg-dark-900 border border-dark-700">
                         <span className="text-[10px] text-gray-400 block">Series x Reps</span>
                         <span className="font-bold text-white">{item.series} x {item.repeticiones}</span>
@@ -1571,6 +1820,12 @@ export default function StudentPortal({ student, onLogout }) {
                         <span className="text-[10px] text-gray-400 block">Descanso</span>
                         <span className="font-bold text-white">{item.descanso_seg}s</span>
                       </div>
+                      {(item.recommended_intensity || item.intensidad_recomendada) && (
+                        <div className="p-2 rounded-xl bg-dark-900 border border-amber-500/30">
+                          <span className="text-[10px] text-amber-400 font-bold block uppercase truncate">Intensidad Coach</span>
+                          <span className="font-black text-amber-300">{item.recommended_intensity || item.intensidad_recomendada}</span>
+                        </div>
+                      )}
                     </div>
 
                     {/* REGISTRO DETALLADO SERIE POR SERIE */}
@@ -1682,6 +1937,39 @@ export default function StudentPortal({ student, onLogout }) {
                             </div>
                           );
                         })}
+                      </div>
+
+                      {/* Registro de Intensidad Real (RPE / RIR) del Alumno */}
+                      <div className="mt-2.5 pt-2.5 border-t border-dark-700/60 flex items-center justify-between gap-3 bg-dark-950/70 p-2.5 rounded-xl border border-dark-750">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
+                            <Zap className="w-3.5 h-3.5 text-amber-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[11px] font-bold text-white block leading-tight">
+                              Intensidad Real
+                            </span>
+                            <span className="text-[10px] text-gray-400 block truncate">
+                              {(item.recommended_intensity || item.intensidad_recomendada)
+                                ? `Recomendada: ${item.recommended_intensity || item.intensidad_recomendada}`
+                                : 'RPE / RIR percibido en este ejercicio'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="shrink-0 w-32 sm:w-36">
+                          <input
+                            type="text"
+                            disabled={isReadOnly}
+                            value={exerciseLogs[`${item.id}_actual_intensity`] ?? exerciseLogs[`${item.id}_intensity`] ?? ''}
+                            onChange={(e) => setExerciseLogs(prev => ({
+                              ...prev,
+                              [`${item.id}_actual_intensity`]: e.target.value
+                            }))}
+                            placeholder={(item.recommended_intensity || item.intensidad_recomendada) || 'Ej: RPE 8'}
+                            className="w-full bg-dark-900 border border-dark-700 focus:border-amber-400 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-bold text-center placeholder-gray-600 focus:outline-none disabled:opacity-50 transition-colors min-h-[36px]"
+                          />
+                        </div>
                       </div>
                     </div>
 
@@ -1872,10 +2160,10 @@ export default function StudentPortal({ student, onLogout }) {
                     Membresía Asignada
                   </span>
                   <h3 className="text-lg font-black text-white mt-0.5">
-                    {currentStudent.plan_actual || 'Sin plan asignado'}
+                    {studentPlanName}
                   </h3>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    Modalidad: {currentStudent.modalidad || 'Presencial'} con seguimiento personalizado
+                    {studentPlanDescription}
                   </p>
                 </div>
                 <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold shrink-0 ${configPago.badgeClass}`}>
@@ -1889,10 +2177,8 @@ export default function StudentPortal({ student, onLogout }) {
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-gray-400">Valor que abonas:</span>
                   <span className="font-mono font-black text-white text-base">
-                    {payments.length > 0 && payments[0]?.monto 
-                      ? formatearPrecioARS(payments[0].monto) 
-                      : (currentPlan?.precio ? formatearPrecioARS(currentPlan.precio) : '-')}
-                    {payments.length > 0 && payments[0]?.monto && (
+                    {planPrice != null ? formatearPrecioARS(planPrice) : '-'}
+                    {planPrice != null && (
                       <span className="text-xs text-gray-400 font-sans font-normal ml-1">/ mes</span>
                     )}
                   </span>
@@ -2075,6 +2361,28 @@ export default function StudentPortal({ student, onLogout }) {
         <div className="flex items-center justify-center gap-2.5 flex-wrap">
           <button
             type="button"
+            onClick={() => setIsCoachModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-dark-800 hover:bg-dark-750 text-gray-400 hover:text-white border border-dark-700 text-[11px] font-semibold transition-all active:scale-95 shadow-sm"
+          >
+            <Award className="w-3.5 h-3.5 text-amber-400" />
+            <span>Perfil del Coach</span>
+          </button>
+
+          {cleanCoachPhone && (
+            <a
+              href={whatsappUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-400 hover:text-emerald-300 border border-emerald-800/40 text-[11px] font-semibold transition-all active:scale-95 shadow-sm"
+              title="Escribir por WhatsApp al entrenador"
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              <span>Consultar por WhatsApp</span>
+            </a>
+          )}
+
+          <button
+            type="button"
             onClick={() => setIsAboutModalOpen(true)}
             className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-dark-800 hover:bg-dark-750 text-gray-400 hover:text-white border border-dark-700 text-[11px] font-semibold transition-all active:scale-95 shadow-sm"
           >
@@ -2190,6 +2498,30 @@ export default function StudentPortal({ student, onLogout }) {
           </div>
         </div>
       )}
+
+      {/* Tarjeta Social Media Offscreen (1080x1920) para generar imagen PNG con html-to-image */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          left: '-9999px',
+          top: '-9999px',
+          width: '1080px',
+          height: '1920px',
+          minWidth: '1080px',
+          minHeight: '1920px',
+          maxWidth: '1080px',
+          maxHeight: '1920px',
+          overflow: 'hidden',
+          zIndex: -9999,
+          pointerEvents: 'none'
+        }}
+      >
+        <WorkoutShareStory
+          ref={storyCardRef}
+          workoutData={shareWorkoutData || {}}
+        />
+      </div>
 
       {/* 3. Modal Celebración & Compartir en Instagram Stories */}
       {showShareModal && (
@@ -2368,6 +2700,15 @@ export default function StudentPortal({ student, onLogout }) {
       <AboutModal
         isOpen={isAboutModalOpen}
         onClose={() => setIsAboutModalOpen(false)}
+      />
+
+      {/* Modal Perfil del Entrenador */}
+      <CoachProfileModal
+        isOpen={isCoachModalOpen}
+        onClose={() => setIsCoachModalOpen(false)}
+        coach={coachProfile}
+        coachProfile={coachProfile}
+        whatsappPhone={cleanCoachPhone}
       />
 
       {/* Modal Onboarding Ficha Médica */}

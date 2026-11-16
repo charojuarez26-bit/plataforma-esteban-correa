@@ -40,6 +40,7 @@ export default function SettingsView({ user, onUpdateProfile }) {
     slogan: user?.slogan || 'Construí tu mejor versión',
     biografia: user?.biografia || user?.bio || '',
     avatar_url: user?.avatar_url || '',
+    certifications: user?.certifications || (Array.isArray(user?.estudios) && user.estudios.length > 0 ? user.estudios.map(e => `${e.titulo}${e.institucion ? ` — ${e.institucion}` : ''}`).join('\n') : ''),
     estudios: Array.isArray(user?.estudios) ? user.estudios : []
   });
 
@@ -79,7 +80,7 @@ export default function SettingsView({ user, onUpdateProfile }) {
 
         if (!error && data) {
           coachData = data;
-          loadedCode = data.codigo_acceso || data.branding?.codigo_acceso || '';
+          loadedCode = data.student_access_code || data.codigo_acceso || data.branding?.codigo_acceso || data.branding?.student_access_code || '';
         }
 
         // Si no hay código en BD, fallback a localStorage o valor por defecto '7429'
@@ -142,9 +143,12 @@ export default function SettingsView({ user, onUpdateProfile }) {
         );
 
         if (!error) {
-          setCoachRecord(prev => ({ ...prev, codigo_acceso: cleanCode }));
+          setCoachRecord(prev => ({ ...prev, codigo_acceso: cleanCode, student_access_code: cleanCode }));
         } else {
           console.warn('[SettingsView] Error actualizando codigo_acceso en coach:', error.message);
+          try {
+            await supabase.from('coaches').update({ student_access_code: cleanCode }).eq('id', coachId);
+          } catch {}
         }
       }
 
@@ -215,12 +219,19 @@ export default function SettingsView({ user, onUpdateProfile }) {
       const form = {
         ...coachProfile,
         nombre: coachProfile.nombre.trim(),
+        certifications: (coachProfile.certifications || '').trim(),
         estudios: coachProfile.estudios.filter(s => s.titulo.trim() || s.institucion.trim())
       };
       const { profile, warnings: w } = await saveCoachProfile(user || {}, form);
+      if (form.telefono) {
+        try {
+          localStorage.setItem('coach_phone', form.telefono);
+          localStorage.setItem('coach_whatsapp', form.telefono);
+        } catch {}
+      }
       const { warning: brandWarning } = await saveBranding(branding);
       setWarnings(brandWarning ? [...w, brandWarning] : w);
-      setCoachProfile(c => ({ ...c, estudios: form.estudios }));
+      setCoachProfile(c => ({ ...c, estudios: form.estudios, certifications: form.certifications }));
       onUpdateProfile?.(profile);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -319,6 +330,19 @@ export default function SettingsView({ user, onUpdateProfile }) {
                 placeholder="Especialista en Hipertrofia, Fuerza y Recomposición Corporal."
                 onChange={(e) => setCoachProfile({ ...coachProfile, biografia: e.target.value })}
                 className={inputCls} />
+            </div>
+            <div className="sm:col-span-2">
+              <label className={labelCls}>Capacitaciones y Certificaciones</label>
+              <textarea
+                rows={3}
+                value={coachProfile.certifications || ''}
+                placeholder="Ej: Lic. en Alto Rendimiento Deportivo&#10;Certificación Internacional ISAK Nivel 2&#10;Especialista en Biomecánica y Fuerza (FHE)"
+                onChange={(e) => setCoachProfile({ ...coachProfile, certifications: e.target.value })}
+                className={inputCls}
+              />
+              <p className="text-[11px] text-gray-500 mt-1">
+                Escribe cada certificación o título en una línea separada. Se mostrarán con viñetas en tu perfil para los alumnos.
+              </p>
             </div>
           </div>
         </div>

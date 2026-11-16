@@ -31,6 +31,7 @@ export async function resolveCoachProfile(authUser) {
     ...(meta.telefono ? { telefono: meta.telefono } : {}),
     ...(meta.slogan ? { slogan: meta.slogan } : {}),
     ...(meta.biografia ? { biografia: meta.biografia } : {}),
+    ...(meta.certifications ? { certifications: meta.certifications } : {}),
     ...(Array.isArray(meta.estudios) ? { estudios: meta.estudios } : {})
   };
 
@@ -230,33 +231,79 @@ export const authService = {
       throw new Error('Por favor introduce el código de 4 dígitos de tu entrenador.');
     }
 
-    // 1. Consultar en la tabla coaches por codigo_acceso
+    let coachData = null;
+    let dbAccessCode = null;
+
+    // 1. Consultar asíncronamente a la tabla coaches en Supabase
     try {
-      const { data: coachData, error } = await supabase
+      // Intentar primero con select('*') para capturar student_access_code, codigo_acceso y branding
+      const { data, error } = await supabase
         .from('coaches')
-        .select('id, nombre, codigo_acceso')
-        .eq('codigo_acceso', cleanCode)
+        .select('*')
+        .limit(1)
         .maybeSingle();
 
-      if (!error && coachData?.id) {
-        return {
-          valid: true,
-          coachId: coachData.id,
-          coachName: coachData.nombre || 'Esteban Correa',
-          code: cleanCode
-        };
+      if (!error && data) {
+        coachData = data;
+        dbAccessCode = data.student_access_code || data.codigo_acceso || data.branding?.student_access_code || data.branding?.codigo_acceso;
       }
     } catch (e) {
-      console.warn('[authService] Error consultando coaches:', e?.message);
+      console.warn('[authService] Error consultando coaches con select(*):', e?.message);
     }
 
-    // 2. Verificar en localStorage (si el coach guardó un código en Configuración)
-    const storedCoachCode = typeof window !== 'undefined' ? localStorage.getItem('coach_access_code') : null;
+    // Si aún no tenemos código, consultar explícitamente por student_access_code
+    if (!dbAccessCode) {
+      try {
+        const { data: sData } = await supabase
+          .from('coaches')
+          .select('id, nombre, student_access_code')
+          .limit(1)
+          .maybeSingle();
+        if (sData?.student_access_code) {
+          coachData = sData;
+          dbAccessCode = sData.student_access_code;
+        }
+      } catch {}
+    }
+
+    // Y por codigo_acceso
+    if (!dbAccessCode) {
+      try {
+        const { data: cData } = await supabase
+          .from('coaches')
+          .select('id, nombre, codigo_acceso')
+          .limit(1)
+          .maybeSingle();
+        if (cData?.codigo_acceso) {
+          coachData = cData;
+          dbAccessCode = cData.codigo_acceso;
+        }
+      } catch {}
+    }
+
+    // 2. Comparar estrictamente contra el valor real devuelto por la base de datos
+    if (dbAccessCode) {
+      const cleanDbCode = String(dbAccessCode).trim().toUpperCase();
+      if (cleanCode === cleanDbCode) {
+        try { localStorage.setItem('coach_access_code', cleanDbCode); } catch {}
+        return {
+          valid: true,
+          coachId: coachData?.id || '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86',
+          coachName: coachData?.nombre || 'Esteban Correa',
+          code: cleanCode
+        };
+      } else {
+        throw new Error('Código de 4 dígitos incorrecto. Solicítaselo a tu entrenador Esteban Correa.');
+      }
+    }
+
+    // 3. Fallback de contingencia solo si la base de datos no pudo ser contactada (ej. sin conexión a internet)
+    const storedCoachCode = typeof window !== 'undefined' ? (localStorage.getItem('coach_access_code') || '').trim().toUpperCase() : null;
     if (storedCoachCode && storedCoachCode === cleanCode) {
       return {
         valid: true,
-        coachId: '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86',
-        coachName: 'Esteban Correa',
+        coachId: coachData?.id || '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86',
+        coachName: coachData?.nombre || 'Esteban Correa',
         code: cleanCode
       };
     }
@@ -452,7 +499,8 @@ export async function saveCoachProfile(current, form) {
   // Metadatos de Auth (sin la foto en base64: viajaría dentro del JWT)
   const meta = {
     nombre: form.nombre, telefono: form.telefono, slogan: form.slogan,
-    biografia: form.biografia, estudios: form.estudios
+    biografia: form.biografia, estudios: form.estudios,
+    certifications: form.certifications
   };
   if (form.avatar_url && !form.avatar_url.startsWith('data:')) meta.avatar_url = form.avatar_url;
 
@@ -484,6 +532,7 @@ export async function saveCoachProfile(current, form) {
         bio: form.biografia || form.bio,
         slogan: form.slogan,
         estudios: form.estudios,
+        certifications: form.certifications,
         updated_at: new Date().toISOString()
       };
 

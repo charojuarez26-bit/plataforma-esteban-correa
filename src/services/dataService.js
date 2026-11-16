@@ -183,6 +183,8 @@ export function formatRoutineWithDays(rawRoutine) {
         peso_raw: re.peso_sugerido,
         descanso_seg: re.descanso_segundos || 90,
         descanso_segundos: re.descanso_segundos || 90,
+        recommended_intensity: re.recommended_intensity || re.intensidad_recomendada || re.intensidad || '',
+        intensidad_recomendada: re.recommended_intensity || re.intensidad_recomendada || re.intensidad || '',
         orden: re.orden || 1
       });
     });
@@ -212,7 +214,12 @@ export function formatRoutineWithDays(rawRoutine) {
     if (wNum > maxWeek) maxWeek = wNum;
     return {
       ...d,
-      week_number: wNum
+      week_number: wNum,
+      ejercicios: (d.ejercicios || []).map(ex => ({
+        ...ex,
+        recommended_intensity: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || '',
+        intensidad_recomendada: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || ''
+      }))
     };
   });
 
@@ -1860,6 +1867,8 @@ export const dataService = {
             peso_raw: item.peso_sugerido !== null && item.peso_sugerido !== undefined ? item.peso_sugerido : item.peso,
             descanso_seg: parseInt(item.descanso_seg || item.descanso_segundos || 90, 10),
             descanso_segundos: parseInt(item.descanso_seg || item.descanso_segundos || 90, 10),
+            recommended_intensity: item.recommended_intensity || item.intensidad_recomendada || item.intensidad || '',
+            intensidad_recomendada: item.recommended_intensity || item.intensidad_recomendada || item.intensidad || '',
             orden: item.orden || exIdx + 1
           };
         });
@@ -2694,15 +2703,36 @@ export const dataService = {
           prescribed_weight: toFloat(ex.prescribed_weight ?? ex.peso_sugerido ?? ex.peso),
           actual_sets: toInt(ex.actual_sets ?? ex.series_reales ?? ex.series),
           actual_reps: toInt(ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones),
-          actual_weight: toFloat(ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido)
+          actual_weight: toFloat(ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido),
+          actual_intensity: ex.actual_intensity ? String(ex.actual_intensity).trim() : null,
+          recommended_intensity: (ex.recommended_intensity || ex.intensidad_recomendada) ? String(ex.recommended_intensity || ex.intensidad_recomendada).trim() : null
         }));
 
-        const { data: exData, error: exercisesError } = await withAuthRetry(() =>
+        let { data: exData, error: exercisesError } = await withAuthRetry(() =>
           supabase
             .from('session_exercise_logs')
             .insert(exerciseRows)
             .select()
         );
+
+        // Fallback preventivo si la migración de actual_intensity aún no se ejecutó en Supabase
+        if (exercisesError && (exercisesError.code === '42703' || exercisesError.message?.includes('actual_intensity') || exercisesError.message?.includes('recommended_intensity'))) {
+          console.warn('[DataService] Columna actual_intensity aún no migrada en session_exercise_logs. Reintentando inserción básica...');
+          const basicRows = exerciseRows.map(r => {
+            const copy = { ...r };
+            delete copy.actual_intensity;
+            delete copy.recommended_intensity;
+            return copy;
+          });
+          const retry = await withAuthRetry(() =>
+            supabase
+              .from('session_exercise_logs')
+              .insert(basicRows)
+              .select()
+          );
+          exData = retry.data;
+          exercisesError = retry.error;
+        }
 
         if (exercisesError) {
           console.error('[DataService] Error insertando session_exercise_logs:', exercisesError);

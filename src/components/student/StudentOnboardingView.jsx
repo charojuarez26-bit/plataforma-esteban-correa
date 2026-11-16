@@ -20,7 +20,8 @@ import {
   KeyRound,
   Activity,
   HeartPulse,
-  ShieldCheck
+  ShieldCheck,
+  MessageCircle
 } from 'lucide-react';
 
 const OBJETIVOS_LISTA = [
@@ -72,6 +73,37 @@ export default function StudentOnboardingView({
   const [resolvedCoachId, setResolvedCoachId] = useState(student?.coach_id || '7e2d4c88-8e3e-4ef6-bcbb-7fc46e582d86');
   const [resolvedCoachName, setResolvedCoachName] = useState('Esteban Correa');
   const [resolvedClientId, setResolvedClientId] = useState(student?.id || '');
+
+  // Teléfono dinámico del entrenador para ayuda por WhatsApp
+  const [coachPhone, setCoachPhone] = useState(() => {
+    try {
+      return localStorage.getItem('coach_phone') || null;
+    } catch {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    async function loadCoach() {
+      try {
+        const { data } = await supabase.from('coaches').select('telefono, whatsapp, nombre').limit(1).maybeSingle();
+        if (data?.telefono) {
+          setCoachPhone(data.telefono);
+          try { localStorage.setItem('coach_phone', data.telefono); } catch {}
+        }
+      } catch (err) {
+        console.warn('[StudentOnboardingView] Error fetching coach phone:', err);
+      }
+    }
+    loadCoach();
+  }, []);
+
+  // Sanitización universal del teléfono del entrenador
+  const rawPhone = coachPhone || (typeof window !== 'undefined' ? (localStorage.getItem('coach_phone') || localStorage.getItem('coach_whatsapp')) : '') || '';
+  let cleanCoachPhone = rawPhone.replace(/\D/g, '');
+  if (cleanCoachPhone && cleanCoachPhone.length === 10 && !cleanCoachPhone.startsWith('54')) {
+    cleanCoachPhone = `549${cleanCoachPhone}`;
+  }
 
   // Paso 1: Datos Personales
   const [formData, setFormData] = useState({
@@ -561,9 +593,22 @@ export default function StudentOnboardingView({
             </div>
 
             {pinError && (
-              <div className="mb-5 p-3.5 rounded-xl bg-red-950/70 border border-red-500/50 text-red-300 text-xs sm:text-sm flex items-start gap-2.5 animate-shake shadow-md">
-                <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
-                <span className="font-semibold leading-tight">{pinError}</span>
+              <div className="mb-5 p-3.5 rounded-xl bg-red-950/70 border border-red-500/50 text-red-300 text-xs sm:text-sm flex flex-col gap-2 animate-shake shadow-md">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+                  <span className="font-semibold leading-tight">{pinError}</span>
+                </div>
+                {cleanCoachPhone && (
+                  <a
+                    href={`https://wa.me/${cleanCoachPhone}?text=${encodeURIComponent('Hola Esteban, no reconozco mi código de acceso para ingresar a mi cuenta de alumno.')}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 font-bold underline pl-6 transition-colors"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>Pedir mi código a mi entrenador por WhatsApp</span>
+                  </a>
+                )}
               </div>
             )}
 
@@ -605,6 +650,20 @@ export default function StudentOnboardingView({
                   </>
                 )}
               </button>
+
+              {cleanCoachPhone && (
+                <div className="pt-2 text-center">
+                  <a
+                    href={`https://wa.me/${cleanCoachPhone}?text=${encodeURIComponent('Hola Esteban, ¿cuál es mi código de 4 dígitos para ingresar al portal?')}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-emerald-400 transition-colors"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>¿No tienes tu código? Pídelo por WhatsApp</span>
+                  </a>
+                </div>
+              )}
 
               {onBackToLogin && (
                 <div className="pt-2 text-center">

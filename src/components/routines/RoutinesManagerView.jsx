@@ -264,7 +264,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
           series: parseInt(e.series, 10) || 4,
           repeticiones: e.repeticiones || '10-12',
           peso_sugerido: e.peso_raw !== null && e.peso_raw !== undefined ? e.peso_raw : (e.peso_sugerido || ''),
-          descanso_seg: e.descanso_seg || e.descanso_segundos || 90
+          descanso_seg: e.descanso_seg || e.descanso_segundos || 90,
+          recommended_intensity: e.recommended_intensity || e.intensidad_recomendada || e.intensidad || ''
         }))
       };
     });
@@ -562,7 +563,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       series: exercise.series || 4,
       repeticiones: exercise.repeticiones || exercise.reps || '10-12',
       peso_sugerido: exercise.peso_sugerido || exercise.carga || 70,
-      descanso_seg: exercise.descanso_seg || exercise.descanso || 90
+      descanso_seg: exercise.descanso_seg || exercise.descanso || 90,
+      recommended_intensity: exercise.recommended_intensity || exercise.intensidad_recomendada || exercise.intensidad || ''
     };
 
     setRoutineDays(prev => 
@@ -2151,8 +2153,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                           </div>
                         </div>
 
-                        {/* Fila inferior: Grid 2 columnas en móvil, 4 en desktop */}
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-left md:text-center">
+                        {/* Fila inferior: Grid responsivo de parámetros (Series, Reps, Carga, Descanso, Intensidad) */}
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 text-left md:text-center">
                           {/* Columna 1: Series */}
                           <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
                             <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Series</span>
@@ -2165,7 +2167,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                             />
                           </div>
 
-                          {/* Columna 1: Reps */}
+                          {/* Columna 2: Reps */}
                           <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
                             <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Reps</span>
                             <input
@@ -2176,7 +2178,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                             />
                           </div>
 
-                          {/* Columna 2: Carga */}
+                          {/* Columna 3: Carga */}
                           <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
                             <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Carga (kg)</span>
                             <input
@@ -2188,7 +2190,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                             />
                           </div>
 
-                          {/* Columna 2: Descanso */}
+                          {/* Columna 4: Descanso */}
                           <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
                             <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Descanso (s)</span>
                             <input
@@ -2197,6 +2199,18 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                               value={item.descanso_seg}
                               onChange={(e) => handleUpdateExerciseParam(idx, 'descanso_seg', e.target.value)}
                               className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
+                            />
+                          </div>
+
+                          {/* Columna 5: Intensidad Recomendada */}
+                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750 col-span-2 sm:col-span-1">
+                            <span className="text-[11px] md:text-[10px] text-amber-400 uppercase font-bold block mb-1">Intensidad</span>
+                            <input
+                              type="text"
+                              placeholder="RPE 8 / RIR 2"
+                              value={item.recommended_intensity ?? item.intensidad_recomendada ?? ''}
+                              onChange={(e) => handleUpdateExerciseParam(idx, 'recommended_intensity', e.target.value)}
+                              className="w-full bg-dark-900 border border-dark-700 focus:border-amber-400 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-amber-300 min-h-[44px] md:min-h-[38px] focus:outline-none placeholder:text-zinc-600 placeholder:font-normal"
                             />
                           </div>
                         </div>

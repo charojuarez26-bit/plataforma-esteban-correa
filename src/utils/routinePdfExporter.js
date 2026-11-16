@@ -346,7 +346,11 @@ export async function exportRoutineToPdf(routine, options = {}) {
         const reps = String(item.repeticiones || item.reps || '10-12');
         const weight = formatWeight(item.peso_sugerido ?? item.peso_raw ?? item.peso ?? item.weight);
         const rest = formatRest(item.descanso_seg ?? item.descanso_segundos ?? item.descanso);
-        const notes = item.notas || item.indicaciones || item.observaciones || item.exercise?.descripcion || '—';
+        const intensity = item.recommended_intensity || item.intensidad_recomendada || '';
+        const rawNotes = item.notas || item.indicaciones || item.observaciones || item.exercise?.descripcion || '';
+        const notes = intensity 
+          ? (rawNotes ? `[${intensity}] ${rawNotes}` : `Intensidad: ${intensity}`) 
+          : (rawNotes || '—');
 
         // Identificador de columna #
         const orderLabel = blockType ? `${exIdx + 1}*` : String(exIdx + 1);
