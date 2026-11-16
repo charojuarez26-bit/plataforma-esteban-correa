@@ -32,6 +32,7 @@ export default function CoachProfileModal({ isOpen, onClose, coachProfile: propC
   if (!isOpen) return null;
 
   // 2. Obtener datos reales del Coach (NUNCA del alumno activo)
+  const isStudentObj = (obj) => Boolean(obj && (obj.role === 'student' || obj.access_code));
   const authUser = authContext?.user || null;
   const authCoach = (authUser?.role === 'coach') ? authUser : null;
 
@@ -40,7 +41,7 @@ export default function CoachProfileModal({ isOpen, onClose, coachProfile: propC
       const pub = localStorage.getItem('coach_public_profile');
       if (pub) {
         const parsed = JSON.parse(pub);
-        if (parsed && parsed.role !== 'student' && (!authUser || parsed.id !== authUser.id)) {
+        if (parsed && !isStudentObj(parsed)) {
           return parsed;
         }
       }
@@ -56,7 +57,7 @@ export default function CoachProfileModal({ isOpen, onClose, coachProfile: propC
 
   // Filtrar prop para jamás usar un objeto perteneciente al alumno
   const rawCandidate = propCoachProfile || coach;
-  const validCandidate = (rawCandidate && rawCandidate.role !== 'student' && (!authUser || rawCandidate.id !== authUser.id)) ? rawCandidate : null;
+  const validCandidate = (rawCandidate && !isStudentObj(rawCandidate)) ? rawCandidate : null;
   const coachProfile = validCandidate || authCoach || localCoach;
 
   // 3. Parseo seguro de 'estudios' (Capacitaciones)
