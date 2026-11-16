@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useAuth } from '../../context/AuthContext';
 import BrandLogo, { MotivationalSlogan } from '../common/BrandLogo';
 import { 
   Dumbbell, 
@@ -28,8 +29,14 @@ import {
   Lock,
   HeartPulse,
   Timer,
-  X
+  X,
+  Share2,
+  Download,
+  Loader2,
+  FileDown
 } from 'lucide-react';
+import { generateWorkoutSummaryImage } from '../../utils/workoutShareCard';
+import { exportRoutineToPdf } from '../../utils/routinePdfExporter';
 import { 
   LineChart, 
   Line, 
@@ -76,7 +83,23 @@ function calculateCurrentWeekNumber(startDateStr, totalWeeks = 1) {
 }
 
 export default function StudentPortal({ student, onLogout }) {
-  const [currentStudent, setCurrentStudent] = useState(student);
+  const authContext = useAuth ? useAuth() : null;
+  const authUser = authContext?.user || null;
+  const [currentStudent, setCurrentStudent] = useState(student || authUser);
+
+  useEffect(() => {
+    if (student) {
+      setCurrentStudent(student);
+    } else if (authUser) {
+      setCurrentStudent(authUser);
+    }
+  }, [student, authUser]);
+
+  const activeStudent = currentStudent || student || authUser || {};
+  const userName = activeStudent?.nombre_completo || activeStudent?.nombre || authUser?.nombre_completo || authUser?.user_metadata?.nombre_completo || authUser?.email || 'Atleta';
+  const firstName = userName ? userName.split(' ')[0] : 'Atleta';
+  const accessCode = activeStudent?.access_code || 'ACTIVO';
+
   const [currentPlan, setCurrentPlan] = useState(null);
   const [activeSection, setActiveSection] = useState('home'); // 'home' | 'routine' | 'progress' | 'plan' | 'salud'
   const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
@@ -113,6 +136,17 @@ export default function StudentPortal({ student, onLogout }) {
   const [completedSessionsToday, setCompletedSessionsToday] = useState([]);
   const [entrenamientosDeHoy, setEntrenamientosDeHoy] = useState([]);
   const [sessionComments, setSessionComments] = useState('');
+
+  // Modal de Resumen y Compartir en Stories (HTML5 Canvas 9:16)
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [isGeneratingShareImage, setIsGeneratingShareImage] = useState(false);
+  const [shareImageData, setShareImageData] = useState(null); // { blob, file, dataUrl }
+  const [shareFeedback, setShareFeedback] = useState(null);
+
+  // Exportación / Descarga de Rutina a PDF (A4)
+  const [isExportingRoutinePdf, setIsExportingRoutinePdf] = useState(false);
+  const [showRoutinePdfModal, setShowRoutinePdfModal] = useState(false);
+  const [pdfRoutineFeedback, setPdfRoutineFeedback] = useState(null);
 
   // Auto-Rest Timer con Feedback Nativo (Vibración y Sonido)
   const [restTimer, setRestTimer] = useState(0);
@@ -189,21 +223,23 @@ export default function StudentPortal({ student, onLogout }) {
 
   useEffect(() => {
     loadStudentData();
-  }, [student]);
+  }, [student, authUser]);
 
   const loadStudentData = async () => {
-    if (!student) return;
-    const r = await dataService.getRoutineForClient(student.id);
-    const ev = await dataService.getEvaluations(student.id);
-    const p = await dataService.getPayments(student.id);
-    const studentPayments = (Array.isArray(p) ? p : []).filter(item => !item.client_id || item.client_id === student.id || item.client_name === student.nombre_completo);
+    const target = currentStudent || student || authUser;
+    if (!target?.id) return;
+    const studentId = target.id;
+    const r = await dataService.getRoutineForClient(studentId);
+    const ev = await dataService.getEvaluations(studentId);
+    const p = await dataService.getPayments(studentId);
+    const studentPayments = (Array.isArray(p) ? p : []).filter(item => !item.client_id || item.client_id === studentId || item.client_name === target.nombre_completo);
 
     setRoutine(r);
     setEvaluations(ev);
     setPayments(studentPayments);
 
     try {
-      const sLogs = await dataService.getClientSessionLogs(student.id);
+      const sLogs = await dataService.getClientSessionLogs(studentId);
       setStudentSessionLogs(sLogs || []);
     } catch (errLogs) {
       console.warn('Error cargando historial de sesiones del alumno:', errLogs);
@@ -211,8 +247,8 @@ export default function StudentPortal({ student, onLogout }) {
 
     // Cargar ficha médica directamente desde Supabase sin confiar en flags ficticios
     try {
-      if (student?.id) {
-        const cleanStudentId = String(student.id).trim();
+      if (studentId) {
+        const cleanStudentId = String(studentId).trim();
         const { data: fichaReal, error: fichaError } = await supabase
           .from('medical_records')
           .select('*')
@@ -248,7 +284,7 @@ export default function StudentPortal({ student, onLogout }) {
     setBankDetails(banks);
 
     // 1. Verificar si el campo fecha_inicio / fecha_inicio_rutina ya está definido
-    let sDate = student.fecha_inicio || student.fecha_inicio_rutina;
+    let sDate = target.fecha_inicio || target.fecha_inicio_rutina;
 
     // Si no está en el prop, consultar en Supabase
     if (!sDate) {
@@ -256,7 +292,7 @@ export default function StudentPortal({ student, onLogout }) {
         const { data: dbClient } = await supabase
           .from('clients')
           .select('fecha_inicio, fecha_inicio_rutina')
-          .eq('id', student.id)
+          .eq('id', studentId)
           .maybeSingle();
 
         if (dbClient) {
@@ -268,7 +304,7 @@ export default function StudentPortal({ student, onLogout }) {
     }
 
     if (!sDate) {
-      sDate = await dataService.getRoutineStartDate(student.id);
+      sDate = await dataService.getRoutineStartDate(studentId);
     }
     if (!sDate) {
       try {
@@ -280,14 +316,16 @@ export default function StudentPortal({ student, onLogout }) {
       } catch {}
     }
     if (!sDate) {
-      sDate = localStorage.getItem(`ec_routine_start_${student.id}`);
+      sDate = localStorage.getItem(`ec_routine_start_${studentId}`);
     }
 
     if (sDate) {
       const normalized = String(sDate).split('T')[0];
       setStartDate(normalized);
-      student.fecha_inicio = normalized;
-      student.fecha_inicio_rutina = normalized;
+      if (student) {
+        student.fecha_inicio = normalized;
+        student.fecha_inicio_rutina = normalized;
+      }
       setShowStartDateModal(false);
 
       // Sincronizar alumno_session para que no se pierda al recargar
@@ -324,7 +362,7 @@ export default function StudentPortal({ student, onLogout }) {
         const { data: entrenamientosDeHoyData, error: errSessions } = await supabase
           .from('training_sessions')
           .select('*')
-          .eq('client_id', student.id)
+          .eq('client_id', studentId)
           .gte('created_at', hoy.toISOString());
 
         if (!errSessions && Array.isArray(entrenamientosDeHoyData)) {
@@ -335,7 +373,7 @@ export default function StudentPortal({ student, onLogout }) {
       }
 
       // Cargar sesiones históricas generales (incluye almacenamiento local y remoto)
-      const allSessions = await dataService.getTrainingSessionsForClient(student.id);
+      const allSessions = await dataService.getTrainingSessionsForClient(studentId);
       setTrainingSessions(allSessions || []);
 
       // Si por conectividad o caché local existen sesiones de hoy en allSessions, consolidarlas
@@ -356,7 +394,8 @@ export default function StudentPortal({ student, onLogout }) {
   };
 
   const handleConfirmStartDate = async () => {
-    if (!chosenStartDate) return;
+    const activeStudentId = activeStudent.id || student?.id || currentStudent?.id || authUser?.id;
+    if (!chosenStartDate || !activeStudentId) return;
     setIsSavingStartDate(true);
     try {
       // 1. Formato ISO estricto YYYY-MM-DD
@@ -379,15 +418,15 @@ export default function StudentPortal({ student, onLogout }) {
           fecha_inicio: isoDate,
           fecha_inicio_rutina: isoDate
         })
-        .eq('id', student.id);
+        .eq('id', activeStudentId);
 
       // Si falla por columna no existente en schema cache (PGRST204), intentar individualmente
       if (error && (error.code === 'PGRST204' || error.message?.includes('column'))) {
         try {
-          await supabase.from('clients').update({ fecha_inicio: isoDate }).eq('id', student.id);
+          await supabase.from('clients').update({ fecha_inicio: isoDate }).eq('id', activeStudentId);
         } catch {}
         try {
-          await supabase.from('clients').update({ fecha_inicio_rutina: isoDate }).eq('id', student.id);
+          await supabase.from('clients').update({ fecha_inicio_rutina: isoDate }).eq('id', activeStudentId);
         } catch {}
       }
 
@@ -396,15 +435,17 @@ export default function StudentPortal({ student, onLogout }) {
       setStartDate(isoDate);
 
       // 4. Actualizar referencias en memoria
-      student.fecha_inicio = isoDate;
-      student.fecha_inicio_rutina = isoDate;
+      if (student) {
+        student.fecha_inicio = isoDate;
+        student.fecha_inicio_rutina = isoDate;
+      }
       setCurrentStudent(prev => prev ? { ...prev, fecha_inicio: isoDate, fecha_inicio_rutina: isoDate } : prev);
 
       // 5. Persistir en dataService y almacenamiento local para que no vuelva a abrir al recargar
-      await dataService.updateRoutineStartDate(student.id, isoDate);
+      await dataService.updateRoutineStartDate(activeStudentId, isoDate);
 
       try {
-        localStorage.setItem(`ec_routine_start_${student.id}`, isoDate);
+        localStorage.setItem(`ec_routine_start_${activeStudentId}`, isoDate);
         const alumnoRaw = localStorage.getItem('alumno_session');
         const sessionObj = alumnoRaw ? JSON.parse(alumnoRaw) : (student || {});
         sessionObj.fecha_inicio = isoDate;
@@ -586,12 +627,189 @@ export default function StudentPortal({ student, onLogout }) {
       setCompletedSessionsToday(prev => [...prev, dayId, dayLabel, currentDay.dia].filter(Boolean));
       setSessionComments('');
       setShowFinishConfirmModal(false);
-      setShowFinishSuccessModal(true);
+      // Abrir modal de celebración con la tarjeta personalizada para Stories
+      handleOpenShareSummaryModal();
     } catch (err) {
       console.error('Error al registrar finalización de entreno:', err);
       alert('Hubo un error al registrar el entreno.');
     } finally {
       setIsFinishingWorkout(false);
+    }
+  };
+
+  const handleOpenShareSummaryModal = async () => {
+    if (!currentDay) return;
+    setShowShareModal(true);
+    setIsGeneratingShareImage(true);
+    setShareFeedback(null);
+
+    try {
+      // 1. Mapear datos ejecutados de cada ejercicio del día
+      let totalCompletedSetsCount = 0;
+      let totalCalculatedVolume = 0;
+      let totalCalculatedReps = 0;
+      let completedExercisesNum = 0;
+
+      const exercisesSummary = (currentDay.ejercicios || []).map((item) => {
+        const itemSets = Math.max(1, parseInt(item.series, 10) || 1);
+        let completedInThisExercise = 0;
+        let maxWeight = 0;
+        let lastReps = 0;
+
+        for (let sIdx = 0; sIdx < itemSets; sIdx++) {
+          const isDone = Boolean(completedSets[`${item.id}-${sIdx}`]);
+          if (isDone || isReadOnly) {
+            completedInThisExercise++;
+            totalCompletedSetsCount++;
+
+            const setPesoInput = exerciseLogs[`${item.id}_set_${sIdx}_peso`];
+            const setRepsInput = exerciseLogs[`${item.id}_set_${sIdx}_reps`];
+            const weightVal = (setPesoInput !== undefined && setPesoInput !== '')
+              ? parseFloat(setPesoInput)
+              : ((exerciseLogs[`${item.id}_peso`] !== undefined && exerciseLogs[`${item.id}_peso`] !== '')
+                ? parseFloat(exerciseLogs[`${item.id}_peso`])
+                : (parseFloat(item.peso_sugerido) || 0));
+
+            const repsVal = (setRepsInput !== undefined && setRepsInput !== '')
+              ? parseInt(setRepsInput, 10)
+              : ((exerciseLogs[`${item.id}_reps`] !== undefined && exerciseLogs[`${item.id}_reps`] !== '')
+                ? parseInt(exerciseLogs[`${item.id}_reps`], 10)
+                : (parseInt(String(item.repeticiones || '10').replace(/\D/g, ''), 10) || 10));
+
+            if (!isNaN(weightVal) && weightVal > 0) {
+              if (weightVal > maxWeight) maxWeight = weightVal;
+              totalCalculatedVolume += (weightVal * repsVal);
+            }
+            if (!isNaN(repsVal) && repsVal > 0) {
+              lastReps = repsVal;
+              totalCalculatedReps += repsVal;
+            }
+          }
+        }
+
+        if (completedInThisExercise > 0 || isReadOnly) {
+          completedExercisesNum++;
+        }
+
+        const effectiveSets = completedInThisExercise > 0 ? completedInThisExercise : itemSets;
+        const effectiveReps = lastReps > 0 ? lastReps : (item.repeticiones || '10-12');
+
+        return {
+          name: item.exercise?.nombre || 'Ejercicio',
+          muscleGroup: item.exercise?.grupo_muscular || '',
+          totalSets: effectiveSets,
+          reps: effectiveReps,
+          weight: maxWeight > 0 ? maxWeight : (item.peso_sugerido || null)
+        };
+      });
+
+      // Si por modo read-only no había completedSets en memoria (ej: sesión cargada anteriormente en el día)
+      if (totalCompletedSetsCount === 0) {
+        totalCompletedSetsCount = (currentDay.ejercicios || []).reduce((acc, it) => acc + (parseInt(it.series, 10) || 4), 0);
+        completedExercisesNum = currentDay.ejercicios?.length || 0;
+      }
+
+      const workoutSummaryData = {
+        studentName: currentStudent?.nombre_completo || student?.nombre_completo || 'Atleta',
+        routineName: routine?.nombre || 'Rutina Personalizada',
+        dayName: currentDay.dia || `Día ${selectedDayIndex + 1}`,
+        weekNumber: routine?.total_weeks > 1 ? selectedWeek : null,
+        exercises: exercisesSummary,
+        totalSets: totalCompletedSetsCount,
+        completedExercisesCount: completedExercisesNum || currentDay.ejercicios?.length || 0,
+        totalExercisesCount: currentDay.ejercicios?.length || 0,
+        totalVolumeKg: totalCalculatedVolume,
+        totalReps: totalCalculatedReps
+      };
+
+      const generated = await generateWorkoutSummaryImage(workoutSummaryData);
+      setShareImageData(generated);
+    } catch (err) {
+      console.error('Error generando tarjeta de entrenamiento:', err);
+      setShareFeedback('No se pudo generar la imagen. Inténtalo nuevamente.');
+    } finally {
+      setIsGeneratingShareImage(false);
+    }
+  };
+
+  const handleNativeShare = async () => {
+    if (!shareImageData?.file) return;
+
+    try {
+      if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [shareImageData.file] })) {
+        await navigator.share({
+          files: [shareImageData.file],
+          title: 'Entrenamiento Completado - Esteban Correa Trainer',
+          text: `¡Entrenamiento completado hoy con Esteban Correa Personal Trainer! 💪🔥`
+        });
+        setShareFeedback('¡Compartido con éxito!');
+        setTimeout(() => setShareFeedback(null), 3000);
+      } else {
+        // Fallback: descargar directamente si el navegador no soporta Web Share API con archivos
+        handleDownloadImage();
+        setShareFeedback('Tu navegador no soporta compartir directo. ¡Imagen descargada para que la subas a Stories!');
+        setTimeout(() => setShareFeedback(null), 4000);
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.warn('Error en navigator.share:', err);
+        handleDownloadImage();
+      }
+    }
+  };
+
+  const handleDownloadImage = () => {
+    if (!shareImageData?.dataUrl) return;
+
+    try {
+      const link = document.createElement('a');
+      link.href = shareImageData.dataUrl;
+      link.download = `entrenamiento-esteban-correa-${new Date().toISOString().split('T')[0]}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setShareFeedback('¡Imagen descargada con éxito!');
+      setTimeout(() => setShareFeedback(null), 3000);
+    } catch (err) {
+      console.error('Error descargando imagen:', err);
+    }
+  };
+
+  const handleDownloadRoutinePdf = async (exportAll = true) => {
+    if (!routine) return;
+    try {
+      setIsExportingRoutinePdf(true);
+      setPdfRoutineFeedback('Generando PDF de tu rutina...');
+      const studentName = currentStudent?.nombre_completo || student?.nombre_completo || 'Alumno';
+
+      await exportRoutineToPdf(routine, {
+        studentName,
+        selectedWeek: selectedWeek || 1,
+        exportAllWeeks: exportAll
+      });
+
+      setPdfRoutineFeedback('¡PDF descargado con éxito!');
+      setTimeout(() => setPdfRoutineFeedback(null), 3000);
+      setShowRoutinePdfModal(false);
+    } catch (err) {
+      console.error('Error generando PDF de rutina:', err);
+      setPdfRoutineFeedback('No se pudo generar el PDF.');
+      setTimeout(() => setPdfRoutineFeedback(null), 3500);
+    } finally {
+      setIsExportingRoutineRoutinePdfSafe();
+    }
+  };
+
+  const setIsExportingRoutineRoutinePdfSafe = () => {
+    setIsExportingRoutinePdf(false);
+  };
+
+  const handleOpenPdfOptionsOrDownload = () => {
+    if (!routine) return;
+    if (totalWeeks > 1) {
+      setShowRoutinePdfModal(true);
+    } else {
+      handleDownloadRoutinePdf(true);
     }
   };
 
@@ -602,13 +820,13 @@ export default function StudentPortal({ student, onLogout }) {
     setTimeout(() => setCopiedKey(null), 2500);
   };
 
-  const estadoPago = calcularEstadoPago(currentStudent);
-  const configPago = getEstadoPagoConfig(estadoPago, currentStudent);
-  const diffDias = diasRestantesParaVencimiento(currentStudent.fecha_vencimiento);
+  const estadoPago = calcularEstadoPago(activeStudent);
+  const configPago = getEstadoPagoConfig(estadoPago, activeStudent);
+  const diffDias = diasRestantesParaVencimiento(activeStudent?.fecha_vencimiento);
 
   // Verificación estricta de cuota activa y vigente con normalización local
   const hoyFecha = normalizarFechaLocal(new Date().toISOString().split('T')[0]);
-  const vencFecha = normalizarFechaLocal(currentStudent?.fecha_vencimiento);
+  const vencFecha = normalizarFechaLocal(activeStudent?.fecha_vencimiento);
   const tieneAccesoActivo = Boolean(vencFecha && vencFecha.getTime() >= hoyFecha.getTime());
 
   const coachPhone = import.meta.env.VITE_COACH_WHATSAPP || bankDetails?.telefono || '5491155550199';
@@ -617,8 +835,8 @@ export default function StudentPortal({ student, onLogout }) {
     cleanCoachPhone = `549${cleanCoachPhone}`;
   }
 
-  const whatsappUrl = `https://wa.me/${cleanCoachPhone}?text=Hola%20Esteban,%20soy%20${encodeURIComponent(currentStudent.nombre_completo)}%20(C%C3%B3digo:%20${currentStudent.access_code}).%20Te%20escribo%20por%20mi%20entrenamiento!`;
-  const msgComprobante = `¡Hola Esteban! Ya realicé la transferencia de mi cuota de ${currentStudent.plan_actual || 'entrenamiento'}. Te adjunto el comprobante por acá. Alumno: ${currentStudent.nombre_completo}`;
+  const whatsappUrl = `https://wa.me/${cleanCoachPhone}?text=Hola%20Esteban,%20soy%20${encodeURIComponent(userName)}%20(C%C3%B3digo:%20${accessCode}).%20Te%20escribo%20por%20mi%20entrenamiento!`;
+  const msgComprobante = `¡Hola Esteban! Ya realicé la transferencia de mi cuota de ${activeStudent?.plan_actual || 'entrenamiento'}. Te adjunto el comprobante por acá. Alumno: ${userName}`;
   const comprobanteWhatsAppUrl = `https://wa.me/${cleanCoachPhone}?text=${encodeURIComponent(msgComprobante)}`;
 
   return (
@@ -649,7 +867,7 @@ export default function StudentPortal({ student, onLogout }) {
             <Info className="w-4 h-4 text-brand-light" />
           </button>
           <span className="text-[11px] font-mono font-bold px-2 py-1 rounded bg-brand/20 text-brand-light border border-brand/30">
-            {student.access_code}
+            {accessCode}
           </span>
           <button
             onClick={onLogout}
@@ -675,23 +893,23 @@ export default function StudentPortal({ student, onLogout }) {
                     <Flame className="w-3.5 h-3.5" /> Atleta EC
                   </span>
                   <h1 className="text-xl sm:text-2xl font-black text-white">
-                    ¡Hola, {student.nombre_completo.split(' ')[0]}!
+                    ¡Hola, {firstName}!
                   </h1>
                   <MotivationalSlogan className="mt-1" />
                 </div>
                 <ClientAvatar
-                  client={student}
+                  client={activeStudent}
                   size="xl"
                   showStatus={true}
-                  status={student.estado || 'Activo'}
+                  status={activeStudent.estado || 'Activo'}
                   className="shrink-0 border-2 border-brand/60 shadow-glow-red/30"
                 />
               </div>
 
               <div className="mt-3.5 pt-2.5 border-t border-white/10 flex items-center justify-between text-xs text-gray-300">
-                <span className="truncate max-w-[65%]">🎯 {student.objetivo}</span>
+                <span className="truncate max-w-[65%]">🎯 {activeStudent.objetivo || 'Acondicionamiento Físico'}</span>
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-emerald-400 font-bold">{student.estado || 'Activo'}</span>
+                  <span className="text-emerald-400 font-bold">{activeStudent.estado || 'Activo'}</span>
                   <button
                     onClick={onLogout}
                     title="Cerrar sesión en este dispositivo"
@@ -1083,19 +1301,19 @@ export default function StudentPortal({ student, onLogout }) {
                 <div className="grid grid-cols-2 gap-2 text-xs text-zinc-300">
                   <div>
                     <span className="text-zinc-500 block text-[10px]">Frecuencia:</span>
-                    <span className="font-bold text-white">{student.dias_por_semana || 3} días por semana</span>
+                    <span className="font-bold text-white">{activeStudent.dias_por_semana || 3} días por semana</span>
                   </div>
                   <div>
                     <span className="text-zinc-500 block text-[10px]">Planificación:</span>
-                    <span className="font-bold text-white">{student.tipo_planificacion || 'Semanal'}</span>
+                    <span className="font-bold text-white">{activeStudent.tipo_planificacion || 'Semanal'}</span>
                   </div>
                   <div>
                     <span className="text-zinc-500 block text-[10px]">Duración:</span>
-                    <span className="font-bold text-white">{student.duracion_sesion_min || 60} min por sesión</span>
+                    <span className="font-bold text-white">{activeStudent.duracion_sesion_min || 60} min por sesión</span>
                   </div>
                   <div>
                     <span className="text-zinc-500 block text-[10px]">Objetivo:</span>
-                    <span className="font-bold text-brand-light truncate block">{student.objetivo || 'Acondicionamiento'}</span>
+                    <span className="font-bold text-brand-light truncate block">{activeStudent.objetivo || 'Acondicionamiento'}</span>
                   </div>
                 </div>
               </div>
@@ -1110,13 +1328,39 @@ export default function StudentPortal({ student, onLogout }) {
             </div>
           ) : (
             <div className="space-y-4">
-              <div>
-                <h2 className="text-xl font-black text-white flex items-center gap-2">
-                  <Dumbbell className="w-5 h-5 text-brand" />
-                  {routine.nombre}
-                </h2>
-                <p className="text-xs text-gray-400 mt-0.5">{routine.objetivo || routine.descripcion || 'Sin descripción adicional'}</p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-black text-white flex items-center gap-2">
+                    <Dumbbell className="w-5 h-5 text-brand" />
+                    {routine.nombre}
+                  </h2>
+                  <p className="text-xs text-gray-400 mt-0.5">{routine.objetivo || routine.descripcion || 'Sin descripción adicional'}</p>
+                </div>
+
+                <div className="flex items-center gap-2 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    disabled={isExportingRoutinePdf}
+                    onClick={handleOpenPdfOptionsOrDownload}
+                    className="px-3.5 py-2 rounded-xl bg-dark-900 hover:bg-dark-800 border border-dark-700 hover:border-brand/40 text-gray-200 hover:text-white font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-md active:scale-95 disabled:opacity-50"
+                    title="Descargar rutina en formato PDF (A4) lista para imprimir"
+                  >
+                    {isExportingRoutinePdf ? (
+                      <Loader2 className="w-4 h-4 text-brand animate-spin" />
+                    ) : (
+                      <FileDown className="w-4 h-4 text-brand-light" />
+                    )}
+                    <span>{isExportingRoutinePdf ? 'Generando...' : 'Descargar PDF'}</span>
+                  </button>
+                </div>
               </div>
+
+              {pdfRoutineFeedback && (
+                <div className="text-xs font-semibold text-brand-light bg-brand/10 border border-brand/20 px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-brand" />
+                  <span>{pdfRoutineFeedback}</span>
+                </div>
+              )}
 
               {/* Ficha del Esquema Semanal / Mensual del Alumno */}
               <div className="p-3.5 rounded-xl bg-dark-900 border border-dark-700/80 flex items-center justify-between gap-3 text-xs">
@@ -1131,12 +1375,12 @@ export default function StudentPortal({ student, onLogout }) {
                         ? 'Plan Trimestral (12 sem)'
                         : (routine.duration_type === 'monthly' || totalWeeks === 4)
                           ? 'Plan Mensual (4 sem)'
-                          : `Plan ${student.tipo_planificacion || 'Semanal'}`} • {currentWeekDays.length} días de entreno
+                          : `Plan ${activeStudent.tipo_planificacion || 'Semanal'}`} • {currentWeekDays.length} días de entreno
                     </p>
                   </div>
                 </div>
                 <span className="px-2.5 py-1 rounded-lg bg-brand/15 text-brand-light font-bold text-[11px] border border-brand/20 shrink-0">
-                  ⏱️ {student.duracion_sesion_min || 60} min
+                  ⏱️ {activeStudent.duracion_sesion_min || 60} min
                 </span>
               </div>
 
@@ -1239,14 +1483,24 @@ export default function StudentPortal({ student, onLogout }) {
 
             {/* Feedback Visual Superior (Banner Informativo de Solo Lectura por Día Completado Hoy) */}
             {isReadOnly && (
-              <div className="bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 px-4 py-3 rounded-xl flex items-center justify-between gap-3 mb-6 text-xs sm:text-sm font-medium">
+              <div className="bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 p-3.5 sm:p-4 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6 text-xs sm:text-sm font-medium">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-400" />
                   <span>Entrenamiento finalizado. Modo solo lectura por hoy.</span>
                 </div>
-                <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-bold text-emerald-300 uppercase tracking-wider shrink-0">
-                  Completado por hoy
-                </span>
+                <div className="flex items-center gap-2 self-end sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={handleOpenShareSummaryModal}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition-all active:scale-95 cursor-pointer"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                    <span>Compartir en Stories</span>
+                  </button>
+                  <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-bold text-emerald-300 uppercase tracking-wider shrink-0">
+                    Completado
+                  </span>
+                </div>
               </div>
             )}
 
@@ -1439,16 +1693,16 @@ export default function StudentPortal({ student, onLogout }) {
                   </div>
                 ))}
 
-                {/* BOTÓN FINALIZAR Y GUARDAR SESIÓN (BLOQUEADO EN MODO SOLO LECTURA POR HOY) */}
+                {/* BOTÓN FINALIZAR Y GUARDAR SESIÓN (O COMPARTIR EN STORIES SI ESTÁ COMPLETADO) */}
                 <div className="pt-3">
                   {isReadOnly ? (
                     <button
                       type="button"
-                      disabled
-                      className="bg-emerald-950/60 border border-emerald-500/30 cursor-not-allowed w-full p-4 rounded-xl text-base sm:text-lg font-bold text-emerald-300 flex items-center justify-center gap-2 shadow-inner select-none transition-all disabled:opacity-80 disabled:cursor-not-allowed"
+                      onClick={handleOpenShareSummaryModal}
+                      className="bg-emerald-950/60 border border-emerald-500/50 hover:bg-emerald-900/60 w-full p-4 rounded-xl text-base sm:text-lg font-bold text-emerald-300 flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg active:scale-[0.98]"
                     >
-                      <CheckCircle2 className="w-6 h-6 text-emerald-400" />
-                      <span>Completado por hoy</span>
+                      <Share2 className="w-5 h-5 text-emerald-400" />
+                      <span>Compartir Resumen en Stories</span>
                     </button>
                   ) : (
                     <button
@@ -1937,26 +2191,174 @@ export default function StudentPortal({ student, onLogout }) {
         </div>
       )}
 
-      {/* 3. Modal Celebración: Entreno Completado */}
-      {showFinishSuccessModal && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-dark-900 border border-emerald-500/40 shadow-2xl p-6 text-center space-y-5 animate-in zoom-in-95">
-            <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 mx-auto animate-bounce">
-              <Sparkles className="w-8 h-8" />
+      {/* 3. Modal Celebración & Compartir en Instagram Stories */}
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="w-full max-w-sm sm:max-w-md rounded-2xl bg-dark-900 border border-emerald-500/40 shadow-2xl p-5 sm:p-6 text-center space-y-4 animate-in zoom-in-95 my-auto max-h-[95vh] flex flex-col">
+            
+            {/* Header del modal */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div className="text-left">
+                  <h3 className="text-base font-black text-white leading-tight">¡Entrenamiento Completado!</h3>
+                  <p className="text-[11px] text-emerald-300 font-medium">Tarjeta lista para Instagram Stories</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowShareModal(false)}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-white bg-dark-800 transition-colors cursor-pointer"
+                aria-label="Cerrar modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <div className="space-y-2">
-              <h3 className="text-xl font-black text-white">¡Excelente trabajo!</h3>
-              <p className="text-xs text-emerald-300 font-medium leading-relaxed">
-                Entreno completado con éxito. ¡Sigue así con esa constancia y disciplina!
-              </p>
+
+            {/* Vista Previa de la Tarjeta (Canvas 9:16) */}
+            <div className="relative flex-1 min-h-[320px] max-h-[50vh] flex items-center justify-center bg-black/40 rounded-xl border border-dark-700/80 overflow-hidden p-2">
+              {isGeneratingShareImage ? (
+                <div className="flex flex-col items-center justify-center gap-3 p-6 text-center">
+                  <Loader2 className="w-8 h-8 text-brand animate-spin" />
+                  <span className="text-xs font-semibold text-gray-300">
+                    Diseñando tarjeta Full HD para Stories...
+                  </span>
+                </div>
+              ) : shareImageData?.dataUrl ? (
+                <img
+                  src={shareImageData.dataUrl}
+                  alt="Resumen del entrenamiento"
+                  className="max-h-[48vh] w-auto object-contain rounded-lg shadow-2xl border border-white/10"
+                />
+              ) : (
+                <div className="text-xs text-gray-400 p-4">
+                  {shareFeedback || 'No se pudo generar la vista previa de la tarjeta.'}
+                </div>
+              )}
+            </div>
+
+            {/* Feedback Message */}
+            {shareFeedback && (
+              <div className="text-xs font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 py-2 px-3 rounded-lg">
+                {shareFeedback}
+              </div>
+            )}
+
+            {/* Botones de Acción */}
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                disabled={isGeneratingShareImage || !shareImageData}
+                onClick={handleNativeShare}
+                className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-black text-xs uppercase tracking-wider transition-all shadow-glow-red flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer active:scale-[0.98]"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>Compartir en Stories / Redes</span>
+              </button>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={isGeneratingShareImage || !shareImageData}
+                  onClick={handleDownloadImage}
+                  className="py-2.5 px-3 rounded-xl bg-dark-800 hover:bg-dark-700 border border-dark-700 text-gray-200 font-bold text-xs transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 text-brand-light" />
+                  <span>Descargar PNG</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowShareModal(false)}
+                  className="py-2.5 px-3 rounded-xl bg-dark-800 hover:bg-dark-700 border border-dark-700 text-gray-400 hover:text-white font-bold text-xs transition-colors cursor-pointer"
+                >
+                  Continuar
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Descargar Rutina en PDF (Multi-semana para Alumno) */}
+      {showRoutinePdfModal && routine && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full max-w-sm sm:max-w-md rounded-2xl bg-dark-900 border border-dark-700 shadow-2xl p-5 sm:p-6 space-y-4 animate-in zoom-in-95 text-left">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-brand/15 border border-brand/30 flex items-center justify-center text-brand-light">
+                  <FileDown className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">Descargar Rutina en PDF</h3>
+                  <p className="text-xs text-gray-400">Formato A4 optimizado para imprimir</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRoutinePdfModal(false)}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-white bg-dark-800 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-dark-850 border border-dark-750 text-xs space-y-1">
+              <div className="font-bold text-white text-sm">{routine.nombre}</div>
+              <div className="text-gray-400">
+                Planificación: <span className="text-brand-light font-semibold">{totalWeeks} Semanas</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-300">
+              ¿Cómo deseas descargar tu rutina?
+            </p>
+
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                disabled={isExportingRoutinePdf}
+                onClick={() => handleDownloadRoutinePdf(false)}
+                className="w-full p-3.5 rounded-xl bg-dark-800 hover:bg-dark-750 border border-dark-700 text-left transition-all flex items-center justify-between group cursor-pointer disabled:opacity-50"
+              >
+                <div>
+                  <div className="text-xs font-bold text-white group-hover:text-brand-light">
+                    Descargar solo Semana {selectedWeek}
+                  </div>
+                  <div className="text-[11px] text-gray-400">
+                    Solo las sesiones de la semana actual
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-white transition-colors" />
+              </button>
+
+              <button
+                type="button"
+                disabled={isExportingRoutinePdf}
+                onClick={() => handleDownloadRoutinePdf(true)}
+                className="w-full p-3.5 rounded-xl bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-500 hover:to-rose-600 text-white text-left transition-all flex items-center justify-between shadow-glow-red cursor-pointer disabled:opacity-50"
+              >
+                <div>
+                  <div className="text-xs font-black text-white">
+                    Descargar Plan Completo ({totalWeeks} semanas)
+                  </div>
+                  <div className="text-[11px] text-red-100">
+                    Todas las semanas en un solo documento A4
+                  </div>
+                </div>
+                <FileDown className="w-4 h-4 text-white" />
+              </button>
             </div>
 
             <button
               type="button"
-              onClick={() => setShowFinishSuccessModal(false)}
-              className="w-full py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase tracking-wider transition-colors shadow-lg shadow-emerald-950/50"
+              onClick={() => setShowRoutinePdfModal(false)}
+              className="w-full py-2.5 rounded-xl bg-transparent hover:bg-dark-800 text-gray-400 hover:text-white text-xs font-bold transition-colors cursor-pointer"
             >
-              Continuar
+              Cancelar
             </button>
           </div>
         </div>
@@ -1976,7 +2378,7 @@ export default function StudentPortal({ student, onLogout }) {
             setShowMedicalModal(false);
           }
         }}
-        clientId={student.id}
+        clientId={activeStudent?.id || student?.id}
         existingRecord={medicalRecord}
         isMandatory={isMedicalMandatory}
         onSaved={(newRec) => {

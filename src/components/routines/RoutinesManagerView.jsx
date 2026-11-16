@@ -23,8 +23,10 @@ import {
   ExternalLink,
   HeartPulse,
   Loader2,
-  Repeat
+  Repeat,
+  FileDown
 } from 'lucide-react';
+import { exportRoutineToPdf } from '../../utils/routinePdfExporter';
 import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
 import StaticGif from '../common/StaticGif';
@@ -119,6 +121,10 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   // Estados de carga y feedback
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [notification, setNotification] = useState(null); // { type: 'success' | 'error', text: '' }
+
+  // Estados para exportación a PDF
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [pdfExportTarget, setPdfExportTarget] = useState(null);
 
   // Ficha médica del alumno seleccionado
   const [selectedStudentMedical, setSelectedStudentMedical] = useState(null);
@@ -718,6 +724,61 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
   };
 
   // ==========================================================
+  // EXPORTACIÓN A PDF
+  // ==========================================================
+  const handleTriggerPdfExport = async (routineToExport, overrideOptions = {}) => {
+    if (!routineToExport) return;
+    const totWeeks = parseInt(routineToExport.total_weeks, 10) || 1;
+    const targetClient = routineToExport.client || clients.find(c => c.id === routineToExport.client_id);
+    const studentName = overrideOptions.studentName || targetClient?.nombre_completo || (routineToExport.es_plantilla ? 'Plantilla / Modelo General' : 'Alumno');
+
+    // Si la rutina contempla múltiples semanas y el usuario aún no eligió qué exportar, abrir selector rápido
+    if (totWeeks > 1 && overrideOptions.exportAllWeeks === undefined) {
+      setPdfExportTarget({
+        routine: routineToExport,
+        studentName,
+        selectedWeek: overrideOptions.selectedWeek || selectedWeek || 1,
+        totalWeeks: totWeeks
+      });
+      return;
+    }
+
+    try {
+      setIsExportingPdf(true);
+      await exportRoutineToPdf(routineToExport, {
+        studentName,
+        selectedWeek: overrideOptions.selectedWeek || 1,
+        exportAllWeeks: overrideOptions.exportAllWeeks ?? true
+      });
+      showNotification('¡Rutina exportada a PDF exitosamente!', 'success');
+    } catch (err) {
+      console.error('Error exportando PDF:', err);
+      showNotification('No se pudo generar el PDF de la rutina', 'error');
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
+  const handleTriggerPdfExportFromEditor = () => {
+    const currentEditorRoutine = {
+      nombre: routineForm.nombre?.trim() || 'Rutina en Edición',
+      descripcion: routineForm.descripcion || '',
+      duration_type: routineForm.duration_type || 'weekly',
+      total_weeks: routineForm.total_weeks || 1,
+      dias: routineDays,
+      es_plantilla: routineForm.destinatarioTipo === 'plantilla',
+      client_id: routineForm.client_id
+    };
+    const targetClient = clients.find(c => c.id === routineForm.client_id);
+    const studentName = targetClient?.nombre_completo || (routineForm.destinatarioTipo === 'plantilla' ? 'Plantilla / Modelo General' : 'Alumno');
+
+    handleTriggerPdfExport(currentEditorRoutine, {
+      studentName,
+      selectedWeek: selectedWeek || 1
+    });
+  };
+
+  // ==========================================================
   // FILTRADO DINÁMICO DE RUTINAS
   // ==========================================================
   const filteredRoutines = useMemo(() => {
@@ -1083,17 +1144,35 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                     )}
                   </div>
 
-                  {/* Resumen de Días */}
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    {(routine.dias || []).map((d, dIdx) => (
-                      <span
-                        key={d.id || `routine-${routine.id}-day-${dIdx}`}
-                        className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-dark-800 border border-dark-700 text-zinc-300"
-                      >
-                        {formatGenericDayTitle(d, dIdx)} ({d.ejercicios?.length || 0})
-                      </span>
-                    ))}
-                  </div>
+                  {/* Resumen de Días (Truncado a máx 12 con badge de restantes para altura uniforme) */}
+                  {(() => {
+                    const allDays = routine.dias || [];
+                    const maxVisibleDays = 12;
+                    const visibleDays = allDays.slice(0, maxVisibleDays);
+                    const remainingDaysCount = allDays.length - maxVisibleDays;
+
+                    return (
+                      <div className="mt-3 flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar">
+                        {visibleDays.map((d, dIdx) => (
+                          <span
+                            key={d.id || `routine-${routine.id}-day-${dIdx}`}
+                            className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-dark-800 border border-dark-700 text-zinc-300 shrink-0"
+                          >
+                            {formatGenericDayTitle(d, dIdx)} ({d.ejercicios?.length || 0})
+                          </span>
+                        ))}
+
+                        {remainingDaysCount > 0 && (
+                          <span
+                            className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-dark-700/50 text-gray-400 border border-dark-600 shrink-0 inline-flex items-center"
+                            title={`${remainingDaysCount} sesiones adicionales programadas`}
+                          >
+                            + {remainingDaysCount} días más
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Acciones Rápidas Inferiores */}
@@ -1117,6 +1196,17 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                     >
                       <UserPlus className="w-3.5 h-3.5" />
                       <span>Asignar</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isExportingPdf}
+                      onClick={() => handleTriggerPdfExport(routine)}
+                      className="px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-zinc-300 hover:text-white font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                      title="Exportar rutina a PDF (A4)"
+                    >
+                      <FileDown className="w-3.5 h-3.5 text-brand-light" />
+                      <span>PDF</span>
                     </button>
                   </div>
 
@@ -1185,14 +1275,27 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setIsEditorOpen(false)}
-                className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-dark-800 border border-transparent hover:border-dark-700 min-h-[40px] min-w-[40px] flex items-center justify-center shrink-0"
-                aria-label="Cerrar creador"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isExportingPdf}
+                  onClick={handleTriggerPdfExportFromEditor}
+                  className="px-3 py-1.5 rounded-xl bg-dark-800 hover:bg-dark-700 border border-dark-700 text-zinc-200 hover:text-white text-xs font-bold flex items-center gap-1.5 transition-colors disabled:opacity-50 shrink-0"
+                  title="Exportar versión actual a PDF"
+                >
+                  <FileDown className="w-4 h-4 text-brand-light" />
+                  <span className="hidden sm:inline">Exportar PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsEditorOpen(false)}
+                  className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-dark-800 border border-transparent hover:border-dark-700 min-h-[40px] min-w-[40px] flex items-center justify-center shrink-0"
+                  aria-label="Cerrar creador"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             {/* Contenedor del Formulario con Scroll Interno */}
@@ -2232,6 +2335,110 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================== */}
+      {/* 6. MODAL: OPCIONES DE EXPORTACIÓN A PDF (MULTI-SEMANA)     */}
+      {/* ========================================================== */}
+      {pdfExportTarget && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl bg-dark-900 border border-dark-700 shadow-2xl p-5 sm:p-6 space-y-4 animate-scale">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-brand/15 border border-brand/30 flex items-center justify-center text-brand-light">
+                  <FileDown className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">Exportar Rutina a PDF</h3>
+                  <p className="text-xs text-zinc-400">Formato A4 optimizado para imprimir</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPdfExportTarget(null)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-white bg-dark-800 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-dark-850 border border-dark-750 text-xs space-y-1">
+              <div className="font-bold text-white text-sm truncate">{pdfExportTarget.routine.nombre}</div>
+              <div className="text-zinc-400">
+                Destinatario: <span className="text-zinc-200 font-semibold">{pdfExportTarget.studentName}</span>
+              </div>
+              <div className="text-zinc-400">
+                Planificación: <span className="text-brand-light font-semibold">{pdfExportTarget.totalWeeks} Semanas</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-400">
+              Esta rutina contiene múltiples semanas. Elige cómo deseas exportarla:
+            </p>
+
+            <div className="space-y-2 pt-1">
+              {/* Opción 1: Exportar semana actual */}
+              <button
+                type="button"
+                disabled={isExportingPdf}
+                onClick={() => {
+                  const tgt = pdfExportTarget;
+                  setPdfExportTarget(null);
+                  handleTriggerPdfExport(tgt.routine, {
+                    studentName: tgt.studentName,
+                    selectedWeek: tgt.selectedWeek,
+                    exportAllWeeks: false
+                  });
+                }}
+                className="w-full p-3.5 rounded-xl bg-dark-800 hover:bg-dark-750 border border-dark-700 text-left transition-all flex items-center justify-between group cursor-pointer disabled:opacity-50"
+              >
+                <div>
+                  <div className="text-xs font-bold text-white group-hover:text-brand-light">
+                    Exportar solo Semana {pdfExportTarget.selectedWeek}
+                  </div>
+                  <div className="text-[11px] text-zinc-400">
+                    Solo las sesiones de la semana {pdfExportTarget.selectedWeek}
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-white transition-colors" />
+              </button>
+
+              {/* Opción 2: Exportar plan completo */}
+              <button
+                type="button"
+                disabled={isExportingPdf}
+                onClick={() => {
+                  const tgt = pdfExportTarget;
+                  setPdfExportTarget(null);
+                  handleTriggerPdfExport(tgt.routine, {
+                    studentName: tgt.studentName,
+                    selectedWeek: tgt.selectedWeek,
+                    exportAllWeeks: true
+                  });
+                }}
+                className="w-full p-3.5 rounded-xl bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-500 hover:to-rose-600 text-white text-left transition-all flex items-center justify-between shadow-glow-red cursor-pointer disabled:opacity-50"
+              >
+                <div>
+                  <div className="text-xs font-black text-white">
+                    Exportar Plan Completo (Todas las {pdfExportTarget.totalWeeks} semanas)
+                  </div>
+                  <div className="text-[11px] text-red-100">
+                    Todas las semanas en un único documento A4
+                  </div>
+                </div>
+                <FileDown className="w-4 h-4 text-white" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setPdfExportTarget(null)}
+              className="w-full py-2.5 rounded-xl bg-transparent hover:bg-dark-800 text-zinc-400 hover:text-white text-xs font-bold transition-colors cursor-pointer"
+            >
+              Cancelar
+            </button>
           </div>
         </div>
       )}
