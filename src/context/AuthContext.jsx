@@ -146,56 +146,60 @@ export function AuthProvider({ children }) {
 
     // 2. Suscribirse activamente a los cambios de estado con onAuthStateChange
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
-      // Si hay un alumno logueado con active_student_id o alumno_session, no interferir con eventos de Supabase Auth
-      const activeStudent = localStorage.getItem('active_student_id');
-      const alumnoRaw = localStorage.getItem('alumno_session');
-      if ((activeStudent || alumnoRaw) && !currentSession) {
-        return;
-      }
+      try {
+        // Si hay un alumno logueado con active_student_id o alumno_session, no interferir con eventos de Supabase Auth
+        const activeStudent = localStorage.getItem('active_student_id');
+        const alumnoRaw = localStorage.getItem('alumno_session');
+        if ((activeStudent || alumnoRaw) && !currentSession) {
+          return;
+        }
 
-      if (event === 'TOKEN_REFRESHED') {
-        if (currentSession?.user) {
+        if (event === 'TOKEN_REFRESHED') {
+          if (currentSession?.user) {
+            const coachProfile = await resolveCoachProfile(currentSession.user);
+            const updatedSession = {
+              role: 'coach',
+              user: coachProfile,
+              token: currentSession.access_token
+            };
+            authService.saveSession(updatedSession);
+            if (isMounted) {
+              setUser(coachProfile);
+              setSession(updatedSession);
+              setRole('coach');
+            }
+          }
+        } else if (event === 'SIGNED_OUT' || (!currentSession && !activeStudent && !alumnoRaw)) {
+          if (isMounted) {
+            setUser(null);
+            setSession(null);
+            setRole(null);
+          }
+          localStorage.removeItem('ec_trainer_auth_session');
+          // Redirigir al login si estábamos en área protegida de entrenador
+          if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
+            window.location.href = '/login';
+          }
+        } else if (event === 'SIGNED_IN' && currentSession?.user) {
           const coachProfile = await resolveCoachProfile(currentSession.user);
-          const updatedSession = {
+          const coachSession = {
             role: 'coach',
             user: coachProfile,
             token: currentSession.access_token
           };
-          authService.saveSession(updatedSession);
+          authService.saveSession(coachSession);
           if (isMounted) {
             setUser(coachProfile);
-            setSession(updatedSession);
+            setSession(coachSession);
             setRole('coach');
           }
+        } else if (currentSession?.user) {
+          if (isMounted) {
+            setUser(currentSession.user);
+          }
         }
-      } else if (event === 'SIGNED_OUT' || (!currentSession && !alumnoRaw)) {
-        if (isMounted) {
-          setUser(null);
-          setSession(null);
-          setRole(null);
-        }
-        localStorage.removeItem('ec_trainer_auth_session');
-        // Redirigir al login si estábamos en área protegida de entrenador
-        if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
-          window.location.href = '/login';
-        }
-      } else if (event === 'SIGNED_IN' && currentSession?.user) {
-        const coachProfile = await resolveCoachProfile(currentSession.user);
-        const coachSession = {
-          role: 'coach',
-          user: coachProfile,
-          token: currentSession.access_token
-        };
-        authService.saveSession(coachSession);
-        if (isMounted) {
-          setUser(coachProfile);
-          setSession(coachSession);
-          setRole('coach');
-        }
-      } else if (currentSession?.user) {
-        if (isMounted) {
-          setUser(currentSession.user);
-        }
+      } catch (authChangeErr) {
+        console.warn('[AuthContext] Error procesando cambio de estado de sesión:', authChangeErr);
       }
     });
 
