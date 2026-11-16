@@ -112,11 +112,17 @@ export default function StudentPortal({ student, onLogout }) {
   const [coachProfile, setCoachProfile] = useState(() => {
     try {
       const pub = localStorage.getItem('coach_public_profile');
-      if (pub) return JSON.parse(pub);
+      if (pub) {
+        const parsed = JSON.parse(pub);
+        if (parsed && parsed.role !== 'student' && (!student || parsed.id !== student.id)) {
+          return parsed;
+        }
+      }
       const ses = localStorage.getItem('ec_trainer_auth_session');
       if (ses) {
         const p = JSON.parse(ses);
-        if (p?.user?.role === 'coach' || p?.user?.nombre) return p.user;
+        if (p?.user?.role === 'coach') return p.user;
+        if (p?.role === 'coach') return p;
       }
     } catch {}
     return null;
@@ -258,30 +264,34 @@ export default function StudentPortal({ student, onLogout }) {
     async function fetchCoach() {
       try {
         const target = currentStudent || student || authUser;
-        let query = supabase.from('coaches').select('*');
+        let coachData = null;
+
         if (target?.coach_id) {
-          query = query.eq('id', target.coach_id);
-        }
-        const { data, error } = await query.limit(1).maybeSingle();
-        if (!error && data && isMounted) {
-          setCoachProfile(data);
-          if (data.telefono) {
-            setCoachPhone(data.telefono);
-            try { localStorage.setItem('coach_phone', data.telefono); } catch {}
-          }
-          try { localStorage.setItem('coach_public_profile', JSON.stringify(data)); } catch {}
-          return;
+          const { data, error } = await supabase
+            .from('coaches')
+            .select('*')
+            .or(`id.eq.${target.coach_id},user_id.eq.${target.coach_id}`)
+            .limit(1)
+            .maybeSingle();
+          if (!error && data) coachData = data;
         }
 
-        // Si no se encontró por coach_id, consultar el primer entrenador
-        const { data: firstCoach } = await supabase.from('coaches').select('*').limit(1).maybeSingle();
-        if (firstCoach && isMounted) {
-          setCoachProfile(firstCoach);
-          if (firstCoach.telefono) {
-            setCoachPhone(firstCoach.telefono);
-            try { localStorage.setItem('coach_phone', firstCoach.telefono); } catch {}
+        if (!coachData) {
+          const { data: firstCoach } = await supabase
+            .from('coaches')
+            .select('*')
+            .limit(1)
+            .maybeSingle();
+          if (firstCoach) coachData = firstCoach;
+        }
+
+        if (coachData && isMounted) {
+          setCoachProfile(coachData);
+          if (coachData.telefono) {
+            setCoachPhone(coachData.telefono);
+            try { localStorage.setItem('coach_phone', coachData.telefono); } catch {}
           }
-          try { localStorage.setItem('coach_public_profile', JSON.stringify(firstCoach)); } catch {}
+          try { localStorage.setItem('coach_public_profile', JSON.stringify(coachData)); } catch {}
         }
       } catch (err) {
         console.warn('[StudentPortal] Error consultando coaches en Supabase:', err);
@@ -370,13 +380,40 @@ export default function StudentPortal({ student, onLogout }) {
     const banks = dataService.getBankDetails();
     setBankDetails(banks);
 
-    // Cargar dinámicamente el teléfono y datos del coach desde Supabase
+    // Cargar dinámicamente los datos del coach desde Supabase
     try {
-      let coachQuery = supabase.from('coaches').select('*');
+      let coachData = null;
       if (target?.coach_id) {
-        coachQuery = coachQuery.eq('id', target.coach_id);
+        const { data } = await supabase
+          .from('coaches')
+          .select('*')
+          .or(`id.eq.${target.coach_id},user_id.eq.${target.coach_id}`)
+          .limit(1)
+          .maybeSingle();
+        if (data) coachData = data;
       }
-      const { data: coachData } = await coachQuery.limit(1).maybeSingle();
+
+      if (!coachData) {
+        const { data: firstCoach } = await supabase
+          .from('coaches')
+          .select('*')
+          .limit(1)
+          .maybeSingle();
+        if (firstCoach) coachData = firstCoach;
+      }
+
+      // Si no se obtuvo de Supabase, verificar si hay caché local válida pero no del alumno
+      if (!coachData) {
+        try {
+          const cached = localStorage.getItem('coach_public_profile');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (parsed && parsed.role !== 'student' && (!target || parsed.id !== target.id)) {
+              coachData = parsed;
+            }
+          }
+        } catch {}
+      }
 
       if (coachData) {
         setCoachProfile(coachData);
@@ -392,9 +429,8 @@ export default function StudentPortal({ student, onLogout }) {
         if (coachData.bank_details) {
           setBankDetails(prev => ({ ...prev, ...coachData.bank_details }));
         }
-      } else if (authUser?.telefono || authUser?.whatsapp || authUser?.phone || authUser?.role === 'coach') {
-        const authPhone = authUser.telefono || authUser.whatsapp || authUser.phone;
-        if (authPhone) setCoachPhone(authPhone);
+      } else if (authUser?.role === 'coach') {
+        // NUNCA asignar el alumno activo como coachProfile
         setCoachProfile(authUser);
         try { localStorage.setItem('coach_public_profile', JSON.stringify(authUser)); } catch {}
       }

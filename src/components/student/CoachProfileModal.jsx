@@ -31,26 +31,35 @@ export default function CoachProfileModal({ isOpen, onClose, coachProfile: propC
   // Retorno temprano SIEMPRE después de todos los hooks
   if (!isOpen) return null;
 
-  // 2. Obtener datos reales del Coach desde props, AuthContext o LocalStorage
+  // 2. Obtener datos reales del Coach (NUNCA del alumno activo)
   const authUser = authContext?.user || null;
-  const authCoach = authUser?.role === 'coach' ? authUser : null;
+  const authCoach = (authUser?.role === 'coach') ? authUser : null;
 
   const localCoach = typeof window !== 'undefined' ? (() => {
     try {
       const pub = localStorage.getItem('coach_public_profile');
-      if (pub) return JSON.parse(pub);
+      if (pub) {
+        const parsed = JSON.parse(pub);
+        if (parsed && parsed.role !== 'student' && (!authUser || parsed.id !== authUser.id)) {
+          return parsed;
+        }
+      }
       const ses = localStorage.getItem('ec_trainer_auth_session');
       if (ses) {
         const p = JSON.parse(ses);
-        if (p?.user) return p.user;
+        if (p?.user?.role === 'coach') return p.user;
+        if (p?.role === 'coach') return p;
       }
     } catch {}
     return null;
   })() : null;
 
-  const coachProfile = propCoachProfile || coach || authCoach || localCoach;
+  // Filtrar prop para jamás usar un objeto perteneciente al alumno
+  const rawCandidate = propCoachProfile || coach;
+  const validCandidate = (rawCandidate && rawCandidate.role !== 'student' && (!authUser || rawCandidate.id !== authUser.id)) ? rawCandidate : null;
+  const coachProfile = validCandidate || authCoach || localCoach;
 
-  // 2. Parseo seguro de 'estudios' (Capacitaciones)
+  // 3. Parseo seguro de 'estudios' (Capacitaciones)
   let estudiosLista = [];
   try {
     if (coachProfile?.estudios) {
@@ -65,15 +74,17 @@ export default function CoachProfileModal({ isOpen, onClose, coachProfile: propC
     console.error("Error parseando estudios", e);
   }
 
-  // 3. Limpieza y sanitización universal del teléfono del coach para WhatsApp
+  // 4. Limpieza y sanitización universal del teléfono del coach para WhatsApp
   const rawPhone = coachProfile?.telefono || coachProfile?.whatsapp || (whatsappPhone ? String(whatsappPhone) : '');
   let cleanPhone = rawPhone.replace(/\D/g, '');
   if (cleanPhone && cleanPhone.length === 10 && !cleanPhone.startsWith('54')) {
     cleanPhone = `549${cleanPhone}`;
   }
 
-  const initials = (coachProfile?.nombre || 'EC').substring(0, 2).toUpperCase();
-  const avatarUrl = coachProfile?.avatar_url || coachProfile?.foto_url;
+  const initials = (coachProfile?.nombre && coachProfile?.nombre !== 'Atleta')
+    ? coachProfile.nombre.substring(0, 2).toUpperCase()
+    : 'EC';
+  const avatarUrl = coachProfile?.foto_url || coachProfile?.avatar_url;
 
   return (
     <div
@@ -102,9 +113,9 @@ export default function CoachProfileModal({ isOpen, onClose, coachProfile: propC
         <div className="relative pt-7 pb-4 px-6 text-center border-b border-dark-800/80 bg-gradient-to-b from-dark-850 to-dark-900/40">
           <div className="flex justify-center mb-3">
             <div className="relative">
-              {avatarUrl ? (
+              {(coachProfile?.foto_url || coachProfile?.avatar_url) ? (
                 <img
-                  src={avatarUrl}
+                  src={coachProfile?.foto_url || coachProfile?.avatar_url}
                   alt={coachProfile?.nombre || 'Entrenador'}
                   className="w-24 h-24 rounded-full object-cover border-2 border-brand/80 shadow-glow-red/40"
                   onError={(e) => {
@@ -116,7 +127,7 @@ export default function CoachProfileModal({ isOpen, onClose, coachProfile: propC
                 />
               ) : null}
               <div
-                style={{ display: avatarUrl ? 'none' : 'flex' }}
+                style={{ display: (coachProfile?.foto_url || coachProfile?.avatar_url) ? 'none' : 'flex' }}
                 className="w-24 h-24 rounded-full bg-gradient-to-br from-brand/25 via-dark-850 to-dark-900 border-2 border-brand/80 text-brand-light font-display font-black items-center justify-center text-2xl tracking-wider shadow-glow-red/40 select-none"
               >
                 <span>{initials}</span>

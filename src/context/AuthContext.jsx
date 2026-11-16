@@ -34,6 +34,25 @@ export function AuthProvider({ children }) {
               // Guardar en caché local
               localStorage.setItem('alumno_session', JSON.stringify(student));
 
+              // Pre-cargar datos del entrenador para disponibilidad instantánea
+              try {
+                let coachQ = supabase.from('coaches').select('*');
+                if (student.coach_id) {
+                  coachQ = coachQ.or(`id.eq.${student.coach_id},user_id.eq.${student.coach_id}`);
+                }
+                coachQ.limit(1).maybeSingle().then(({ data: cData }) => {
+                  if (cData) {
+                    try {
+                      localStorage.setItem('coach_public_profile', JSON.stringify(cData));
+                      if (cData.telefono) {
+                        localStorage.setItem('coach_phone', cData.telefono);
+                        localStorage.setItem('coach_whatsapp', cData.telefono);
+                      }
+                    } catch {}
+                  }
+                }).catch(() => {});
+              } catch {}
+
               const studentSession = {
                 role: 'student',
                 user: student,
@@ -127,9 +146,10 @@ export function AuthProvider({ children }) {
 
     // 2. Suscribirse activamente a los cambios de estado con onAuthStateChange
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
-      // Si hay un alumno logueado con active_student_id, no interferir con eventos de Supabase Auth
+      // Si hay un alumno logueado con active_student_id o alumno_session, no interferir con eventos de Supabase Auth
       const activeStudent = localStorage.getItem('active_student_id');
-      if (activeStudent && !currentSession) {
+      const alumnoRaw = localStorage.getItem('alumno_session');
+      if ((activeStudent || alumnoRaw) && !currentSession) {
         return;
       }
 
