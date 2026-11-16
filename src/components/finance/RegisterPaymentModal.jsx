@@ -194,6 +194,13 @@ export default function RegisterPaymentModal({
     }));
   };
 
+  // Manejar cambio seguro de monto (Android / Mobile friendly)
+  const handleMontoChange = (e) => {
+    // Solo permite números, elimina letras o símbolos que introduzca el teclado por error
+    const rawValue = e.target.value.replace(/\D/g, '');
+    setPaymentForm(prev => ({ ...prev, monto: rawValue }));
+  };
+
   // Regla de negocio de 3 días para vencimiento
   const diasRestantes = calcularDiasParaVencer(selectedClient?.fecha_vencimiento);
   const esPrimerCobro = !selectedClient?.fecha_vencimiento;
@@ -403,13 +410,14 @@ export default function RegisterPaymentModal({
               <div className="relative">
                 <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">$</span>
                 <input
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   value={paymentForm.monto}
-                  onChange={(e) => setPaymentForm(prev => ({ ...prev, monto: e.target.value }))}
+                  onChange={handleMontoChange}
                   className="w-full pl-6 pr-2.5 py-1.5 text-xs sm:text-sm rounded-lg bg-gray-800/80 border border-gray-700 text-white font-mono font-bold focus:outline-none focus:border-brand"
                   placeholder="Ingrese monto a cobrar"
                   required
-                  min="0"
                 />
               </div>
             </div>
