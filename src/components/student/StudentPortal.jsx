@@ -57,6 +57,24 @@ import AboutModal from '../AboutModal';
 import MedicalRecordModal from '../medical/MedicalRecordModal';
 import MedicalRecordViewOnly from '../medical/MedicalRecordViewOnly';
 
+// Función para calcular la semana activa del alumno según la fecha de inicio de su rutina
+function calculateCurrentWeekNumber(startDateStr, totalWeeks = 1) {
+  if (!startDateStr || totalWeeks <= 1) return 1;
+  try {
+    const start = new Date(startDateStr);
+    const today = new Date();
+    start.setHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
+    const diffTime = today.getTime() - start.getTime();
+    if (diffTime < 0) return 1;
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    const week = Math.floor(diffDays / 7) + 1;
+    return Math.min(Math.max(1, week), totalWeeks);
+  } catch {
+    return 1;
+  }
+}
+
 export default function StudentPortal({ student, onLogout }) {
   const [currentStudent, setCurrentStudent] = useState(student);
   const [currentPlan, setCurrentPlan] = useState(null);
@@ -65,6 +83,7 @@ export default function StudentPortal({ student, onLogout }) {
   const [routine, setRoutine] = useState(null);
   const [evaluations, setEvaluations] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [completedSets, setCompletedSets] = useState({});
   const [exerciseLogs, setExerciseLogs] = useState({});
@@ -404,7 +423,28 @@ export default function StudentPortal({ student, onLogout }) {
   };
 
   const hasRoutine = Boolean(routine && routine.dias && routine.dias.length > 0);
-  const currentDay = hasRoutine && routine.dias[selectedDayIndex] ? routine.dias[selectedDayIndex] : null;
+  const totalWeeks = routine?.total_weeks || 1;
+
+  const currentWeekDays = useMemo(() => {
+    if (!hasRoutine) return [];
+    if (totalWeeks <= 1) return routine.dias;
+    const filtered = routine.dias.filter(d => (d.week_number || 1) === selectedWeek);
+    return filtered.length > 0 ? filtered : routine.dias;
+  }, [hasRoutine, routine, totalWeeks, selectedWeek]);
+
+  const currentDay = hasRoutine && currentWeekDays[selectedDayIndex] ? currentWeekDays[selectedDayIndex] : (currentWeekDays[0] || null);
+
+  useEffect(() => {
+    if (routine) {
+      const totWeeks = routine.total_weeks || 1;
+      if (totWeeks > 1 && startDate) {
+        const activeW = calculateCurrentWeekNumber(startDate, totWeeks);
+        setSelectedWeek(activeW);
+      } else {
+        setSelectedWeek(1);
+      }
+    }
+  }, [routine, startDate]);
 
   // Regla de Negocio: Bucle Semanal o Microciclo.
   // La rutina asignada y sus días NUNCA mutan su estado a completada=true en la tabla de rutinas.
@@ -417,6 +457,10 @@ export default function StudentPortal({ student, onLogout }) {
     const dayWeek = (dia.dia_semana || (dia.dia?.includes('(') ? dia.dia.split('(')[1].split(')')[0] : dia.dia?.split(':')[0]) || '').toLowerCase().trim();
 
     return (entrenamientosDeHoy || []).some(log => {
+      // Filtrar por semana si el log tiene week_number y la rutina es multi-semana
+      if (log.week_number && totalWeeks > 1 && log.week_number !== (dia.week_number || selectedWeek)) {
+        return false;
+      }
       // 1. Coincidencia directa por routine_day_id
       if (log.routine_day_id && (log.routine_day_id === dayId || log.routine_day_id === dia.id)) {
         return true;
@@ -530,6 +574,7 @@ export default function StudentPortal({ student, onLogout }) {
         diaRutina: dayLabel,
         dayId: dayId,
         routineDayId: dayId,
+        weekNumber: selectedWeek,
         fecha: today,
         completada: true
       });
@@ -1082,7 +1127,11 @@ export default function StudentPortal({ student, onLogout }) {
                   <div>
                     <span className="text-[10px] uppercase font-bold text-gray-400 block">Esquema Pactado</span>
                     <p className="font-bold text-white text-xs">
-                      Plan {student.tipo_planificacion || 'Semanal'} • {student.dias_por_semana || routine.dias.length} días de entreno
+                      {routine.duration_type === 'quarterly'
+                        ? 'Plan Trimestral (12 sem)'
+                        : (routine.duration_type === 'monthly' || totalWeeks === 4)
+                          ? 'Plan Mensual (4 sem)'
+                          : `Plan ${student.tipo_planificacion || 'Semanal'}`} • {currentWeekDays.length} días de entreno
                     </p>
                   </div>
                 </div>
@@ -1091,49 +1140,102 @@ export default function StudentPortal({ student, onLogout }) {
                 </span>
               </div>
 
-            {/* Selector de Días Asignados de la Rutina */}
-            <div className="space-y-1.5">
-              <span className="text-[10px] uppercase tracking-wider font-bold text-gray-400 px-1">
-                Selecciona el día de entrenamiento:
-              </span>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {routine?.dias?.map((d, index) => {
-                  const dayLabel = d.dia_semana || (d.dia.includes('(') ? d.dia.split('(')[1].split(')')[0] : d.dia.split(':')[0]);
-                  const isActive = selectedDayIndex === index;
-                  const isDoneToday = isDayCompletedToday(d, index);
-                  const count = d.ejercicios?.length || 0;
-                  return (
-                    <button
-                      key={index}
-                      onClick={() => setSelectedDayIndex(index)}
-                      className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all flex items-center gap-2 ${
-                        isActive
-                          ? 'bg-brand text-white shadow-glow-red scale-[1.02]'
-                          : isDoneToday
-                            ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/40 hover:border-emerald-500/70'
-                            : 'bg-dark-900 text-gray-400 hover:text-white border border-dark-700'
-                      }`}
-                    >
-                      {isDoneToday && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 font-black" />}
-                      <span>{dayLabel}</span>
-                      {isDoneToday ? (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold bg-emerald-500/25 text-emerald-300 border border-emerald-500/30">
-                          Completado hoy
-                        </span>
-                      ) : (
-                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                          isActive 
-                            ? 'bg-black/40 text-white' 
-                            : 'bg-dark-800 text-zinc-300'
-                        }`}>
-                          {count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
+              {/* SELECTOR DE SEMANAS (Si la rutina tiene más de 1 semana) */}
+              {totalWeeks > 1 && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-[10px] uppercase tracking-wider font-bold text-gray-400">
+                      Semanas del Ciclo ({totalWeeks} semanas):
+                    </span>
+                    <span className="text-[10px] font-bold text-brand-light">
+                      Semana en curso: Sem {calculateCurrentWeekNumber(startDate, totalWeeks)}
+                    </span>
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
+                    {Array.from({ length: totalWeeks }, (_, i) => i + 1).map((w) => {
+                      const isCurrentActiveWeek = calculateCurrentWeekNumber(startDate, totalWeeks) === w;
+                      const isSelected = selectedWeek === w;
+                      const weekExercises = (routine?.dias || [])
+                        .filter(d => (d.week_number || 1) === w)
+                        .reduce((acc, d) => acc + (d.ejercicios?.length || 0), 0);
+                      return (
+                        <button
+                          key={w}
+                          type="button"
+                          onClick={() => {
+                            setSelectedWeek(w);
+                            setSelectedDayIndex(0);
+                          }}
+                          className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all flex items-center gap-1.5 border ${
+                            isSelected
+                              ? 'bg-brand text-white border-brand shadow-glow-red scale-[1.02]'
+                              : 'bg-dark-900 text-gray-400 hover:text-white border-dark-700'
+                          }`}
+                        >
+                          <span>Semana {w}</span>
+                          {isCurrentActiveWeek ? (
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${
+                              isSelected ? 'bg-white/20 text-white' : 'bg-brand/20 text-brand-light border border-brand/30'
+                            }`}>
+                              Actual
+                            </span>
+                          ) : weekExercises > 0 ? (
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${
+                              isSelected ? 'bg-white/20 text-white' : 'bg-dark-800 text-zinc-400'
+                            }`}>
+                              {weekExercises} ej.
+                            </span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Selector de Días Asignados de la Rutina */}
+              <div className="space-y-1.5">
+                <span className="text-[10px] uppercase tracking-wider font-bold text-gray-400 px-1">
+                  Selecciona el día de entrenamiento {totalWeeks > 1 ? `(Semana ${selectedWeek})` : ''}:
+                </span>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {currentWeekDays.map((d, index) => {
+                    const dayLabel = d.dia_semana || (d.dia.includes('(') ? d.dia.split('(')[1].split(')')[0] : d.dia.split(':')[0]);
+                    const isActive = selectedDayIndex === index;
+                    const isDoneToday = isDayCompletedToday(d, index);
+                    const count = d.ejercicios?.length || 0;
+                    return (
+                      <button
+                        key={d.id || `day-tab-${index}`}
+                        onClick={() => setSelectedDayIndex(index)}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all flex items-center gap-2 ${
+                          isActive
+                            ? 'bg-brand text-white shadow-glow-red scale-[1.02]'
+                            : isDoneToday
+                              ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/40 hover:border-emerald-500/70'
+                              : 'bg-dark-900 text-gray-400 hover:text-white border border-dark-700'
+                        }`}
+                      >
+                        {isDoneToday && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 font-black" />}
+                        <span>{dayLabel}</span>
+                        {isDoneToday ? (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold bg-emerald-500/25 text-emerald-300 border border-emerald-500/30">
+                            Completado hoy
+                          </span>
+                        ) : (
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                            isActive 
+                              ? 'bg-black/40 text-white' 
+                              : 'bg-dark-800 text-zinc-300'
+                          }`}>
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
 
             {/* Feedback Visual Superior (Banner Informativo de Solo Lectura por Día Completado Hoy) */}
             {isReadOnly && (

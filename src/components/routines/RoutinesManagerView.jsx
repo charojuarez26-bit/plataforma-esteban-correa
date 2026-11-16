@@ -22,7 +22,8 @@ import {
   Copy, 
   ExternalLink,
   HeartPulse,
-  Loader2
+  Loader2,
+  Repeat
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
@@ -80,9 +81,13 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     descripcion: '',
     destinatarioTipo: 'plantilla', // 'plantilla' | 'alumno'
     client_id: '',
+    duration_type: 'weekly', // 'weekly' | 'monthly' | 'quarterly'
+    total_weeks: 1, // 1 | 4 | 12
     frecuenciaDias: 3
   });
   const [routineDays, setRoutineDays] = useState([]);
+  const [selectedWeek, setSelectedWeek] = useState(1);
+  const [isReplicateConfirmOpen, setIsReplicateConfirmOpen] = useState(false);
   const [activeDayIndex, setActiveDayIndex] = useState(null); // null = Hub de días, número = Editor de Día
 
   // Buscador y Paginación por lotes de ejercicios dentro del editor
@@ -182,6 +187,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     setEditingRoutineId(null);
     setExerciseSearch('');
     setSelectedMuscleFilter('Todos');
+    setSelectedWeek(1);
 
     const defaultDaysCount = targetClient?.dias_por_semana || 3;
 
@@ -194,6 +200,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
         dia_nombre: defaultName,
         dia: defaultName,
         dia_semana: defaultName,
+        week_number: 1,
         ejercicios: []
       };
     });
@@ -205,6 +212,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       descripcion: targetClient?.objetivo || 'Sobrecarga progresiva y enfoque en hipertrofia muscular.',
       destinatarioTipo: targetClient ? 'alumno' : 'plantilla',
       client_id: targetClient ? targetClient.id : '',
+      duration_type: 'weekly',
+      total_weeks: 1,
       frecuenciaDias: defaultDaysCount
     });
 
@@ -219,19 +228,13 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     setEditingRoutineId(routine.id);
     setExerciseSearch('');
     setSelectedMuscleFilter('Todos');
+    setSelectedWeek(1);
 
-    const count = routine.dias ? routine.dias.length : (routine.dias_por_semana || 3);
     const isTemplate = Boolean(routine.es_plantilla || !routine.client_id || routine.client_id === '00000000-0000-0000-0000-000000000000');
+    const durType = routine.duration_type || (routine.total_weeks > 4 ? 'quarterly' : routine.total_weeks > 1 ? 'monthly' : 'weekly');
+    const totWeeks = parseInt(routine.total_weeks, 10) || (durType === 'quarterly' ? 12 : durType === 'monthly' ? 4 : 1);
 
-    setRoutineForm({
-      nombre: routine.nombre,
-      descripcion: routine.descripcion || routine.objetivo || '',
-      destinatarioTipo: isTemplate ? 'plantilla' : 'alumno',
-      client_id: isTemplate ? '' : (routine.client_id || ''),
-      frecuenciaDias: count
-    });
-
-    // Clonar días y ejercicios con IDs únicos garantizados y nombres limpios sin días de la semana
+    // Clonar días y ejercicios con IDs únicos garantizados y week_number preservado
     const clonedDays = (routine.dias || []).map((d, dIdx) => {
       const defaultName = `Día ${dIdx + 1}`;
       let cleanDia = (d.dia || d.dia_nombre || defaultName).trim();
@@ -247,7 +250,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
         dia_nombre: cleanDia,
         dia: cleanDia,
         dia_semana: defaultName,
-        ejercicios: (d.ejercicios || []).map((e, eIdx) => ({
+        week_number: parseInt(d.week_number, 10) || 1,
+        ejercicios: (d.ejercicios || []).map((e) => ({
           id: generateUniqueId('item'),
           exercise_id: e.exercise?.id || e.exercise_id,
           exercise: e.exercise,
@@ -259,6 +263,19 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       };
     });
 
+    const week1Count = clonedDays.filter(d => (d.week_number || 1) === 1).length;
+    const count = routine.dias_por_semana || (week1Count > 0 ? week1Count : 3);
+
+    setRoutineForm({
+      nombre: routine.nombre,
+      descripcion: routine.descripcion || routine.objetivo || '',
+      destinatarioTipo: isTemplate ? 'plantilla' : 'alumno',
+      client_id: isTemplate ? '' : (routine.client_id || ''),
+      duration_type: durType,
+      total_weeks: totWeeks,
+      frecuenciaDias: count
+    });
+
     setRoutineDays(clonedDays);
     setActiveDayIndex(null);
     setCurrentStep(1);
@@ -266,20 +283,39 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
     setIsEditorOpen(true);
   };
 
-  // Ajustar frecuencia de días en el editor (generación estrictamente genérica: Día 1, Día 2, etc.)
+  const handleSelectDurationType = (type) => {
+    let weeks = 1;
+    if (type === 'monthly') weeks = 4;
+    else if (type === 'quarterly') weeks = 12;
+
+    setRoutineForm(prev => ({
+      ...prev,
+      duration_type: type,
+      total_weeks: weeks
+    }));
+
+    if (selectedWeek > weeks) {
+      setSelectedWeek(1);
+    }
+  };
+
+  // Ajustar frecuencia de días en la semana activa
   const handleSetFrequency = (newCount) => {
     if (newCount < 1 || newCount > 7) return;
 
     setRoutineForm(prev => ({ ...prev, frecuenciaDias: newCount }));
 
     setRoutineDays(prevDays => {
-      const currentLength = prevDays.length;
-      if (newCount === currentLength) return prevDays;
+      const targetWeek = currentStep === 2 ? selectedWeek : 1;
+      const otherWeekDays = prevDays.filter(d => (d.week_number || 1) !== targetWeek);
+      const weekDays = prevDays.filter(d => (d.week_number || 1) === targetWeek);
 
-      if (newCount > currentLength) {
-        // Añadir días adicionales con nombres genéricos
-        const addedDays = Array.from({ length: newCount - currentLength }, (_, i) => {
-          const nextIdx = currentLength + i;
+      if (newCount === weekDays.length) return prevDays;
+
+      let updatedWeekDays;
+      if (newCount > weekDays.length) {
+        const added = Array.from({ length: newCount - weekDays.length }, (_, i) => {
+          const nextIdx = weekDays.length + i;
           const defaultName = `Día ${nextIdx + 1}`;
           return {
             id: generateUniqueId('day'),
@@ -287,19 +323,208 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
             dia_nombre: defaultName,
             dia: defaultName,
             dia_semana: defaultName,
+            week_number: targetWeek,
             ejercicios: []
           };
         });
-        return [...prevDays, ...addedDays];
+        updatedWeekDays = [...weekDays, ...added];
       } else {
-        // Recortar días al nuevo límite
-        return prevDays.slice(0, newCount);
+        updatedWeekDays = weekDays.slice(0, newCount);
       }
+
+      return [...otherWeekDays, ...updatedWeekDays].sort((a, b) => {
+        if ((a.week_number || 1) !== (b.week_number || 1)) {
+          return (a.week_number || 1) - (b.week_number || 1);
+        }
+        return (a.dia_numero || 1) - (b.dia_numero || 1);
+      });
     });
 
-    if (activeDayIndex !== null && activeDayIndex >= newCount) {
+    if (activeDayIndex !== null) {
       setActiveDayIndex(null);
     }
+  };
+
+  // Añadir una sesión a la semana activa
+  const handleAddDayToCurrentWeek = () => {
+    const weekDays = routineDays.filter(d => (d.week_number || 1) === selectedWeek);
+    const nextNum = weekDays.length + 1;
+    const defaultName = `Día ${nextNum}`;
+    const newDay = {
+      id: generateUniqueId('day'),
+      dia_numero: nextNum,
+      dia_nombre: defaultName,
+      dia: defaultName,
+      dia_semana: defaultName,
+      week_number: selectedWeek,
+      ejercicios: []
+    };
+
+    setRoutineDays(prev => [...prev, newDay].sort((a, b) => {
+      if ((a.week_number || 1) !== (b.week_number || 1)) {
+        return (a.week_number || 1) - (b.week_number || 1);
+      }
+      return (a.dia_numero || 1) - (b.dia_numero || 1);
+    }));
+  };
+
+  // Inicializar sesiones vacías para una semana
+  const handleInitWeekDays = (targetWeek) => {
+    const count = routineForm.frecuenciaDias || 3;
+    const initial = Array.from({ length: count }, (_, idx) => {
+      const defaultName = `Día ${idx + 1}`;
+      return {
+        id: generateUniqueId('day'),
+        dia_numero: idx + 1,
+        dia_nombre: defaultName,
+        dia: defaultName,
+        dia_semana: defaultName,
+        week_number: targetWeek,
+        ejercicios: []
+      };
+    });
+
+    setRoutineDays(prev => {
+      const rest = prev.filter(d => (d.week_number || 1) !== targetWeek);
+      return [...rest, ...initial].sort((a, b) => {
+        if ((a.week_number || 1) !== (b.week_number || 1)) {
+          return (a.week_number || 1) - (b.week_number || 1);
+        }
+        return (a.dia_numero || 1) - (b.dia_numero || 1);
+      });
+    });
+  };
+
+  // Copiar semana N a la semana N+1
+  const handleCopyWeekToNext = () => {
+    const nextWeek = selectedWeek + 1;
+    if (nextWeek > routineForm.total_weeks) return;
+
+    const sourceDays = routineDays.filter(d => (d.week_number || 1) === selectedWeek);
+    if (sourceDays.length === 0) {
+      showNotification(`No hay sesiones en la Semana ${selectedWeek} para copiar`, 'error');
+      return;
+    }
+
+    const cloned = sourceDays.map((d, dIdx) => ({
+      ...d,
+      id: generateUniqueId('day'),
+      week_number: nextWeek,
+      dia_numero: d.dia_numero || dIdx + 1,
+      ejercicios: (d.ejercicios || []).map((e) => ({
+        ...e,
+        id: generateUniqueId('item'),
+        exercise: e.exercise ? { ...e.exercise } : {}
+      }))
+    }));
+
+    setRoutineDays(prev => {
+      const rest = prev.filter(d => (d.week_number || 1) !== nextWeek);
+      return [...rest, ...cloned].sort((a, b) => {
+        if ((a.week_number || 1) !== (b.week_number || 1)) {
+          return (a.week_number || 1) - (b.week_number || 1);
+        }
+        return (a.dia_numero || 1) - (b.dia_numero || 1);
+      });
+    });
+
+    setSelectedWeek(nextWeek);
+    showNotification(`Semana ${selectedWeek} copiada exitosamente a la Semana ${nextWeek}`, 'success');
+  };
+
+  // Copiar estructura de una semana origen a otra semana destino
+  const handleCopyWeekFrom = (fromWeek, toWeek) => {
+    const sourceDays = routineDays.filter(d => (d.week_number || 1) === fromWeek);
+    if (sourceDays.length === 0) {
+      showNotification(`No hay sesiones en la Semana ${fromWeek}`, 'error');
+      return;
+    }
+
+    const cloned = sourceDays.map((d, dIdx) => ({
+      ...d,
+      id: generateUniqueId('day'),
+      week_number: toWeek,
+      dia_numero: d.dia_numero || dIdx + 1,
+      ejercicios: (d.ejercicios || []).map((e) => ({
+        ...e,
+        id: generateUniqueId('item'),
+        exercise: e.exercise ? { ...e.exercise } : {}
+      }))
+    }));
+
+    setRoutineDays(prev => {
+      const rest = prev.filter(d => (d.week_number || 1) !== toWeek);
+      return [...rest, ...cloned].sort((a, b) => {
+        if ((a.week_number || 1) !== (b.week_number || 1)) {
+          return (a.week_number || 1) - (b.week_number || 1);
+        }
+        return (a.dia_numero || 1) - (b.dia_numero || 1);
+      });
+    });
+
+    showNotification(`Semana ${fromWeek} copiada a la Semana ${toWeek}`, 'success');
+  };
+
+  // Replicar semana activa en todas las semanas restantes
+  const handleReplicateToRemainingWeeks = () => {
+    if (selectedWeek >= routineForm.total_weeks) return;
+
+    const sourceDays = routineDays.filter(d => (d.week_number || 1) === selectedWeek);
+    if (sourceDays.length === 0) {
+      showNotification(`No hay sesiones en la Semana ${selectedWeek} para replicar`, 'error');
+      return;
+    }
+
+    const targetWeeksHaveExercises = routineDays.some(
+      d => (d.week_number || 1) > selectedWeek && 
+           (d.week_number || 1) <= routineForm.total_weeks && 
+           (d.ejercicios?.length || 0) > 0
+    );
+
+    if (targetWeeksHaveExercises) {
+      setIsReplicateConfirmOpen(true);
+    } else {
+      executeReplicateRemainingWeeks();
+    }
+  };
+
+  const executeReplicateRemainingWeeks = () => {
+    const sourceDays = routineDays.filter(d => (d.week_number || 1) === selectedWeek);
+    const newReplicatedDays = [];
+
+    for (let w = selectedWeek + 1; w <= routineForm.total_weeks; w++) {
+      sourceDays.forEach((d, dIdx) => {
+        newReplicatedDays.push({
+          ...d,
+          id: generateUniqueId('day'),
+          week_number: w,
+          dia_numero: d.dia_numero || dIdx + 1,
+          ejercicios: (d.ejercicios || []).map((e) => ({
+            ...e,
+            id: generateUniqueId('item'),
+            exercise: e.exercise ? { ...e.exercise } : {}
+          }))
+        });
+      });
+    }
+
+    setRoutineDays(prev => {
+      const rest = prev.filter(
+        d => (d.week_number || 1) <= selectedWeek || (d.week_number || 1) > routineForm.total_weeks
+      );
+      return [...rest, ...newReplicatedDays].sort((a, b) => {
+        if ((a.week_number || 1) !== (b.week_number || 1)) {
+          return (a.week_number || 1) - (b.week_number || 1);
+        }
+        return (a.dia_numero || 1) - (b.dia_numero || 1);
+      });
+    });
+
+    setIsReplicateConfirmOpen(false);
+    showNotification(
+      `Semana ${selectedWeek} replicada en todas las semanas restantes (${selectedWeek + 1} a ${routineForm.total_weeks})`,
+      'success'
+    );
   };
 
   // Modificar título del día activo
@@ -423,6 +648,9 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
           ? routineForm.client_id.trim()
           : null,
         es_plantilla: routineForm.destinatarioTipo === 'plantilla',
+        duration_type: routineForm.duration_type || 'weekly',
+        total_weeks: routineForm.total_weeks || 1,
+        dias_por_semana: routineForm.frecuenciaDias || 3,
         activa: true
       };
 
@@ -784,21 +1012,36 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                           {routine.nombre}
                         </h3>
                         <p className="text-[11px] text-gray-400 mt-0.5">
-                          {totalDays} Días / Sem • {totalExercises} ejercicios
+                          {routine.dias_por_semana || (routine.dias ? Math.round(routine.dias.length / (routine.total_weeks || 1)) : totalDays)} Días / Sem • {routine.total_weeks > 1 ? `${routine.total_weeks} sem • ` : ''}{totalExercises} ejercicios
                         </p>
                       </div>
                     </div>
 
-                    {/* Badge Estado / Plantilla */}
-                    {isTemplate ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shrink-0">
-                        <Sparkles className="w-3 h-3" /> Plantilla
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/30 shrink-0">
-                        Asignada
-                      </span>
-                    )}
+                    {/* Badge Estado / Duración / Plantilla */}
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      {isTemplate ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                          <Sparkles className="w-3 h-3" /> Plantilla
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/30">
+                          Asignada
+                        </span>
+                      )}
+                      {routine.duration_type === 'quarterly' ? (
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                          Trimestral (12 sem)
+                        </span>
+                      ) : (routine.duration_type === 'monthly' || routine.total_weeks === 4) ? (
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                          Mensual (4 sem)
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">
+                          Semanal (1 sem)
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Descripción / Objetivo */}
@@ -1121,11 +1364,49 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                       )}
                     </div>
 
-                    {/* 3. Frecuencia Semanal (1 a 6 días) */}
+                    {/* 3. Duración de la Planificación */}
                     <div className="card-dark rounded-2xl p-4 sm:p-5 border border-dark-700 space-y-3">
                       <div className="flex items-center justify-between">
                         <label className="block text-xs font-bold uppercase tracking-wider text-zinc-200">
-                          3. Frecuencia Semanal
+                          3. Duración de la Planificación
+                        </label>
+                        <span className="text-xs font-bold text-brand-light">
+                          {routineForm.duration_type === 'quarterly' ? '12 Semanas (Trimestral)' : routineForm.duration_type === 'monthly' ? '4 Semanas (Mensual)' : '1 Semana (Semanal)'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                        {[
+                          { id: 'weekly', label: 'Semanal', sub: '1 semana', weeks: 1 },
+                          { id: 'monthly', label: 'Mensual', sub: '4 semanas', weeks: 4 },
+                          { id: 'quarterly', label: 'Trimestral', sub: '12 semanas', weeks: 12 }
+                        ].map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => handleSelectDurationType(item.id)}
+                            className={`p-3 rounded-xl text-left transition-all border min-h-[58px] flex flex-col justify-center ${
+                              routineForm.duration_type === item.id
+                                ? 'bg-brand/15 border-brand text-white shadow-glow-red'
+                                : 'bg-dark-900 hover:bg-dark-800 border-dark-700 text-zinc-400'
+                            }`}
+                          >
+                            <span className={`text-sm font-black leading-tight ${routineForm.duration_type === item.id ? 'text-brand-light' : 'text-zinc-200'}`}>
+                              {item.label}
+                            </span>
+                            <span className="text-[11px] text-zinc-400 font-medium mt-0.5">
+                              {item.sub}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 4. Frecuencia Semanal (1 a 6 días) */}
+                    <div className="card-dark rounded-2xl p-4 sm:p-5 border border-dark-700 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xs font-bold uppercase tracking-wider text-zinc-200">
+                          4. Frecuencia Semanal
                         </label>
                         <span className="text-xs font-bold text-brand-light">
                           {routineForm.frecuenciaDias} Días por semana
@@ -1151,7 +1432,7 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                       </div>
                     </div>
 
-                    {/* 4. Objetivo Opcional */}
+                    {/* 5. Objetivo Opcional */}
                     <div className="card-dark rounded-2xl p-4 border border-dark-700 space-y-1.5">
                       <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400">
                         Descripción u Objetivo (Opcional)
@@ -1173,63 +1454,188 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                 {currentStep === 2 && (
                   <div className="space-y-4 max-w-2xl mx-auto w-full py-2">
                     <div className="text-left space-y-1 pb-1">
-                      <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                        <Calendar className="w-5 h-5 text-brand-light" />
-                        Estructura de Días
-                      </h3>
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                          <Calendar className="w-5 h-5 text-brand-light" />
+                          Estructura de Días
+                        </h3>
+                        {routineForm.total_weeks > 1 && (
+                          <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-brand/15 text-brand-light border border-brand/30">
+                            Plan {routineForm.total_weeks} Semanas
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-zinc-400">
-                        Toca una sesión para armar sus ejercicios. Cuando termines todas, guarda la rutina completa.
+                        {routineForm.total_weeks > 1
+                          ? `Configura los días para cada semana. Puedes armar la Semana 1 y replicarla automáticamente a las semanas siguientes.`
+                          : 'Toca una sesión para armar sus ejercicios. Cuando termines todas, guarda la rutina completa.'}
                       </p>
                     </div>
 
-                    <div className="space-y-3">
-                      {routineDays.map((d, idx) => {
-                        const count = d.ejercicios?.length || 0;
+                    {/* BARRA DE NAVEGACIÓN Y REPLICACIÓN DE SEMANAS (Para rutinas multi-semana) */}
+                    {routineForm.total_weeks > 1 && (
+                      <div className="bg-dark-900 border border-dark-700 rounded-2xl p-3 sm:p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold uppercase tracking-wider text-zinc-300 flex items-center gap-1.5">
+                            <Calendar className="w-4 h-4 text-brand-light" />
+                            Semanas del Ciclo ({routineForm.total_weeks} semanas)
+                          </span>
+                          <span className="text-xs font-bold text-brand-light">
+                            Activa: Sem {selectedWeek}
+                          </span>
+                        </div>
+
+                        {/* Pestañas de Semanas */}
+                        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
+                          {Array.from({ length: routineForm.total_weeks }, (_, i) => i + 1).map((w) => {
+                            const isSelected = selectedWeek === w;
+                            const weekExercises = routineDays
+                              .filter(d => (d.week_number || 1) === w)
+                              .reduce((acc, d) => acc + (d.ejercicios?.length || 0), 0);
+                            const weekDaysCount = routineDays.filter(d => (d.week_number || 1) === w).length;
+
+                            return (
+                              <button
+                                key={w}
+                                type="button"
+                                onClick={() => setSelectedWeek(w)}
+                                className={`flex-shrink-0 px-3 py-2 rounded-xl text-xs font-bold transition-all flex flex-col items-center gap-1 min-w-[70px] border ${
+                                  isSelected
+                                    ? 'bg-brand text-white border-brand shadow-glow-red scale-[1.02]'
+                                    : 'bg-dark-800 text-zinc-400 hover:text-white border-dark-700 hover:border-dark-600'
+                                }`}
+                              >
+                                <span className="text-xs font-black">Sem {w}</span>
+                                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-semibold ${
+                                  isSelected
+                                    ? 'bg-white/20 text-white'
+                                    : weekExercises > 0
+                                      ? 'bg-emerald-500/20 text-emerald-400'
+                                      : 'bg-dark-700 text-zinc-500'
+                                }`}>
+                                  {weekExercises > 0 ? `${weekExercises} ej.` : `${weekDaysCount} d.`}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Herramientas de Clonación / Replicación entre Semanas */}
+                        {selectedWeek < routineForm.total_weeks && (
+                          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-dark-700/80">
+                            <button
+                              type="button"
+                              onClick={handleCopyWeekToNext}
+                              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-dark-800 hover:bg-dark-700 text-zinc-200 border border-dark-600 flex items-center gap-1.5 transition-colors"
+                              title={`Copiar sesiones de Semana ${selectedWeek} a Semana ${selectedWeek + 1}`}
+                            >
+                              <Copy className="w-3.5 h-3.5 text-brand-light" />
+                              <span>Copiar a Semana {selectedWeek + 1}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={handleReplicateToRemainingWeeks}
+                              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-dark-800 hover:bg-dark-700 text-zinc-200 border border-dark-600 flex items-center gap-1.5 transition-colors"
+                              title={`Replicar en todas las semanas restantes (${selectedWeek + 1} a ${routineForm.total_weeks})`}
+                            >
+                              <Repeat className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Replicar en Semanas {selectedWeek + 1} a {routineForm.total_weeks}</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* LISTA DE SESIONES DE LA SEMANA ACTIVA */}
+                    {(() => {
+                      const currentWeekDays = routineDays.filter(d => (d.week_number || 1) === selectedWeek);
+
+                      if (currentWeekDays.length === 0) {
                         return (
-                          <div
-                            key={d.id || `hub-day-${idx}`}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => { setMobileTab('library'); setActiveDayIndex(idx); }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                setMobileTab('library');
-                                setActiveDayIndex(idx);
-                              }
-                            }}
-                            className="card-dark rounded-2xl p-4 border border-dark-700 hover:border-brand/50 cursor-pointer hover:bg-gray-800 transition-colors flex items-center justify-between gap-3 min-h-[72px]"
-                          >
-                            <div className="flex items-center gap-3 min-w-0">
-                              <span className="w-10 h-10 rounded-xl bg-brand/15 border border-brand/30 text-brand-light font-black flex items-center justify-center shrink-0">
-                                {idx + 1}
-                              </span>
-                              <div className="min-w-0">
-                                <p className="text-sm font-bold text-white truncate">
-                                  {formatGenericDayTitle(d, idx)}
-                                </p>
-                                <p className={`text-xs font-semibold flex items-center gap-1 mt-0.5 ${count > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                  <Dumbbell className="w-3.5 h-3.5" />
-                                  {count === 0
-                                    ? 'Sin ejercicios cargados'
-                                    : `${count} ${count === 1 ? 'ejercicio cargado' : 'ejercicios cargados'}`}
-                                </p>
-                              </div>
+                          <div className="card-dark rounded-2xl p-6 text-center border border-dashed border-dark-700 space-y-3">
+                            <Calendar className="w-8 h-8 text-zinc-500 mx-auto" />
+                            <p className="text-sm font-bold text-white">Semana {selectedWeek} sin sesiones configuradas</p>
+                            <p className="text-xs text-zinc-400">Puedes copiar la estructura de la Semana 1 o inicializar sesiones vacías para esta semana.</p>
+                            <div className="flex flex-wrap justify-center gap-2 pt-2">
+                              <button
+                                type="button"
+                                onClick={() => handleCopyWeekFrom(1, selectedWeek)}
+                                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-brand text-white hover:bg-brand-dark transition-colors shadow-glow-red"
+                              >
+                                Copiar desde Semana 1
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleInitWeekDays(selectedWeek)}
+                                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-dark-800 text-zinc-300 border border-dark-700 hover:bg-dark-700 transition-colors"
+                              >
+                                Crear {routineForm.frecuenciaDias || 3} sesiones vacías
+                              </button>
                             </div>
-                            <ChevronRight className="w-5 h-5 text-zinc-500 shrink-0" />
                           </div>
                         );
-                      })}
-                    </div>
+                      }
+
+                      return (
+                        <div className="space-y-3">
+                          {currentWeekDays.map((d, localIdx) => {
+                            const count = d.ejercicios?.length || 0;
+                            const realIdx = routineDays.findIndex(rd => rd.id === d.id);
+                            return (
+                              <div
+                                key={d.id || `hub-day-${localIdx}`}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => { setMobileTab('library'); setActiveDayIndex(realIdx); }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    setMobileTab('library');
+                                    setActiveDayIndex(realIdx);
+                                  }
+                                }}
+                                className="card-dark rounded-2xl p-4 border border-dark-700 hover:border-brand/50 cursor-pointer hover:bg-gray-800 transition-colors flex items-center justify-between gap-3 min-h-[72px]"
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className="w-10 h-10 rounded-xl bg-brand/15 border border-brand/30 text-brand-light font-black flex items-center justify-center shrink-0">
+                                    {d.dia_numero || localIdx + 1}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      {routineForm.total_weeks > 1 && (
+                                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-dark-800 border border-dark-600 text-zinc-300 shrink-0">
+                                          Sem {d.week_number || 1}
+                                        </span>
+                                      )}
+                                      <p className="text-sm font-bold text-white truncate">
+                                        {formatGenericDayTitle(d, (d.dia_numero || localIdx + 1) - 1)}
+                                      </p>
+                                    </div>
+                                    <p className={`text-xs font-semibold flex items-center gap-1 mt-0.5 ${count > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                      <Dumbbell className="w-3.5 h-3.5" />
+                                      {count === 0
+                                        ? 'Sin ejercicios cargados'
+                                        : `${count} ${count === 1 ? 'ejercicio cargado' : 'ejercicios cargados'}`}
+                                    </p>
+                                  </div>
+                                </div>
+                                <ChevronRight className="w-5 h-5 text-zinc-500 shrink-0" />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
 
                     <div className="pt-1 text-center">
                       <button
                         type="button"
-                        onClick={() => handleSetFrequency(routineDays.length + 1)}
+                        onClick={handleAddDayToCurrentWeek}
                         className="text-xs font-bold text-brand-light hover:text-white inline-flex items-center gap-1.5 p-2 rounded-xl hover:bg-dark-800 transition-colors"
                       >
                         <Plus className="w-4 h-4" />
-                        <span>Añadir otra sesión a la semana</span>
+                        <span>Añadir otra sesión a Semana {selectedWeek}</span>
                       </button>
                     </div>
                   </div>
@@ -1311,7 +1717,12 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                 <div className="flex items-center gap-3 min-w-0">
                   <button
                     type="button"
-                    onClick={() => setActiveDayIndex(null)}
+                    onClick={() => {
+                      if (currentActiveDay?.week_number) {
+                        setSelectedWeek(currentActiveDay.week_number);
+                      }
+                      setActiveDayIndex(null);
+                    }}
                     className="px-3 py-2 -ml-1 rounded-xl text-xs font-bold text-zinc-200 hover:text-white bg-dark-800 border border-dark-700 min-h-[40px] flex items-center justify-center gap-1.5 shrink-0"
                     aria-label="Volver a Sesiones"
                   >
@@ -1321,17 +1732,22 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
 
                   <div className="min-w-0">
                     <span className="text-[10px] font-black uppercase tracking-wider text-brand-light">
-                      Editor de Día • {currentActiveDay.ejercicios?.length || 0} ej.
+                      {routineForm.total_weeks > 1 ? `Semana ${currentActiveDay.week_number || 1} • ` : ''}Editor de Día • {currentActiveDay.ejercicios?.length || 0} ej.
                     </span>
                     <h2 className="text-base sm:text-lg font-black text-white leading-tight mt-0.5 truncate">
-                      {formatGenericDayTitle(currentActiveDay, activeDayIndex)}
+                      {formatGenericDayTitle(currentActiveDay, (currentActiveDay.dia_numero || 1) - 1)}
                     </h2>
                   </div>
                 </div>
 
                 <button
                   type="button"
-                  onClick={() => setActiveDayIndex(null)}
+                  onClick={() => {
+                    if (currentActiveDay?.week_number) {
+                      setSelectedWeek(currentActiveDay.week_number);
+                    }
+                    setActiveDayIndex(null);
+                  }}
                   className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-dark-800 border border-transparent hover:border-dark-700 min-h-[40px] min-w-[40px] flex items-center justify-center shrink-0"
                   aria-label="Volver a Sesiones"
                   title="Volver a Sesiones"
@@ -1732,6 +2148,48 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
             }
           }}
         />
+      )}
+
+      {/* ========================================================== */}
+      {/* 5.5 MODAL DE CONFIRMACIÓN: REPLICAR SEMANA                */}
+      {/* ========================================================== */}
+      {isReplicateConfirmOpen && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-[70] flex items-center justify-center p-3 sm:p-4">
+          <div className="w-full max-w-md p-5 sm:p-6 rounded-2xl bg-dark-850 border border-dark-700 shadow-2xl relative animate-scale space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">¿Replicar en Semanas Restantes?</h3>
+                <p className="text-xs text-gray-400">Acción masiva de planificación</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-300 leading-relaxed">
+              Las semanas <strong>{selectedWeek + 1} a {routineForm.total_weeks}</strong> ya contienen ejercicios configurados. 
+              Esta acción sobreescribirá dichas semanas con la estructura y ejercicios de la <strong className="text-brand-light">Semana {selectedWeek}</strong>.
+            </p>
+
+            <div className="pt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsReplicateConfirmOpen(false)}
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white bg-dark-800 border border-dark-700 min-h-[44px]"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={executeReplicateRemainingWeeks}
+                className="px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-white bg-brand hover:bg-brand-dark transition-all flex items-center gap-2 shadow-glow-red min-h-[44px]"
+              >
+                <Repeat className="w-4 h-4" />
+                <span>Sí, Replicar y Sobreescribir</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ========================================================== */}

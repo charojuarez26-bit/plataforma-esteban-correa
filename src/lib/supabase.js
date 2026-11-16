@@ -6,4 +6,4 @@ export {
   refreshSessionSafely,
   withAuthRetry,
   default
-} from './supabaseClient';
+} from './supabaseClient.js';

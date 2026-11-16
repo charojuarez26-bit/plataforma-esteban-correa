@@ -40,7 +40,8 @@ import { dataService } from '../../services/dataService';
 import { 
   calcularEstadoPago, 
   diasRestantesParaVencimiento, 
-  formatearFechaPago
+  formatearFechaPago,
+  getPriceForPlan as getPriceForPlanUtil
 } from '../../utils/paymentUtils';
 import ClientAvatar from '../common/ClientAvatar';
 
@@ -310,6 +311,11 @@ export default function FinancesView() {
     return clientPay ? clientPay.monto : 0;
   };
 
+  // Obtener el precio/cuota para un plan o alumno con fallback seguro a 0
+  const getPriceForPlan = (planNameOrClient, targetClientId = null) => {
+    return getPriceForPlanUtil(planNameOrClient, targetClientId, payments, membershipPlans);
+  };
+
   // 5. CÁLCULO DE KPIS
   const kpis = useMemo(() => {
     // A. Ingresos del Período Filtrado
@@ -485,7 +491,7 @@ export default function FinancesView() {
       })
       .map(c => {
         const diffDias = diasRestantesParaVencimiento(c.fecha_vencimiento);
-        const valorCuota = getPriceForPlan(c.plan_actual);
+        const valorCuota = getPriceForPlan(c.plan_actual, c.id);
         return {
           id: c.id,
           nombre_completo: c.nombre_completo,
@@ -497,7 +503,7 @@ export default function FinancesView() {
         };
       })
       .sort((a, b) => a.diffDias - b.diffDias);
-  }, [clients]);
+  }, [clients, payments, membershipPlans]);
 
   // 8. Historial Filtrado con Búsqueda Rápida
   const searchedPayments = useMemo(() => {
@@ -894,7 +900,7 @@ export default function FinancesView() {
                   <div className="text-right">
                     <span className="text-gray-400 block text-[11px]">Valor de Cuota:</span>
                     <span className="font-black text-emerald-400 text-sm">
-                      {formatARS(item.valorCuota)}
+                      {item.valorCuota > 0 ? formatARS(item.valorCuota) : 'A definir'}
                     </span>
                   </div>
 

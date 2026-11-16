@@ -347,3 +347,44 @@ export function formatearPrecioARS(monto) {
   return `$${num.toLocaleString('es-AR')}`;
 }
 
+/**
+ * Obtiene el precio de referencia para un plan o alumno.
+ * Prioriza el último monto abonado por el alumno o el precio configurado en membership_plans.
+ * Retorna fallback seguro a 0 para prevenir fallos en tiempo de ejecución.
+ */
+export function getPriceForPlan(planNameOrClient, targetClientId = null, payments = [], membershipPlans = []) {
+  try {
+    let planName = '';
+    let cId = targetClientId;
+
+    if (typeof planNameOrClient === 'object' && planNameOrClient !== null) {
+      planName = planNameOrClient.plan_actual || planNameOrClient.plan_nombre || '';
+      cId = cId || planNameOrClient.id;
+    } else if (typeof planNameOrClient === 'string') {
+      planName = planNameOrClient;
+    }
+
+    if (cId && Array.isArray(payments) && payments.length > 0) {
+      const clientPay = payments.find(p => p.client_id === cId && p.monto > 0);
+      if (clientPay && clientPay.monto > 0) return clientPay.monto;
+    }
+
+    if (planName && Array.isArray(membershipPlans) && membershipPlans.length > 0) {
+      const lower = planName.toLowerCase().trim();
+      const found = membershipPlans.find(m => 
+        (m.nombre && m.nombre.toLowerCase().trim() === lower) ||
+        (m.tipo && m.tipo.toLowerCase().trim() === lower) ||
+        (m.id && m.id === planName)
+      );
+      if (found && typeof found.precio === 'number' && found.precio > 0) {
+        return found.precio;
+      }
+    }
+
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
+

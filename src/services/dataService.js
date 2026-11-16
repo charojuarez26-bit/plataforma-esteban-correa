@@ -200,9 +200,24 @@ export function formatRoutineWithDays(rawRoutine) {
       dia_nombre: `Día ${i + 1} (${defaultDayNames[i] || `Día ${i + 1}`})`,
       dia: `Día ${i + 1} (${defaultDayNames[i] || `Día ${i + 1}`})`,
       dia_semana: defaultDayNames[i] || `Día ${i + 1}`,
+      week_number: 1,
       ejercicios: []
     }));
   }
+
+  // Asegurar week_number en cada día
+  let maxWeek = 1;
+  dias = dias.map((d) => {
+    const wNum = parseInt(d.week_number, 10) || 1;
+    if (wNum > maxWeek) maxWeek = wNum;
+    return {
+      ...d,
+      week_number: wNum
+    };
+  });
+
+  const durationType = rawRoutine.duration_type || (maxWeek > 4 ? 'quarterly' : maxWeek > 1 ? 'monthly' : 'weekly');
+  const totalWeeks = parseInt(rawRoutine.total_weeks, 10) || (durationType === 'quarterly' ? 12 : durationType === 'monthly' ? 4 : maxWeek);
 
   const isTemplate = Boolean(
     rawRoutine.es_plantilla || 
@@ -214,6 +229,8 @@ export function formatRoutineWithDays(rawRoutine) {
 
   return {
     ...rawRoutine,
+    duration_type: durationType,
+    total_weeks: totalWeeks,
     objetivo: rawRoutine.descripcion || 'Sobrecarga progresiva e hipertrofia',
     nivel: 'Intermedio',
     activa: rawRoutine.activa ?? true,
@@ -1809,14 +1826,20 @@ export const dataService = {
       }
 
       // 3. ESTRUCTURAR DÍAS, SERIES, REPS Y EJERCICIOS EN FORMATO JSON VÁLIDO (jsonb)
-      const daysCount = (daysList && daysList.length > 0)
-        ? daysList.length
-        : (parseInt(routineData.frecuenciaDias, 10) || 3);
+      const durationType = routineData.duration_type || 'weekly';
+      const totalWeeks = parseInt(routineData.total_weeks, 10) || (durationType === 'quarterly' ? 12 : durationType === 'monthly' ? 4 : 1);
+
+      const daysCount = parseInt(routineData.dias_por_semana || routineData.frecuenciaDias, 10) || (
+        daysList && daysList.length > 0
+          ? (daysList.filter(d => (parseInt(d.week_number, 10) || 1) === 1).length || Math.max(1, Math.round(daysList.length / totalWeeks)))
+          : 3
+      );
 
       const cleanedDays = (daysList || []).map((d, dIdx) => {
         const dayNum = d.dia_numero || dIdx + 1;
         const dayTitle = d.dia || d.dia_nombre || `Día ${dayNum}`;
         const dayWeek = d.dia_semana || extractWeekday(dayTitle) || `Día ${dayNum}`;
+        const weekNum = parseInt(d.week_number, 10) || 1;
 
         const cleanExercises = (d.ejercicios || []).map((item, exIdx) => {
           const exObj = item.exercise || {};
@@ -1847,6 +1870,7 @@ export const dataService = {
           dia_nombre: dayTitle,
           dia: dayTitle,
           dia_semana: dayWeek,
+          week_number: weekNum,
           ejercicios: cleanExercises
         };
       });
@@ -1860,6 +1884,8 @@ export const dataService = {
         activa: routineData.activa ?? true,
         dias_por_semana: daysCount,
         es_plantilla: isTemplate,
+        duration_type: durationType,
+        total_weeks: totalWeeks,
         dia_semana: typeof cleanedDays === 'string' ? cleanedDays : JSON.stringify(cleanedDays) // Respaldo JSON seguro en columna de texto dia_semana
       };
 
@@ -1883,11 +1909,26 @@ export const dataService = {
       }
 
       // 5. UPSERT DIRECTO CON RESOLUCIÓN DE CONFLICTO POR ID (EVITA ERROR 409)
-      const { data: savedRecord, error: saveErr } = await supabase
+      let { data: savedRecord, error: saveErr } = await supabase
         .from('routines')
         .upsert(payloadLimpio, { onConflict: 'id' })
         .select('*')
         .single();
+
+      // Compatibilidad preventiva: si la migración de duration_type/total_weeks aún no se ejecutó en la BD
+      if (saveErr && (saveErr.code === '42703' || saveErr.message?.includes('duration_type') || saveErr.message?.includes('total_weeks'))) {
+        console.warn('[DataService] Columnas duration_type o total_weeks pendientes en Supabase. Guardando compatibilidad base...');
+        const fallbackPayload = { ...payloadLimpio };
+        delete fallbackPayload.duration_type;
+        delete fallbackPayload.total_weeks;
+        const retry = await supabase
+          .from('routines')
+          .upsert(fallbackPayload, { onConflict: 'id' })
+          .select('*')
+          .single();
+        savedRecord = retry.data;
+        saveErr = retry.error;
+      }
 
       if (saveErr) {
         console.error('Error detallado de Supabase en saveRoutine:', saveErr);
@@ -1911,6 +1952,8 @@ export const dataService = {
 
       return formatRoutineWithDays({
         ...savedRecord,
+        duration_type: durationType,
+        total_weeks: totalWeeks,
         dias: cleanedDays
       });
     } catch (err) {
@@ -1971,12 +2014,15 @@ export const dataService = {
         dia_nombre: d.dia_nombre || d.dia || `Día ${dIdx + 1}`,
         dia: d.dia || d.dia_nombre || `Día ${dIdx + 1}`,
         dia_semana: d.dia_semana || `Día ${dIdx + 1}`,
+        week_number: parseInt(d.week_number, 10) || 1,
         ejercicios: (d.ejercicios || []).map((item, exIdx) => ({
           ...item,
           id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? `ex-${crypto.randomUUID()}` : `ex-${Date.now()}-${dIdx}-${exIdx}`,
           exercise: item.exercise ? { ...item.exercise } : {}
         }))
       }));
+
+      const week1DaysCount = clonedDays.filter(d => (d.week_number || 1) === 1).length;
 
       const payload = {
         nombre: sourceRoutine.es_plantilla 
@@ -1986,7 +2032,9 @@ export const dataService = {
         client_id: clientId,
         es_plantilla: false,
         activa: true,
-        dias_por_semana: sourceRoutine.dias_por_semana || (clonedDays.length || 3)
+        duration_type: sourceRoutine.duration_type || 'weekly',
+        total_weeks: sourceRoutine.total_weeks || 1,
+        dias_por_semana: sourceRoutine.dias_por_semana || (week1DaysCount || 3)
       };
 
       // Validación preventiva contra duplicados en Supabase
@@ -2436,18 +2484,20 @@ export const dataService = {
     return true;
   },
 
-  async recordTrainingSession({ clientId, nombreDia = 'Día 1', diaRutina = null, dayId = null, routineDayId = null, fecha = null, completada = true }) {
+  async recordTrainingSession({ clientId, nombreDia = 'Día 1', diaRutina = null, dayId = null, routineDayId = null, weekNumber = 1, fecha = null, completada = true }) {
     if (!clientId) throw new Error('clientId es requerido');
 
     const dayName = nombreDia || diaRutina || 'Día 1';
     const rDayId = routineDayId || dayId || null;
     const sessionDate = fecha || new Date().toISOString().split('T')[0];
+    const parsedWeekNumber = parseInt(weekNumber, 10) || 1;
     const newSessionLocal = {
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `ts-${Date.now()}`,
       client_id: clientId,
       nombre_dia: dayName,
       dia_rutina: dayName,
       routine_day_id: rDayId,
+      week_number: parsedWeekNumber,
       fecha: sessionDate,
       completada: Boolean(completada),
       created_at: new Date().toISOString()
@@ -2462,24 +2512,26 @@ export const dataService = {
           client_id: clientId,
           nombre_dia: dayName,
           fecha: sessionDate,
-          completada: Boolean(completada)
+          completada: Boolean(completada),
+          week_number: parsedWeekNumber
         }])
         .select()
         .single();
 
       if (!error && data) {
-        const fullSaved = { ...newSessionLocal, ...data, nombre_dia: dayName, dia_rutina: dayName, routine_day_id: rDayId };
+        const fullSaved = { ...newSessionLocal, ...data, nombre_dia: dayName, dia_rutina: dayName, routine_day_id: rDayId, week_number: parsedWeekNumber };
         this.saveLocalTrainingSession(clientId, fullSaved);
         return fullSaved;
       }
 
-      // Si falla por PGRST204 o constraint, reintentar con columnas base
+      // Si falla por PGRST204 o constraint (ej: week_number no existe aún en training_sessions), reintentar sin week_number
       if (error) {
-        console.warn('[DataService] Falló insert con nombre_dia, intentando columnas base:', error);
+        console.warn('[DataService] Falló insert con week_number, intentando fallback compatible:', error);
         const { data: baseData, error: baseError } = await supabase
           .from('training_sessions')
           .insert([{
             client_id: clientId,
+            nombre_dia: dayName,
             fecha: sessionDate,
             completada: Boolean(completada)
           }])
@@ -2487,7 +2539,7 @@ export const dataService = {
           .single();
 
         if (!baseError && baseData) {
-          const fullSaved = { ...newSessionLocal, ...baseData, nombre_dia: dayName, dia_rutina: dayName, routine_day_id: rDayId };
+          const fullSaved = { ...newSessionLocal, ...baseData, nombre_dia: dayName, dia_rutina: dayName, routine_day_id: rDayId, week_number: parsedWeekNumber };
           this.saveLocalTrainingSession(clientId, fullSaved);
           return fullSaved;
         }
