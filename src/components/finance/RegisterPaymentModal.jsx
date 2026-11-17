@@ -413,6 +413,10 @@ export default function RegisterPaymentModal({
                   type="text"
                   inputMode="numeric"
                   pattern="[0-9]*"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck="false"
+                  data-lpignore="true"
                   value={paymentForm.monto}
                   onChange={handleMontoChange}
                   className="w-full pl-6 pr-2.5 py-1.5 text-xs sm:text-sm rounded-lg bg-gray-800/80 border border-gray-700 text-white font-mono font-bold focus:outline-none focus:border-brand"
