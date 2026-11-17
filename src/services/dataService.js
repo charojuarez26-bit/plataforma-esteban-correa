@@ -857,9 +857,42 @@ export const dataService = {
 
       if (error) {
         console.warn('[DataService] Error consultando client_payments:', error);
+        // Fallback a consulta plana sin join para evitar bloqueos por RLS en clientes/alumnos
+        try {
+          let flatQuery = supabase
+            .from('client_payments')
+            .select('id, client_id, monto, fecha_pago, metodo_pago, periodo_desde, periodo_hasta, fecha_vencimiento, notas');
+          if (clientId) {
+            flatQuery = flatQuery.eq('client_id', clientId);
+          }
+          flatQuery = flatQuery.order('fecha_pago', { ascending: false });
+          const { data: flatData, error: flatError } = await withAuthRetry(() => flatQuery);
+          if (!flatError && Array.isArray(flatData) && flatData.length > 0) {
+            return flatData.map(item => ({
+              ...item,
+              plan_nombre: item.notas || 'Cuota de Entrenamiento',
+              metodo: item.metodo_pago || 'Transferencia',
+              estado: 'Pagado',
+              fecha_vencimiento: item.fecha_vencimiento || item.periodo_hasta || null,
+              client_name: 'Alumno'
+            }));
+          }
+        } catch (flatErr) {
+          console.warn('[DataService] Error en fallback plano client_payments:', flatErr);
+        }
       }
     } catch (err) {
       console.warn('[DataService] Error en getPayments Supabase:', err);
+    }
+
+    // Fallback secundario de respaldo local
+    if (clientId) {
+      try {
+        const localPays = JSON.parse(localStorage.getItem(`ec_payments_${clientId}`) || '[]');
+        if (Array.isArray(localPays) && localPays.length > 0) {
+          return localPays;
+        }
+      } catch {}
     }
 
     // Fallback seguro: array vacío para evitar romper la interfaz

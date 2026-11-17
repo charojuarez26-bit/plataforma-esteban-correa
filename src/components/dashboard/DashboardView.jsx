@@ -40,7 +40,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
     paymentsList: []
   });
   const [appointments, setAppointments] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
   const [weekly, setWeekly] = useState({
     chart: ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'].map(dia => ({ dia, programados: 0, asistencias: 0 })),
     totalProgramados: 0,
@@ -83,18 +83,121 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
         : 'bg-red-500/15 text-red-400 border-red-500/30';
 
   const loadDashboardData = async () => {
+    setIsLoading(true);
     try {
-      setLoading(true);
-      const data = await dataService.getDashboardMetrics();
-      const apts = await dataService.getAppointments();
-      setMetrics(data);
-      setAppointments(apts.slice(0, 4));
+      const [data, apts, weeklyRes] = await Promise.all([
+        dataService.getDashboardMetrics(),
+        dataService.getAppointments(),
+        dataService.getWeeklyActivity()
+      ]);
+      if (data) setMetrics(data);
+      if (Array.isArray(apts)) setAppointments(apts.slice(0, 4));
+      if (weeklyRes) setWeekly(weeklyRes);
     } catch (err) {
-      console.error('Error cargando métricas:', err);
+      console.error('Error cargando métricas del Dashboard:', err);
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
+
+  // Renderizado Condicional: Skeleton Loader para evitar el flash de ceros ("0")
+  if (isLoading) {
+    return (
+      <div className="space-y-6 pb-20 md:pb-6 animate-pulse">
+        {/* Banner Skeleton */}
+        <div className="rounded-2xl bg-dark-900/60 border border-dark-700/60 p-5 sm:p-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-2.5">
+              <div className="h-7 w-60 sm:w-72 bg-dark-700 rounded-lg"></div>
+              <div className="h-4 w-40 sm:w-52 bg-dark-800 rounded-md"></div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="h-10 w-28 bg-dark-800 rounded-xl border border-dark-700/50"></div>
+              <div className="h-10 w-32 bg-dark-800 rounded-xl border border-dark-700/50"></div>
+            </div>
+          </div>
+        </div>
+
+        {/* 4 Cards Skeleton (Evita mostrar 0) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map(idx => (
+            <div key={idx} className="card-dark rounded-2xl p-5 border border-dark-800/80 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="h-3.5 w-28 bg-dark-700 rounded-md"></div>
+                <div className="w-10 h-10 rounded-xl bg-dark-800 border border-dark-700/60"></div>
+              </div>
+              <div className="flex items-baseline justify-between pt-1">
+                <div className="h-9 w-16 bg-dark-700 rounded-lg"></div>
+                <div className="h-3 w-20 bg-dark-800 rounded-md"></div>
+              </div>
+              <div className="h-2.5 w-36 bg-dark-800/80 rounded-md"></div>
+              <div className="h-1 bg-dark-800 rounded-full w-full"></div>
+            </div>
+          ))}
+        </div>
+
+        {/* Accesos Rápidos Skeleton */}
+        <div className="card-dark rounded-2xl p-4 border border-dark-800/80 space-y-3">
+          <div className="h-3.5 w-48 bg-dark-700 rounded-md mb-2"></div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[1, 2, 3, 4].map(idx => (
+              <div key={idx} className="p-3 rounded-xl bg-dark-900 border border-dark-800 flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-dark-800 shrink-0"></div>
+                <div className="space-y-1.5 flex-1 min-w-0">
+                  <div className="h-3.5 w-24 bg-dark-700 rounded"></div>
+                  <div className="h-2.5 w-16 bg-dark-800 rounded"></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Gráfico Semanal y Turnos Skeleton */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 card-dark rounded-2xl p-5 border border-dark-800/80 space-y-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="space-y-1.5">
+                <div className="h-4 w-52 bg-dark-700 rounded-md"></div>
+                <div className="h-3 w-64 bg-dark-800 rounded-md"></div>
+              </div>
+              <div className="h-6 w-24 bg-dark-800 rounded-lg"></div>
+            </div>
+            <div className="h-64 sm:h-72 w-full bg-dark-900/50 rounded-xl border border-dark-800/60 flex flex-col justify-end p-4 gap-3">
+              <div className="flex items-end justify-between h-44 gap-3 px-4">
+                {[40, 75, 55, 90, 60, 30].map((h, i) => (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
+                    <div className="w-full max-w-[28px] bg-dark-800 rounded-t" style={{ height: `${h}%` }}></div>
+                    <div className="h-2.5 w-6 bg-dark-800 rounded"></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="card-dark rounded-2xl p-5 border border-dark-800/80 space-y-4">
+            <div className="space-y-1.5 mb-2">
+              <div className="h-4 w-32 bg-dark-700 rounded-md"></div>
+              <div className="h-3 w-40 bg-dark-800 rounded-md"></div>
+            </div>
+            <div className="space-y-2.5">
+              {[1, 2, 3, 4].map(idx => (
+                <div key={idx} className="p-3 rounded-xl bg-dark-900 border border-dark-800 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-dark-800"></div>
+                    <div className="space-y-1.5">
+                      <div className="h-3 w-28 bg-dark-700 rounded"></div>
+                      <div className="h-2.5 w-20 bg-dark-800 rounded"></div>
+                    </div>
+                  </div>
+                  <div className="h-4 w-12 bg-dark-800 rounded"></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 pb-20 md:pb-6">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   DollarSign, 
   Calendar, 
@@ -43,6 +43,7 @@ export default function RegisterPaymentModal({
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const montoInputRef = useRef(null);
 
   // 1. Inicializar lista de alumnos y planes disponibles (desde public.membership_plans)
   useEffect(() => {
@@ -148,6 +149,9 @@ export default function RegisterPaymentModal({
       fecha_pago: new Date().toISOString().split('T')[0]
     });
     setErrorMessage('');
+    if (montoInputRef.current) {
+      montoInputRef.current.value = '';
+    }
   }, [isOpen, initialClient, initialClientId, initialPlanId, availableClients, plans]);
 
   if (!isOpen) return null;
@@ -194,10 +198,10 @@ export default function RegisterPaymentModal({
     }));
   };
 
-  // Manejar cambio seguro de monto (Android / Mobile friendly)
-  const handleMontoChange = (e) => {
-    // Solo permite números, elimina letras o símbolos que introduzca el teclado por error
+  // Manejar cambio de monto al perder foco (onBlur) para no chocar con el teclado Samsung One UI / Android
+  const handleMontoBlur = (e) => {
     const rawValue = e.target.value.replace(/\D/g, '');
+    e.target.value = rawValue;
     setPaymentForm(prev => ({ ...prev, monto: rawValue }));
   };
 
@@ -221,7 +225,8 @@ export default function RegisterPaymentModal({
       return;
     }
 
-    const montoRaw = String(paymentForm.monto || '').trim();
+    const inputVal = montoInputRef.current ? montoInputRef.current.value : paymentForm.monto;
+    const montoRaw = String(inputVal || '').replace(/\D/g, '').trim();
     const montoNum = Number(montoRaw);
     if (!montoRaw || isNaN(montoNum) || !isFinite(montoNum) || montoNum <= 0) {
       setErrorMessage('Ingresa un monto válido estrictamente mayor a 0 ($ ARS).');
@@ -410,15 +415,16 @@ export default function RegisterPaymentModal({
               <div className="relative">
                 <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">$</span>
                 <input
-                  type="text"
+                  ref={montoInputRef}
+                  type="tel"
                   inputMode="numeric"
                   pattern="[0-9]*"
                   autoComplete="off"
                   autoCorrect="off"
                   spellCheck="false"
                   data-lpignore="true"
-                  value={paymentForm.monto}
-                  onChange={handleMontoChange}
+                  defaultValue={paymentForm.monto}
+                  onBlur={handleMontoBlur}
                   className="w-full pl-6 pr-2.5 py-1.5 text-xs sm:text-sm rounded-lg bg-gray-800/80 border border-gray-700 text-white font-mono font-bold focus:outline-none focus:border-brand"
                   placeholder="Ingrese monto a cobrar"
                   required
