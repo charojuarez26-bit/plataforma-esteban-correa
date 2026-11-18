@@ -1281,7 +1281,7 @@ export const dataService = {
           id: found.id || MEMBERSHIP_PLAN_IDS[tipo],
           tipo,
           nombre: found.nombre || defaultPlan.nombre,
-          precio: resolvedPrecio,
+          precio: null, // Modelo 100% personalizado: el precio solo se define al cobrar
           duracion_dias: found.duracion_dias || 30,
           dias_vigencia: found.duracion_dias || found.dias_vigencia || 30,
           activo: found.activo !== false,

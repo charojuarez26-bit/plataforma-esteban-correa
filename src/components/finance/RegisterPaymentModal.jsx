@@ -22,7 +22,13 @@ export default function RegisterPaymentModal({
   isOpen,
   onClose,
   initialClient = null,
+  client = null,
+  alumno = null,
   initialClientId = null,
+  clientId = null,
+  alumnoId = null,
+  alumnoNombre = null,
+  planActual = null,
   initialPlanId = null,
   clients = [],
   trainingPlans = [],
@@ -44,6 +50,7 @@ export default function RegisterPaymentModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const montoInputRef = useRef(null);
+  const wasOpenRef = useRef(false);
 
   // 1. Inicializar lista de alumnos y planes disponibles (desde public.membership_plans)
   useEffect(() => {
@@ -61,10 +68,18 @@ export default function RegisterPaymentModal({
       };
 
       let finalClients = filterRealClients(clients);
+      const singleTarget = initialClient || client || alumno;
+      if (singleTarget && singleTarget.id && !finalClients.some(c => c.id === singleTarget.id)) {
+        finalClients = [singleTarget, ...finalClients];
+      }
+
       if (finalClients.length === 0) {
         try {
           const fetched = await dataService.getClients();
           finalClients = filterRealClients(fetched);
+          if (singleTarget && singleTarget.id && !finalClients.some(c => c.id === singleTarget.id)) {
+            finalClients = [singleTarget, ...finalClients];
+          }
         } catch (e) {
           console.warn('[RegisterPaymentModal] Error cargando clients:', e);
         }
@@ -102,16 +117,26 @@ export default function RegisterPaymentModal({
     return () => {
       active = false;
     };
-  }, [isOpen, clients, trainingPlans]);
+  }, [isOpen, clients, trainingPlans, initialClient, client, alumno]);
 
   // 2. Sincronizar formulario con initialClient o selección
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      wasOpenRef.current = false;
+      return;
+    }
+
+    const isNewlyOpened = !wasOpenRef.current;
+    wasOpenRef.current = true;
 
     // Determinar alumno objetivo
-    let target = initialClient;
-    if (!target && initialClientId && availableClients.length > 0) {
-      target = availableClients.find(c => c.id === initialClientId);
+    let target = initialClient || client || alumno;
+    const targetId = alumnoId || clientId || initialClientId;
+    if (!target && targetId && availableClients.length > 0) {
+      target = availableClients.find(c => c.id === targetId);
+    }
+    if (!target && targetId) {
+      target = { id: targetId, nombre_completo: alumnoNombre || '', plan_actual: planActual || '' };
     }
     if (!target && availableClients.length > 0) {
       target = availableClients[0];
@@ -121,9 +146,10 @@ export default function RegisterPaymentModal({
 
     // Determinar plan inicial desde membership_plans
     const currentPlans = plans.length > 0 ? plans : [];
+    const targetPlan = planActual || initialPlanId;
     let matchedPlan = null;
-    if (initialPlanId) {
-      matchedPlan = currentPlans.find(p => p.id === initialPlanId || p.nombre === initialPlanId);
+    if (targetPlan) {
+      matchedPlan = currentPlans.find(p => p.id === targetPlan || p.nombre?.toLowerCase() === String(targetPlan).toLowerCase());
     }
     if (!matchedPlan && target?.plan_id) {
       matchedPlan = currentPlans.find(p => p.id === target.plan_id);
@@ -135,24 +161,50 @@ export default function RegisterPaymentModal({
       matchedPlan = currentPlans[0];
     }
 
-    const defaultPlanNombre = matchedPlan?.nombre || target?.plan_actual || 'Presencial';
+    const defaultPlanNombre = matchedPlan?.nombre || target?.plan_actual || planActual || 'Presencial';
     const defaultPlanId = matchedPlan?.id || target?.plan_id || '';
     const defaultDias = matchedPlan?.duracion_dias || matchedPlan?.dias_vigencia || 30;
 
-    setPaymentForm({
-      client_id: target?.id || '',
-      plan_id: defaultPlanId,
-      plan_nombre: defaultPlanNombre,
-      monto: '', // Vacío por defecto para que el entrenador ingrese el importe libremente
-      metodo: 'Transferencia',
-      dias_vigencia: defaultDias,
-      fecha_pago: new Date().toISOString().split('T')[0]
-    });
-    setErrorMessage('');
-    if (montoInputRef.current) {
-      montoInputRef.current.value = '';
+    // SOLO resetear el monto y los campos si es una apertura nueva del modal
+    if (isNewlyOpened) {
+      setPaymentForm({
+        client_id: target?.id || targetId || '',
+        plan_id: defaultPlanId,
+        plan_nombre: defaultPlanNombre,
+        monto: '', // Vacío por defecto para que el entrenador ingrese el importe libremente
+        metodo: 'Transferencia',
+        dias_vigencia: defaultDias,
+        fecha_pago: new Date().toISOString().split('T')[0]
+      });
+      setErrorMessage('');
+      if (montoInputRef.current) {
+        montoInputRef.current.value = '';
+      }
+    } else {
+      // Si el modal ya estaba abierto y se resolvieron clientes o planes en segundo plano,
+      // actualizamos los IDs sin sobreescribir el monto tipeado por el usuario
+      setPaymentForm(prev => ({
+        ...prev,
+        client_id: prev.client_id || target?.id || targetId || '',
+        plan_id: prev.plan_id || defaultPlanId,
+        plan_nombre: prev.plan_nombre || defaultPlanNombre,
+        dias_vigencia: prev.dias_vigencia || defaultDias
+      }));
     }
-  }, [isOpen, initialClient, initialClientId, initialPlanId, availableClients, plans]);
+  }, [
+    isOpen, 
+    initialClient, 
+    client, 
+    alumno, 
+    initialClientId, 
+    clientId, 
+    alumnoId, 
+    alumnoNombre, 
+    planActual, 
+    initialPlanId, 
+    availableClients, 
+    plans
+  ]);
 
   if (!isOpen) return null;
 
@@ -360,7 +412,7 @@ export default function RegisterPaymentModal({
               <select
                 value={paymentForm.client_id}
                 onChange={(e) => handleClientChange(e.target.value)}
-                disabled={Boolean(initialClient)}
+                disabled={Boolean(initialClient || client || alumno || initialClientId || clientId || alumnoId)}
                 className="w-full py-1.5 px-3 text-xs sm:text-sm rounded-lg bg-gray-800/80 border border-gray-700 text-white font-semibold focus:outline-none focus:border-brand disabled:opacity-75 disabled:cursor-not-allowed"
                 required
               >

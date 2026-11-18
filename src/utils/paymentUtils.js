@@ -348,20 +348,16 @@ export function formatearPrecioARS(monto) {
 }
 
 /**
- * Obtiene el precio de referencia para un plan o alumno.
- * Prioriza el último monto abonado por el alumno o el precio configurado en membership_plans.
- * Retorna fallback seguro a 0 para prevenir fallos en tiempo de ejecución.
+ * Obtiene el último importe real registrado para un alumno desde client_payments.
+ * En el modelo 100% personalizado, no existen precios fijos ni de catálogo;
+ * si el alumno no registra un pago previo, retorna 0 ('A convenir' / 'A definir').
  */
-export function getPriceForPlan(planNameOrClient, targetClientId = null, payments = [], membershipPlans = []) {
+export function getPriceForPlan(planNameOrClient, targetClientId = null, payments = []) {
   try {
-    let planName = '';
     let cId = targetClientId;
 
     if (typeof planNameOrClient === 'object' && planNameOrClient !== null) {
-      planName = planNameOrClient.plan_actual || planNameOrClient.plan_nombre || '';
       cId = cId || planNameOrClient.id;
-    } else if (typeof planNameOrClient === 'string') {
-      planName = planNameOrClient;
     }
 
     if (cId && Array.isArray(payments) && payments.length > 0) {
@@ -369,18 +365,7 @@ export function getPriceForPlan(planNameOrClient, targetClientId = null, payment
       if (clientPay && clientPay.monto > 0) return clientPay.monto;
     }
 
-    if (planName && Array.isArray(membershipPlans) && membershipPlans.length > 0) {
-      const lower = planName.toLowerCase().trim();
-      const found = membershipPlans.find(m => 
-        (m.nombre && m.nombre.toLowerCase().trim() === lower) ||
-        (m.tipo && m.tipo.toLowerCase().trim() === lower) ||
-        (m.id && m.id === planName)
-      );
-      if (found && typeof found.precio === 'number' && found.precio > 0) {
-        return found.precio;
-      }
-    }
-
+    // Modelo 100% personalizado: nunca retornar un precio base de membership_plans
     return 0;
   } catch {
     return 0;

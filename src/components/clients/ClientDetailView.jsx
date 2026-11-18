@@ -1816,11 +1816,16 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
         </div>
       )}
 
-      {/* Modal Registrar Cobro */}
+      {/* Modal Registrar Cobro (Modal Único Unificado) */}
       <RegisterPaymentModal
         isOpen={isPaymentModalOpen}
         onClose={() => setIsPaymentModalOpen(false)}
+        client={client}
         initialClient={client}
+        alumnoId={client?.id}
+        alumnoNombre={client?.nombre_completo}
+        planActual={client?.plan_actual}
+        clients={client ? [client] : []}
         trainingPlans={membershipPlans}
         onPaymentSuccess={handlePaymentSuccess}
       />

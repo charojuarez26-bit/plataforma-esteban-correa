@@ -57,7 +57,6 @@ import {
   getEstadoPagoConfig, 
   formatearFechaPago, 
   diasRestantesParaVencimiento, 
-  formatearPrecioARS,
   normalizarFechaLocal,
   DEFAULT_BANK_DETAILS 
 } from '../../utils/paymentUtils';
@@ -90,6 +89,7 @@ function calculateCurrentWeekNumber(startDateStr, totalWeeks = 1) {
 export default function StudentPortal({ student, onLogout }) {
   const authContext = useAuth ? useAuth() : null;
   const authUser = authContext?.user || null;
+  const user = authContext?.user || student || null;
   const [currentStudent, setCurrentStudent] = useState(student || authUser);
 
   useEffect(() => {
@@ -131,6 +131,8 @@ export default function StudentPortal({ student, onLogout }) {
   const [evaluations, setEvaluations] = useState([]);
   const [payments, setPayments] = useState([]);
   const [ultimoPago, setUltimoPago] = useState(null);
+  const [ultimoMontoPagado, setUltimoMontoPagado] = useState(null);
+  const [montoRealPagado, setMontoRealPagado] = useState(null);
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [completedSets, setCompletedSets] = useState({});
@@ -259,6 +261,35 @@ export default function StudentPortal({ student, onLogout }) {
     loadStudentData();
   }, [student, authUser]);
 
+  // 2. Fetch OBLIGATORIO del último pago en client_payments con esquema exacto
+  const fetchUltimoPago = async (alumnoId) => {
+    if (!alumnoId) return;
+    try {
+      const { data, error } = await supabase
+        .from('client_payments')
+        .select('monto')
+        .eq('client_id', alumnoId) // Usando la columna correcta 'client_id'
+        .order('fecha_pago', { ascending: false }) // Usando la columna correcta 'fecha_pago'
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Error al traer el pago:", error.message);
+      } else if (data) {
+        setMontoRealPagado(data.monto);
+      }
+    } catch (err) {
+      console.error("Excepción en fetchUltimoPago:", err);
+    }
+  };
+
+  useEffect(() => {
+    const alumnoId = user?.id || student?.id || currentStudent?.id || (typeof window !== 'undefined' ? localStorage.getItem('active_student_id') : null);
+    if (alumnoId) {
+      fetchUltimoPago(alumnoId);
+    }
+  }, [user?.id, student?.id, currentStudent?.id]);
+
   // Consulta reactiva a Supabase para cargar el perfil del Coach
   useEffect(() => {
     let isMounted = true;
@@ -295,13 +326,23 @@ export default function StudentPortal({ student, onLogout }) {
   }, [currentStudent?.coach_id, student?.coach_id, authUser?.coach_id]);
 
   const loadStudentData = async () => {
-    const target = currentStudent || student || authUser;
-    if (!target?.id) return;
-    const studentId = target.id;
+    let target = currentStudent || student || authUser;
+    if (!target?.id) {
+      try {
+        const stored = localStorage.getItem('alumno_session');
+        if (stored) target = JSON.parse(stored);
+      } catch {}
+    }
+    const studentId = target?.id || (typeof window !== 'undefined' ? localStorage.getItem('active_student_id') : null);
+    if (!studentId) return;
+
+    // Obligar a buscar el último pago en client_payments
+    fetchUltimoPago(studentId);
+
     const r = await dataService.getRoutineForClient(studentId);
     const ev = await dataService.getEvaluations(studentId);
     const p = await dataService.getPayments(studentId);
-    let studentPayments = (Array.isArray(p) ? p : []).filter(item => !item.client_id || item.client_id === studentId || item.client_name === target.nombre_completo);
+    let studentPayments = (Array.isArray(p) ? p : []).filter(item => !item.client_id || item.client_id === studentId || item.client_name === target?.nombre_completo);
 
     // Rastrear el último pago real desde client_payments (Opción B)
     let latestPayment = null;
@@ -352,6 +393,13 @@ export default function StudentPortal({ student, onLogout }) {
     setPayments(studentPayments);
     if (latestPayment) {
       setUltimoPago(latestPayment);
+      if (latestPayment.monto != null) {
+        const pMonto = Number(latestPayment.monto);
+        if (!isNaN(pMonto) && pMonto > 0) {
+          setUltimoMontoPagado(pMonto);
+          setMontoRealPagado(pMonto);
+        }
+      }
     }
 
     try {
@@ -1099,9 +1147,23 @@ export default function StudentPortal({ student, onLogout }) {
     ? `Modalidad: ${studentProfile.modalidad} con seguimiento personalizado`
     : (studentProfile?.plan_description || studentProfile?.plan_descripcion || currentPlan?.descripcion || 'Modalidad: Presencial con seguimiento personalizado');
 
-  // Rastrear el monto real de la membresía (Opción B: último pago, Opción A: precio personalizado en BD)
+  // Modelo 100% personalizado: lógica binaria estricta
+  // - Si hay monto real pagado en client_payments, mostrar ese monto.
+  // - Si no hay pago registrado, mostrar null ("A convenir").
+  // Nunca intentar leer precios originales ni de planes ni del perfil.
   const montoMostrar = useMemo(() => {
-    // 1. Opción B: Monto del último pago registrado en client_payments
+    // 1. Estado explícito del monto real pagado (consulta directa a client_payments)
+    if (montoRealPagado != null && montoRealPagado !== '') {
+      const parsed = Number(montoRealPagado);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+
+    if (ultimoMontoPagado != null && ultimoMontoPagado !== '') {
+      const parsed = Number(ultimoMontoPagado);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+
+    // 2. Monto del último pago registrado en client_payments
     if (ultimoPago?.monto != null && ultimoPago?.monto !== '') {
       const parsed = Number(ultimoPago.monto);
       if (!isNaN(parsed) && parsed > 0) return parsed;
@@ -1111,32 +1173,9 @@ export default function StudentPortal({ student, onLogout }) {
       if (!isNaN(parsed) && parsed > 0) return parsed;
     }
 
-    // 2. Opción A: Campo de precio personalizado en el perfil del alumno
-    if (studentProfile?.precio_plan != null && studentProfile?.precio_plan !== '') {
-      const parsed = Number(studentProfile.precio_plan);
-      if (!isNaN(parsed) && parsed > 0) return parsed;
-    }
-    if (studentProfile?.precio != null && studentProfile?.precio !== '') {
-      const parsed = Number(studentProfile.precio);
-      if (!isNaN(parsed) && parsed > 0) return parsed;
-    }
-    if (studentProfile?.monto != null && studentProfile?.monto !== '') {
-      const parsed = Number(studentProfile.monto);
-      if (!isNaN(parsed) && parsed > 0) return parsed;
-    }
-    if (studentProfile?.plan_price != null && studentProfile?.plan_price !== '') {
-      const parsed = Number(studentProfile.plan_price);
-      if (!isNaN(parsed) && parsed > 0) return parsed;
-    }
-
-    // 3. Fallback a catálogo oficial de planes
-    if (currentPlan?.precio != null && currentPlan?.precio !== '') {
-      const parsed = Number(currentPlan.precio);
-      if (!isNaN(parsed) && parsed > 0) return parsed;
-    }
-
-    return 0;
-  }, [ultimoPago, payments, studentProfile, currentPlan]);
+    // Sin pago registrado en client_payments: no existe precio alternativo
+    return null;
+  }, [montoRealPagado, ultimoMontoPagado, ultimoPago, payments]);
 
   const planPrice = montoMostrar;
 
@@ -1375,18 +1414,15 @@ export default function StudentPortal({ student, onLogout }) {
                 <span className="text-[10px] font-bold uppercase text-gray-400 tracking-wider block">
                   Valor mensual del plan
                 </span>
-                <p className="text-2xl sm:text-3xl font-black text-white font-mono tracking-tight mt-0.5">
-                  {montoMostrar > 0 ? (
+                <div className="text-3xl font-bold mt-1">
+                  {(montoRealPagado || montoMostrar) ? (
                     <>
-                      ${montoMostrar.toLocaleString('es-AR')}{' '}
-                      <span className="text-xs sm:text-sm font-bold text-gray-400 ml-1 font-sans font-normal">
-                        / mes
-                      </span>
+                      ${(montoRealPagado || montoMostrar).toLocaleString('es-AR')} <span className="text-sm font-normal">/ mes</span>
                     </>
                   ) : (
-                    <span className="text-gray-500 font-sans text-base font-normal">A convenir</span>
+                    <span className="text-xl font-medium text-gray-400">A convenir</span>
                   )}
-                </p>
+                </div>
               </div>
 
               {/* Grid de 2 columnas con fechas: Inicio y Vencimiento */}
@@ -2249,16 +2285,14 @@ export default function StudentPortal({ student, onLogout }) {
               <div className="p-3.5 rounded-xl bg-dark-950 border border-dark-700 space-y-2">
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-gray-400">Valor que abonas:</span>
-                  <span className="font-mono font-black text-white text-base">
-                    {montoMostrar > 0 ? (
-                      <>
-                        ${montoMostrar.toLocaleString('es-AR')}{' '}
-                        <span className="text-xs text-gray-400 font-sans font-normal ml-1">/ mes</span>
-                      </>
-                    ) : (
-                      <span className="text-gray-500 font-sans text-xs font-normal">A convenir</span>
-                    )}
-                  </span>
+                  {(montoRealPagado || montoMostrar) ? (
+                    <span className="font-mono font-black text-white text-base">
+                      ${(montoRealPagado || montoMostrar).toLocaleString('es-AR')}{' '}
+                      <span className="text-xs text-gray-400 font-sans font-normal ml-1">/ mes</span>
+                    </span>
+                  ) : (
+                    <span className="text-xs font-semibold text-gray-400">A convenir</span>
+                  )}
                 </div>
 
                 {/* Grid 2 Columnas de Fechas */}
