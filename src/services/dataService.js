@@ -185,6 +185,7 @@ export function formatRoutineWithDays(rawRoutine) {
         descanso_segundos: re.descanso_segundos || 90,
         recommended_intensity: re.recommended_intensity || re.intensidad_recomendada || re.intensidad || '',
         intensidad_recomendada: re.recommended_intensity || re.intensidad_recomendada || re.intensidad || '',
+        observaciones: re.observaciones || re.notas || '',
         orden: re.orden || 1
       });
     });
@@ -218,7 +219,8 @@ export function formatRoutineWithDays(rawRoutine) {
       ejercicios: (d.ejercicios || []).map(ex => ({
         ...ex,
         recommended_intensity: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || '',
-        intensidad_recomendada: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || ''
+        intensidad_recomendada: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || '',
+        observaciones: ex.observaciones || ex.notas || ''
       }))
     };
   });
@@ -1902,6 +1904,7 @@ export const dataService = {
             descanso_segundos: parseInt(item.descanso_seg || item.descanso_segundos || 90, 10),
             recommended_intensity: item.recommended_intensity || item.intensidad_recomendada || item.intensidad || '',
             intensidad_recomendada: item.recommended_intensity || item.intensidad_recomendada || item.intensidad || '',
+            observaciones: item.observaciones ? String(item.observaciones).trim() : (item.notas ? String(item.notas).trim() : ''),
             orden: item.orden || exIdx + 1
           };
         });
@@ -2059,6 +2062,7 @@ export const dataService = {
         week_number: parseInt(d.week_number, 10) || 1,
         ejercicios: (d.ejercicios || []).map((item, exIdx) => ({
           ...item,
+          observaciones: item.observaciones || item.notas || '',
           id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? `ex-${crypto.randomUUID()}` : `ex-${Date.now()}-${dIdx}-${exIdx}`,
           exercise: item.exercise ? { ...item.exercise } : {}
         }))

@@ -35,7 +35,8 @@ import {
   Loader2,
   FileDown,
   Zap,
-  Award
+  Award,
+  Lightbulb
 } from 'lucide-react';
 import { toPng, toBlob } from 'html-to-image';
 import WorkoutShareStory from './WorkoutShareStory';
@@ -1936,6 +1937,23 @@ export default function StudentPortal({ student, onLogout }) {
                         </div>
                       )}
                     </div>
+
+                    {/* Consejos Técnicos / Observaciones del Entrenador */}
+                    {Boolean(item.observaciones && item.observaciones.trim()) && (
+                      <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-2.5 text-xs shadow-sm">
+                        <div className="w-6 h-6 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center shrink-0 text-amber-400 mt-0.5">
+                          <Lightbulb className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <span className="text-[10px] uppercase font-bold text-amber-400 tracking-wider block mb-0.5">
+                            Consejo del Entrenador
+                          </span>
+                          <p className="italic text-zinc-200 text-xs leading-relaxed break-words font-medium">
+                            "{item.observaciones.trim()}"
+                          </p>
+                        </div>
+                      </div>
+                    )}
 
                     {/* REGISTRO DETALLADO SERIE POR SERIE */}
                     <div className="space-y-2 pt-2 border-t border-dark-700/60">

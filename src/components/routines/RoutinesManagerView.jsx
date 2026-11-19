@@ -24,7 +24,8 @@ import {
   HeartPulse,
   Loader2,
   Repeat,
-  FileDown
+  FileDown,
+  MessageSquare
 } from 'lucide-react';
 import { exportRoutineToPdf } from '../../utils/routinePdfExporter';
 import { dataService } from '../../services/dataService';
@@ -265,7 +266,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
           repeticiones: e.repeticiones || '10-12',
           peso_sugerido: e.peso_raw !== null && e.peso_raw !== undefined ? e.peso_raw : (e.peso_sugerido || ''),
           descanso_seg: e.descanso_seg || e.descanso_segundos || 90,
-          recommended_intensity: e.recommended_intensity || e.intensidad_recomendada || e.intensidad || ''
+          recommended_intensity: e.recommended_intensity || e.intensidad_recomendada || e.intensidad || '',
+          observaciones: e.observaciones || e.notas || ''
         }))
       };
     });
@@ -564,7 +566,8 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       repeticiones: exercise.repeticiones || exercise.reps || '10-12',
       peso_sugerido: exercise.peso_sugerido || exercise.carga || 70,
       descanso_seg: exercise.descanso_seg || exercise.descanso || 90,
-      recommended_intensity: exercise.recommended_intensity || exercise.intensidad_recomendada || exercise.intensidad || ''
+      recommended_intensity: exercise.recommended_intensity || exercise.intensidad_recomendada || exercise.intensidad || '',
+      observaciones: exercise.observaciones || ''
     };
 
     setRoutineDays(prev => 
@@ -2213,6 +2216,21 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                               className="w-full bg-dark-900 border border-dark-700 focus:border-amber-400 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-amber-300 min-h-[44px] md:min-h-[38px] focus:outline-none placeholder:text-zinc-600 placeholder:font-normal"
                             />
                           </div>
+                        </div>
+
+                        {/* Observaciones / Consejos para el alumno */}
+                        <div className="mt-2.5 pt-2.5 border-t border-dark-800/80 text-left">
+                          <label className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold flex items-center gap-1.5 mb-1">
+                            <MessageSquare className="w-3 h-3 text-brand-light" />
+                            <span>Observaciones / Consejos</span>
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Ej: Controlar la bajada, mantener espalda recta..."
+                            value={item.observaciones || ''}
+                            onChange={(e) => handleUpdateExerciseParam(idx, 'observaciones', e.target.value)}
+                            className="w-full bg-dark-900 border border-dark-700 focus:border-brand rounded-lg px-3 py-2 md:py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none transition-colors min-h-[38px]"
+                          />
                         </div>
                       </div>
                     ))}

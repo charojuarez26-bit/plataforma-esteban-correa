@@ -27,7 +27,8 @@ import {
   AlertTriangle,
   Trash2,
   ExternalLink,
-  HeartPulse
+  HeartPulse,
+  Pencil
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -44,6 +45,7 @@ import EditClientModal from './EditClientModal';
 import RegisterPaymentModal from '../finance/RegisterPaymentModal';
 import MedicalRecordViewOnly from '../medical/MedicalRecordViewOnly';
 import WorkoutSessionProgress from '../progress/WorkoutSessionProgress';
+import RoutineEditorModal from '../routines/RoutineEditorModal';
 import { 
   calcularEstadoPago, 
   getEstadoPagoConfig, 
@@ -88,6 +90,10 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
   const [editPhotoRemoved, setEditPhotoRemoved] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [editFormData, setEditFormData] = useState({});
+
+  // Modal Creador / Editor de Rutinas
+  const [isRoutineEditorOpen, setIsRoutineEditorOpen] = useState(false);
+  const [routineToEdit, setRoutineToEdit] = useState(null);
 
   const [isAssignRoutineOpen, setIsAssignRoutineOpen] = useState(false);
   const [catalogExercises, setCatalogExercises] = useState([]);
@@ -227,10 +233,32 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
     }
   };
 
-  const handleGoToRoutineCreator = () => {
-    if (onCreateRoutine && client?.id) {
-      onCreateRoutine(client.id);
+  const handleOpenEditRoutineModal = () => {
+    if (routine) {
+      setRoutineToEdit(routine);
+      setIsRoutineEditorOpen(true);
     }
+  };
+
+  const handleOpenCreateRoutineModal = () => {
+    setRoutineToEdit(null);
+    setIsRoutineEditorOpen(true);
+  };
+
+  const handleRoutineSaved = async () => {
+    setIsRoutineEditorOpen(false);
+    setRoutineToEdit(null);
+    if (client?.id) {
+      await loadClientData(client.id);
+      if (onUpdateClient) {
+        const updatedClient = await dataService.getClientById(client.id);
+        if (updatedClient) onUpdateClient(updatedClient);
+      }
+    }
+  };
+
+  const handleGoToRoutineCreator = () => {
+    handleOpenCreateRoutineModal();
   };
 
   const handlePaymentSuccess = async (result) => {
@@ -975,11 +1003,11 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
 
                   <button
                     type="button"
-                    onClick={handleGoToRoutineCreator}
+                    onClick={handleOpenEditRoutineModal}
                     className="px-3 py-1.5 rounded-xl bg-brand/20 hover:bg-brand/30 text-brand-light border border-brand/40 font-bold text-xs transition-all flex items-center gap-1.5"
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Editar en Creador</span>
+                    <Pencil className="w-3.5 h-3.5" />
+                    <span>Editar Rutina</span>
                   </button>
 
                   <button
@@ -1075,22 +1103,37 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
 
                     <div className="space-y-2">
                       {dia.ejercicios.map((item, eIdx) => (
-                        <div key={eIdx} className="p-3 rounded-lg bg-dark-850 border border-dark-750 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                          <div className="flex items-center gap-3">
-                            <span className="w-6 h-6 rounded-full bg-brand/20 text-brand-light text-xs font-bold flex items-center justify-center shrink-0">
-                              {eIdx + 1}
-                            </span>
-                            <div>
-                              <p className="text-xs font-bold text-white">{item.exercise?.nombre}</p>
-                              <span className="text-[10px] text-gray-400">{item.exercise?.grupo_muscular}</span>
+                        <div key={eIdx} className="p-3 rounded-lg bg-dark-850 border border-dark-750 flex flex-col gap-2">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="flex items-center gap-3">
+                              <span className="w-6 h-6 rounded-full bg-brand/20 text-brand-light text-xs font-bold flex items-center justify-center shrink-0">
+                                {eIdx + 1}
+                              </span>
+                              <div>
+                                <p className="text-xs font-bold text-white">{item.exercise?.nombre}</p>
+                                <span className="text-[10px] text-gray-400">{item.exercise?.grupo_muscular}</span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-3 text-xs self-end sm:self-center">
+                              <span className="font-semibold text-gray-300">{item.series} x {item.repeticiones}</span>
+                              <span className="font-bold text-brand-light bg-brand/10 px-2 py-0.5 rounded">{item.peso_sugerido}</span>
+                              <span className="text-gray-400 text-[11px]">{item.descanso_seg}s desc.</span>
+                              {(item.recommended_intensity || item.intensidad_recomendada) && (
+                                <span className="text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 text-[10px]">
+                                  {item.recommended_intensity || item.intensidad_recomendada}
+                                </span>
+                              )}
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-3 text-xs self-end sm:self-center">
-                            <span className="font-semibold text-gray-300">{item.series} x {item.repeticiones}</span>
-                            <span className="font-bold text-brand-light bg-brand/10 px-2 py-0.5 rounded">{item.peso_sugerido}</span>
-                            <span className="text-gray-400 text-[11px]">{item.descanso_seg}s desc.</span>
-                          </div>
+                          {/* Observaciones / Consejos (sutil en vista previa Admin) */}
+                          {Boolean(item.observaciones?.trim()) && (
+                            <div className="text-[11px] text-zinc-400 italic bg-dark-900/60 rounded-lg px-2.5 py-1.5 border-l-2 border-brand/60 flex items-start gap-1.5 ml-0 sm:ml-9">
+                              <MessageSquare className="w-3 h-3 text-brand-light shrink-0 mt-0.5" />
+                              <span>{item.observaciones.trim()}</span>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1598,7 +1641,8 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                                 series: 4,
                                 repeticiones: '10-12',
                                 peso_sugerido: 'RPE 8',
-                                descanso_seg: 90
+                                descanso_seg: 90,
+                                observaciones: ''
                               }]);
                             }
                           }}
@@ -1829,6 +1873,21 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
         trainingPlans={membershipPlans}
         onPaymentSuccess={handlePaymentSuccess}
       />
+
+      {/* Modal Creador / Editor de Rutinas */}
+      {isRoutineEditorOpen && (
+        <RoutineEditorModal
+          isOpen={isRoutineEditorOpen}
+          onClose={() => {
+            setIsRoutineEditorOpen(false);
+            setRoutineToEdit(null);
+          }}
+          routineToEdit={routineToEdit}
+          initialClient={client}
+          clients={client ? [client] : []}
+          onSaveSuccess={handleRoutineSaved}
+        />
+      )}
 
     </div>
   );
