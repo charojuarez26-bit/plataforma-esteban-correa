@@ -111,6 +111,17 @@ export function parseWeight(val) {
   return match ? parseFloat(match[1]) : null;
 }
 
+export function isExerciseLogCompleted(log) {
+  if (!log) return false;
+  if (log.completado === false || log.completed === false || log.is_completed === false) {
+    return false;
+  }
+  if (log.actual_sets !== undefined && log.actual_sets !== null && Number(log.actual_sets) === 0) {
+    return false;
+  }
+  return true;
+}
+
 export function formatRoutineWithDays(rawRoutine) {
   if (!rawRoutine) return null;
 
@@ -2732,18 +2743,22 @@ export const dataService = {
           return isNaN(num) ? null : num;
         };
 
-        const exerciseRows = exercises.map(ex => ({
-          session_log_id: sessionLogId,
-          exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
-          prescribed_sets: toInt(ex.prescribed_sets ?? ex.series),
-          prescribed_reps: toInt(ex.prescribed_reps ?? ex.repeticiones),
-          prescribed_weight: toFloat(ex.prescribed_weight ?? ex.peso_sugerido ?? ex.peso),
-          actual_sets: toInt(ex.actual_sets ?? ex.series_reales ?? ex.series),
-          actual_reps: toInt(ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones),
-          actual_weight: toFloat(ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido),
-          actual_intensity: ex.actual_intensity ? String(ex.actual_intensity).trim() : null,
-          recommended_intensity: (ex.recommended_intensity || ex.intensidad_recomendada) ? String(ex.recommended_intensity || ex.intensidad_recomendada).trim() : null
-        }));
+        const exerciseRows = exercises.map(ex => {
+          const isCompleted = ex.completado !== false && ex.completed !== false && ex.is_completed !== false;
+          return {
+            session_log_id: sessionLogId,
+            exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
+            prescribed_sets: toInt(ex.prescribed_sets ?? ex.series),
+            prescribed_reps: toInt(ex.prescribed_reps ?? ex.repeticiones),
+            prescribed_weight: toFloat(ex.prescribed_weight ?? ex.peso_sugerido ?? ex.peso),
+            actual_sets: isCompleted ? toInt(ex.actual_sets ?? ex.series_reales ?? ex.series) : 0,
+            actual_reps: isCompleted ? toInt(ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones) : 0,
+            actual_weight: isCompleted ? toFloat(ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido) : 0,
+            actual_intensity: isCompleted && ex.actual_intensity ? String(ex.actual_intensity).trim() : null,
+            recommended_intensity: (ex.recommended_intensity || ex.intensidad_recomendada) ? String(ex.recommended_intensity || ex.intensidad_recomendada).trim() : null,
+            completado: isCompleted
+          };
+        });
 
         let { data: exData, error: exercisesError } = await withAuthRetry(() =>
           supabase
@@ -2752,29 +2767,66 @@ export const dataService = {
             .select()
         );
 
-        // Fallback preventivo si la migración de actual_intensity aún no se ejecutó en Supabase
-        if (exercisesError && (exercisesError.code === '42703' || exercisesError.message?.includes('actual_intensity') || exercisesError.message?.includes('recommended_intensity'))) {
-          console.warn('[DataService] Columna actual_intensity aún no migrada en session_exercise_logs. Reintentando inserción básica...');
-          const basicRows = exerciseRows.map(r => {
+        const isMissingColumnError = (err) =>
+          Boolean(err) && (
+            err.code === '42703' ||
+            err.code === 'PGRST204' ||
+            /completado|actual_intensity|recommended_intensity/i.test(err.message || '')
+          );
+
+        // Fallback preventivo si columnas opcionales ('completado', 'actual_intensity', 'recommended_intensity') aún no fueron migradas en Supabase
+        if (isMissingColumnError(exercisesError)) {
+          console.warn('[DataService] Columna opcional aún no migrada en session_exercise_logs. Reintentando inserción compatible...', exercisesError.message);
+          const msg = exercisesError.message || '';
+          const missingCompletado = /completado/i.test(msg);
+          const missingIntensity = /actual_intensity|recommended_intensity/i.test(msg);
+
+          const attemptRows = exerciseRows.map(r => {
             const copy = { ...r };
-            delete copy.actual_intensity;
-            delete copy.recommended_intensity;
+            if (missingCompletado || (!missingCompletado && !missingIntensity)) delete copy.completado;
+            if (missingIntensity || (!missingCompletado && !missingIntensity)) {
+              delete copy.actual_intensity;
+              delete copy.recommended_intensity;
+            }
             return copy;
           });
+
           const retry = await withAuthRetry(() =>
             supabase
               .from('session_exercise_logs')
-              .insert(basicRows)
+              .insert(attemptRows)
               .select()
           );
           exData = retry.data;
           exercisesError = retry.error;
+
+          if (isMissingColumnError(exercisesError)) {
+            const minimalRows = exerciseRows.map(r => {
+              const copy = { ...r };
+              delete copy.completado;
+              delete copy.actual_intensity;
+              delete copy.recommended_intensity;
+              return copy;
+            });
+            const retry2 = await withAuthRetry(() =>
+              supabase
+                .from('session_exercise_logs')
+                .insert(minimalRows)
+                .select()
+            );
+            exData = retry2.data;
+            exercisesError = retry2.error;
+          }
         }
 
         if (exercisesError) {
           console.error('[DataService] Error insertando session_exercise_logs:', exercisesError);
+          throw exercisesError;
         } else if (exData) {
-          savedExerciseLogs = exData;
+          savedExerciseLogs = exData.map((row, idx) => ({
+            ...row,
+            completado: row.completado !== undefined ? row.completado : exerciseRows[idx]?.completado !== false
+          }));
         }
       }
 
@@ -2802,16 +2854,20 @@ export const dataService = {
         client_id: clientId,
         fecha: new Date().toISOString(),
         comentarios_alumno: comentarios || null,
-        session_exercise_logs: exercises.map((ex, idx) => ({
-          id: `local-ex-${Date.now()}-${idx}`,
-          exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
-          prescribed_sets: ex.prescribed_sets ?? ex.series,
-          prescribed_reps: ex.prescribed_reps ?? ex.repeticiones,
-          prescribed_weight: ex.prescribed_weight ?? ex.peso_sugerido,
-          actual_sets: ex.actual_sets ?? ex.series_reales ?? ex.series,
-          actual_reps: ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones,
-          actual_weight: ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido
-        }))
+        session_exercise_logs: exercises.map((ex, idx) => {
+          const isCompleted = ex.completado !== false && ex.completed !== false && ex.is_completed !== false;
+          return {
+            id: `local-ex-${Date.now()}-${idx}`,
+            exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
+            prescribed_sets: ex.prescribed_sets ?? ex.series,
+            prescribed_reps: ex.prescribed_reps ?? ex.repeticiones,
+            prescribed_weight: ex.prescribed_weight ?? ex.peso_sugerido,
+            actual_sets: isCompleted ? (ex.actual_sets ?? ex.series_reales ?? ex.series) : 0,
+            actual_reps: isCompleted ? (ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones) : 0,
+            actual_weight: isCompleted ? (ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido) : 0,
+            completado: isCompleted
+          };
+        })
       };
 
       try {

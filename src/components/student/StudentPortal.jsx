@@ -36,7 +36,8 @@ import {
   FileDown,
   Zap,
   Award,
-  Lightbulb
+  Lightbulb,
+  XCircle
 } from 'lucide-react';
 import { toPng, toBlob } from 'html-to-image';
 import WorkoutShareStory from './WorkoutShareStory';
@@ -51,7 +52,7 @@ import {
   Tooltip, 
   ResponsiveContainer 
 } from 'recharts';
-import { dataService } from '../../services/dataService';
+import { dataService, isExerciseLogCompleted } from '../../services/dataService';
 import { supabase } from '../../lib/supabaseClient';
 import { 
   calcularEstadoPago, 
@@ -166,11 +167,21 @@ export default function StudentPortal({ student, onLogout }) {
 
   // Seguimiento de Rutina: Finalizar entreno
   const [showFinishConfirmModal, setShowFinishConfirmModal] = useState(false);
+  const [showIncompleteWarningModal, setShowIncompleteWarningModal] = useState(false);
   const [showFinishSuccessModal, setShowFinishSuccessModal] = useState(false);
   const [isFinishingWorkout, setIsFinishingWorkout] = useState(false);
   const [completedSessionsToday, setCompletedSessionsToday] = useState([]);
   const [entrenamientosDeHoy, setEntrenamientosDeHoy] = useState([]);
   const [sessionComments, setSessionComments] = useState('');
+
+  // Persistencia de borrador en localStorage (anti-pérdida al cambiar de app en celular)
+  const workoutStateRef = useRef({
+    completedSets: {},
+    exerciseLogs: {},
+    sessionComments: ''
+  });
+  const loadedDraftKeyRef = useRef(null);
+  const restoredActiveSessionRef = useRef(false);
 
   // Modal de Resumen y Compartir en Stories (HTML5 Canvas / html-to-image 9:16)
   const [showShareModal, setShowShareModal] = useState(false);
@@ -702,8 +713,44 @@ export default function StudentPortal({ student, onLogout }) {
 
   const currentDay = hasRoutine && currentWeekDays[selectedDayIndex] ? currentWeekDays[selectedDayIndex] : (currentWeekDays[0] || null);
 
+  // Clave única por alumno, rutina y día para persistencia automática en localStorage
+  const activeStudentId = student?.id || currentStudent?.id || authUser?.id;
+  const activeRoutineId = routine?.id;
+  const activeDayKey = currentDay
+    ? (totalWeeks > 1
+        ? `w${selectedWeek}_${currentDay.id || selectedDayIndex}`
+        : (currentDay.id || `day_${selectedDayIndex}`))
+    : null;
+  const workoutDraftKey = (activeStudentId && activeRoutineId && activeDayKey)
+    ? `workout_draft_${activeStudentId}_${activeRoutineId}_${activeDayKey}`
+    : null;
+  const activeSessionResumeKey = (activeStudentId && activeRoutineId)
+    ? `workout_active_session_${activeStudentId}_${activeRoutineId}`
+    : null;
+
   useEffect(() => {
     if (routine) {
+      // Si existe un borrador de entrenamiento activo sin finalizar, restaurar semana y día automáticamente
+      if (activeSessionResumeKey && !restoredActiveSessionRef.current) {
+        restoredActiveSessionRef.current = true;
+        try {
+          const raw = localStorage.getItem(activeSessionResumeKey);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed?.draftKey && localStorage.getItem(parsed.draftKey)) {
+              if (typeof parsed.selectedWeek === 'number' && parsed.selectedWeek >= 1) {
+                setSelectedWeek(parsed.selectedWeek);
+              }
+              if (typeof parsed.selectedDayIndex === 'number' && parsed.selectedDayIndex >= 0) {
+                setSelectedDayIndex(parsed.selectedDayIndex);
+              }
+              setActiveSection('routine');
+              return;
+            }
+          }
+        } catch {}
+      }
+
       const totWeeks = routine.total_weeks || 1;
       if (totWeeks > 1 && startDate) {
         const activeW = calculateCurrentWeekNumber(startDate, totWeeks);
@@ -712,7 +759,52 @@ export default function StudentPortal({ student, onLogout }) {
         setSelectedWeek(1);
       }
     }
-  }, [routine, startDate]);
+  }, [routine, startDate, activeSessionResumeKey]);
+
+  // Restaurar borrador desde localStorage al montar o al cambiar de día/semana
+  useEffect(() => {
+    if (!workoutDraftKey) return;
+    if (loadedDraftKeyRef.current === workoutDraftKey) return;
+
+    try {
+      const savedRaw = localStorage.getItem(workoutDraftKey);
+      if (savedRaw) {
+        const parsed = JSON.parse(savedRaw);
+        const restoredSets = (parsed?.completedSets && typeof parsed.completedSets === 'object') ? parsed.completedSets : {};
+        const restoredLogs = (parsed?.exerciseLogs && typeof parsed.exerciseLogs === 'object') ? parsed.exerciseLogs : {};
+        const restoredComments = typeof parsed?.sessionComments === 'string' ? parsed.sessionComments : '';
+        setCompletedSets(restoredSets);
+        setExerciseLogs(restoredLogs);
+        setSessionComments(restoredComments);
+        workoutStateRef.current = {
+          completedSets: restoredSets,
+          exerciseLogs: restoredLogs,
+          sessionComments: restoredComments
+        };
+      } else {
+        setCompletedSets({});
+        setExerciseLogs({});
+        setSessionComments('');
+        workoutStateRef.current = {
+          completedSets: {},
+          exerciseLogs: {},
+          sessionComments: ''
+        };
+      }
+    } catch (err) {
+      console.warn('[StudentPortal] Error restaurando borrador de entrenamiento:', err);
+      setCompletedSets({});
+      setExerciseLogs({});
+      setSessionComments('');
+      workoutStateRef.current = {
+        completedSets: {},
+        exerciseLogs: {},
+        sessionComments: ''
+      };
+    }
+
+    loadedDraftKeyRef.current = workoutDraftKey;
+  }, [workoutDraftKey]);
 
   // Regla de Negocio: Bucle Semanal o Microciclo.
   // La rutina asignada y sus días NUNCA mutan su estado a completada=true en la tabla de rutinas.
@@ -754,15 +846,72 @@ export default function StudentPortal({ student, onLogout }) {
   // Inmutabilidad de Sesiones de Entrenamiento (Read-Only por el día actual)
   const isReadOnly = isCurrentDayDone;
 
+  // Sesión guardada hoy (para reflejar exactamente qué series se completaron en modo solo lectura tras recargar)
+  const todaySavedSessionLogs = useMemo(() => {
+    if (!isReadOnly || !studentSessionLogs || studentSessionLogs.length === 0) return null;
+    const todayStr = new Date().toISOString().split('T')[0];
+    const todayMatch = studentSessionLogs.find(sess => {
+      if (!sess?.fecha) return false;
+      return String(sess.fecha).split('T')[0] === todayStr;
+    });
+    return todayMatch?.session_exercise_logs || null;
+  }, [isReadOnly, studentSessionLogs]);
+
+  // Guardar borrador inmediatamente en localStorage en cada interacción del alumno
+  const saveWorkoutDraftImmediate = (nextPartial = {}) => {
+    if (!workoutDraftKey || isReadOnly) return;
+    const merged = {
+      completedSets: nextPartial.completedSets !== undefined ? nextPartial.completedSets : workoutStateRef.current.completedSets,
+      exerciseLogs: nextPartial.exerciseLogs !== undefined ? nextPartial.exerciseLogs : workoutStateRef.current.exerciseLogs,
+      sessionComments: nextPartial.sessionComments !== undefined ? nextPartial.sessionComments : workoutStateRef.current.sessionComments,
+      updatedAt: new Date().toISOString()
+    };
+    workoutStateRef.current = {
+      completedSets: merged.completedSets,
+      exerciseLogs: merged.exerciseLogs,
+      sessionComments: merged.sessionComments
+    };
+    try {
+      localStorage.setItem(workoutDraftKey, JSON.stringify(merged));
+      if (activeSessionResumeKey) {
+        localStorage.setItem(activeSessionResumeKey, JSON.stringify({
+          draftKey: workoutDraftKey,
+          selectedWeek,
+          selectedDayIndex,
+          updatedAt: merged.updatedAt
+        }));
+      }
+    } catch (e) {
+      console.warn('[StudentPortal] Error guardando borrador de entrenamiento en localStorage:', e);
+    }
+  };
+
+  const updateExerciseLogField = (fieldKey, value) => {
+    if (isReadOnly) return;
+    const nextLogs = {
+      ...workoutStateRef.current.exerciseLogs,
+      [fieldKey]: value
+    };
+    setExerciseLogs(nextLogs);
+    saveWorkoutDraftImmediate({ exerciseLogs: nextLogs });
+  };
+
+  const updateSessionComments = (value) => {
+    setSessionComments(value);
+    saveWorkoutDraftImmediate({ sessionComments: value });
+  };
+
   const toggleSetCompleted = (exerciseId, setIdx, restParam = 90) => {
     if (isReadOnly) return;
     const key = `${exerciseId}-${setIdx}`;
-    const willBeDone = !completedSets[key];
-
-    setCompletedSets(prev => ({
-      ...prev,
+    const willBeDone = !workoutStateRef.current.completedSets[key];
+    const nextCompleted = {
+      ...workoutStateRef.current.completedSets,
       [key]: willBeDone
-    }));
+    };
+
+    setCompletedSets(nextCompleted);
+    saveWorkoutDraftImmediate({ completedSets: nextCompleted });
 
     // Auto-Rest Timer: iniciar automáticamente al marcar la serie como completada
     if (willBeDone) {
@@ -775,6 +924,51 @@ export default function StudentPortal({ student, onLogout }) {
     }
   };
 
+  // Estadísticas en tiempo real de ejercicios/series completados del día actual
+  const exerciseCompletionStats = useMemo(() => {
+    const list = currentDay?.ejercicios || [];
+    let fullyCompletedExercises = 0;
+    let partialExercises = 0;
+    let unstartedExercises = 0;
+    let totalSetsAll = 0;
+    let completedSetsAll = 0;
+
+    list.forEach(item => {
+      const totalSets = Math.max(1, parseInt(item.series, 10) || 1);
+      totalSetsAll += totalSets;
+      let doneCount = 0;
+      for (let sIdx = 0; sIdx < totalSets; sIdx++) {
+        if (completedSets[`${item.id}-${sIdx}`]) doneCount++;
+      }
+      completedSetsAll += doneCount;
+      if (doneCount === totalSets) fullyCompletedExercises++;
+      else if (doneCount > 0) partialExercises++;
+      else unstartedExercises++;
+    });
+
+    const incompleteExercisesCount = list.length - fullyCompletedExercises;
+    return {
+      totalExercises: list.length,
+      fullyCompletedExercises,
+      partialExercises,
+      unstartedExercises,
+      incompleteExercisesCount,
+      totalSetsAll,
+      completedSetsAll,
+      missingSetsCount: totalSetsAll - completedSetsAll
+    };
+  }, [currentDay, completedSets]);
+
+  // Validación previa al tocar "Finalizar y Guardar Sesión"
+  const handleRequestFinishWorkout = () => {
+    if (!currentDay || isReadOnly || isFinishingWorkout) return;
+    if (exerciseCompletionStats.incompleteExercisesCount > 0) {
+      setShowIncompleteWarningModal(true);
+    } else {
+      setShowFinishConfirmModal(true);
+    }
+  };
+
   const handleConfirmFinishWorkout = async () => {
     if (!currentDay || isReadOnly) return;
     setIsFinishingWorkout(true);
@@ -784,7 +978,7 @@ export default function StudentPortal({ student, onLogout }) {
     const studentId = student?.id || currentStudent?.id;
 
     try {
-      // 1. Mapear datos reales ejecutados SERIE POR SERIE para session_exercise_logs
+      // 1. Mapear datos reales ejecutados SERIE POR SERIE respetando estrictamente qué se completó
       const exercisesForLog = [];
 
       (currentDay.ejercicios || []).forEach(item => {
@@ -792,27 +986,33 @@ export default function StudentPortal({ student, onLogout }) {
 
         for (let sIdx = 0; sIdx < totalSets; sIdx++) {
           const isDone = Boolean(completedSets[`${item.id}-${sIdx}`]);
-          
+
           // Buscar valores específicos ingresados para esta serie
           const setPesoInput = exerciseLogs[`${item.id}_set_${sIdx}_peso`];
           const setRepsInput = exerciseLogs[`${item.id}_set_${sIdx}_reps`];
 
-          // Fallbacks: input específico de serie -> input general -> prescripción del coach
-          const actualWeight = (setPesoInput !== undefined && setPesoInput !== '')
-            ? setPesoInput
-            : ((exerciseLogs[`${item.id}_peso`] !== undefined && exerciseLogs[`${item.id}_peso`] !== '')
-              ? exerciseLogs[`${item.id}_peso`]
-              : (item.peso_sugerido || 0));
+          // Solo calcular valores reales si la serie fue marcada como completada
+          const actualWeight = isDone
+            ? ((setPesoInput !== undefined && setPesoInput !== '')
+                ? setPesoInput
+                : ((exerciseLogs[`${item.id}_peso`] !== undefined && exerciseLogs[`${item.id}_peso`] !== '')
+                  ? exerciseLogs[`${item.id}_peso`]
+                  : (item.peso_sugerido || 0)))
+            : 0;
 
-          const actualReps = (setRepsInput !== undefined && setRepsInput !== '')
-            ? setRepsInput
-            : ((exerciseLogs[`${item.id}_reps`] !== undefined && exerciseLogs[`${item.id}_reps`] !== '')
-              ? exerciseLogs[`${item.id}_reps`]
-              : (item.repeticiones || 10));
+          const actualReps = isDone
+            ? ((setRepsInput !== undefined && setRepsInput !== '')
+                ? setRepsInput
+                : ((exerciseLogs[`${item.id}_reps`] !== undefined && exerciseLogs[`${item.id}_reps`] !== '')
+                  ? exerciseLogs[`${item.id}_reps`]
+                  : (item.repeticiones || 10)))
+            : 0;
 
-          const actualIntensity = (
-            exerciseLogs[`${item.id}_actual_intensity`] !== undefined && exerciseLogs[`${item.id}_actual_intensity`] !== ''
-          ) ? exerciseLogs[`${item.id}_actual_intensity`] : (exerciseLogs[`${item.id}_intensity`] || '');
+          const actualIntensity = isDone
+            ? ((exerciseLogs[`${item.id}_actual_intensity`] !== undefined && exerciseLogs[`${item.id}_actual_intensity`] !== '')
+                ? exerciseLogs[`${item.id}_actual_intensity`]
+                : (exerciseLogs[`${item.id}_intensity`] || ''))
+            : null;
 
           const recommendedIntensity = item.recommended_intensity || item.intensidad_recomendada || '';
 
@@ -821,12 +1021,13 @@ export default function StudentPortal({ student, onLogout }) {
             prescribed_sets: totalSets,
             prescribed_reps: item.repeticiones,
             prescribed_weight: item.peso_sugerido,
-            actual_sets: 1, // 1 serie individual registrada
+            actual_sets: isDone ? 1 : 0,
             actual_reps: actualReps,
             actual_weight: actualWeight,
             recommended_intensity: recommendedIntensity,
             actual_intensity: actualIntensity,
             set_number: sIdx + 1,
+            completado: isDone,
             is_completed: isDone
           });
         }
@@ -838,6 +1039,10 @@ export default function StudentPortal({ student, onLogout }) {
         comentarios: sessionComments,
         exercises: exercisesForLog
       });
+
+      if (saveRes?.error) {
+        throw saveRes.error;
+      }
 
       if (saveRes?.data) {
         setStudentSessionLogs(prev => [saveRes.data, ...prev]);
@@ -859,20 +1064,35 @@ export default function StudentPortal({ student, onLogout }) {
         setTrainingSessions(prev => [recorded, ...prev]);
         setEntrenamientosDeHoy(prev => [recorded, ...prev]);
       }
+
+      // 4. Eliminar borrador de localStorage ÚNICAMENTE cuando se guardó con éxito en Supabase
+      try {
+        if (workoutDraftKey) {
+          localStorage.removeItem(workoutDraftKey);
+        }
+        if (activeSessionResumeKey) {
+          localStorage.removeItem(activeSessionResumeKey);
+        }
+      } catch (e) {
+        console.warn('[StudentPortal] No se pudo limpiar el borrador tras guardar:', e);
+      }
+
       setCompletedSessionsToday(prev => [...prev, dayId, dayLabel, currentDay.dia].filter(Boolean));
       setSessionComments('');
+      workoutStateRef.current.sessionComments = '';
       setShowFinishConfirmModal(false);
-      // Abrir modal de celebración con la tarjeta personalizada para Stories
-      handleOpenShareSummaryModal();
+      setShowIncompleteWarningModal(false);
+      // Abrir modal de celebración con la tarjeta personalizada para Stories (solo ejercicios realizados)
+      handleOpenShareSummaryModal(saveRes?.data);
     } catch (err) {
       console.error('Error al registrar finalización de entreno:', err);
-      alert('Hubo un error al registrar el entreno.');
+      alert('Hubo un error al guardar el entreno en el servidor. Tu progreso sigue guardado en este dispositivo para que puedas reintentar.');
     } finally {
       setIsFinishingWorkout(false);
     }
   };
 
-  const handleOpenShareSummaryModal = async () => {
+  const handleOpenShareSummaryModal = async (savedSessionOverride = null) => {
     if (!currentDay) return;
     setShowShareModal(true);
     setIsGeneratingShareImage(true);
@@ -882,13 +1102,13 @@ export default function StudentPortal({ student, onLogout }) {
       // Helper robusto para calcular reps limpias (evita multiplicar "10-12" como 1012 reps)
       const parseCleanReps = (val) => {
         if (typeof val === 'number') {
-          return isNaN(val) ? 10 : Math.max(1, Math.min(150, Math.round(val)));
+          return isNaN(val) ? 10 : Math.max(0, Math.min(150, Math.round(val)));
         }
-        if (!val) return 10;
+        if (!val) return 0;
         const matches = String(val).match(/\d+/g);
-        if (!matches || matches.length === 0) return 10;
+        if (!matches || matches.length === 0) return 0;
         const nums = matches.map(n => parseInt(n, 10)).filter(n => !isNaN(n) && n > 0 && n <= 150);
-        if (nums.length === 0) return 10;
+        if (nums.length === 0) return 0;
         return Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
       };
 
@@ -904,69 +1124,97 @@ export default function StudentPortal({ student, onLogout }) {
         return isNaN(num) ? 0 : Math.max(0, Math.min(1000, num));
       };
 
-      // 1. Mapear datos ejecutados de cada ejercicio del día
+      const hasInMemoryCompleted = Object.keys(completedSets).length > 0;
+      const persistedLogsSource = savedSessionOverride?.session_exercise_logs || (!hasInMemoryCompleted ? todaySavedSessionLogs : null);
+
+      // 1. Mapear SOLO datos realmente ejecutados (ignorando ejercicios y series con completado === false)
       let totalCompletedSetsCount = 0;
       let totalCalculatedVolume = 0;
       let totalCalculatedReps = 0;
       let completedExercisesNum = 0;
+      const exercisesSummary = [];
 
-      const exercisesSummary = (currentDay.ejercicios || []).map((item) => {
-        const itemSets = Math.max(1, parseInt(item.series, 10) || 1);
-        let completedInThisExercise = 0;
-        let maxWeight = 0;
-        let lastReps = 0;
+      if (persistedLogsSource && Array.isArray(persistedLogsSource) && !hasInMemoryCompleted) {
+        const grouped = new Map();
+        persistedLogsSource.forEach((log) => {
+          if (!isExerciseLogCompleted(log)) return;
+          const name = log.exercise_name || 'Ejercicio';
+          if (!grouped.has(name)) grouped.set(name, []);
+          grouped.get(name).push(log);
+        });
 
-        for (let sIdx = 0; sIdx < itemSets; sIdx++) {
-          const isDone = Boolean(completedSets[`${item.id}-${sIdx}`]);
-          if (isDone || isReadOnly) {
-            completedInThisExercise++;
-            totalCompletedSetsCount++;
-
-            const setPesoInput = exerciseLogs[`${item.id}_set_${sIdx}_peso`];
-            const setRepsInput = exerciseLogs[`${item.id}_set_${sIdx}_reps`];
-            const weightVal = (setPesoInput !== undefined && setPesoInput !== '')
-              ? parseCleanWeight(setPesoInput)
-              : ((exerciseLogs[`${item.id}_peso`] !== undefined && exerciseLogs[`${item.id}_peso`] !== '')
-                ? parseCleanWeight(exerciseLogs[`${item.id}_peso`])
-                : parseCleanWeight(item.peso_sugerido));
-
-            const repsVal = (setRepsInput !== undefined && setRepsInput !== '')
-              ? parseCleanReps(setRepsInput)
-              : ((exerciseLogs[`${item.id}_reps`] !== undefined && exerciseLogs[`${item.id}_reps`] !== '')
-                ? parseCleanReps(exerciseLogs[`${item.id}_reps`])
-                : parseCleanReps(item.repeticiones || 10));
-
-            if (weightVal > 0 && repsVal > 0) {
-              if (weightVal > maxWeight) maxWeight = weightVal;
-              totalCalculatedVolume += (weightVal * repsVal);
+        grouped.forEach((setsArr, exName) => {
+          let maxWeight = 0;
+          let lastReps = 0;
+          setsArr.forEach(s => {
+            totalCompletedSetsCount += (parseInt(s.actual_sets, 10) || 1);
+            const w = parseCleanWeight(s.actual_weight);
+            const r = parseCleanReps(s.actual_reps);
+            if (w > maxWeight) maxWeight = w;
+            if (w > 0 && r > 0) totalCalculatedVolume += (w * r);
+            if (r > 0) {
+              lastReps = r;
+              totalCalculatedReps += r;
             }
-            if (repsVal > 0) {
-              lastReps = repsVal;
-              totalCalculatedReps += repsVal;
+          });
+          completedExercisesNum++;
+          exercisesSummary.push({
+            name: exName,
+            muscleGroup: '',
+            totalSets: setsArr.length,
+            reps: lastReps || '-',
+            weight: maxWeight > 0 ? maxWeight : null
+          });
+        });
+      } else {
+        (currentDay.ejercicios || []).forEach((item) => {
+          const itemSets = Math.max(1, parseInt(item.series, 10) || 1);
+          let completedInThisExercise = 0;
+          let maxWeight = 0;
+          let lastReps = 0;
+
+          for (let sIdx = 0; sIdx < itemSets; sIdx++) {
+            const isDone = Boolean(completedSets[`${item.id}-${sIdx}`]);
+            if (isDone) {
+              completedInThisExercise++;
+              totalCompletedSetsCount++;
+
+              const setPesoInput = exerciseLogs[`${item.id}_set_${sIdx}_peso`];
+              const setRepsInput = exerciseLogs[`${item.id}_set_${sIdx}_reps`];
+              const weightVal = (setPesoInput !== undefined && setPesoInput !== '')
+                ? parseCleanWeight(setPesoInput)
+                : ((exerciseLogs[`${item.id}_peso`] !== undefined && exerciseLogs[`${item.id}_peso`] !== '')
+                  ? parseCleanWeight(exerciseLogs[`${item.id}_peso`])
+                  : parseCleanWeight(item.peso_sugerido));
+
+              const repsVal = (setRepsInput !== undefined && setRepsInput !== '')
+                ? parseCleanReps(setRepsInput)
+                : ((exerciseLogs[`${item.id}_reps`] !== undefined && exerciseLogs[`${item.id}_reps`] !== '')
+                  ? parseCleanReps(exerciseLogs[`${item.id}_reps`])
+                  : parseCleanReps(item.repeticiones || 10));
+
+              if (weightVal > 0 && repsVal > 0) {
+                if (weightVal > maxWeight) maxWeight = weightVal;
+                totalCalculatedVolume += (weightVal * repsVal);
+              }
+              if (repsVal > 0) {
+                lastReps = repsVal;
+                totalCalculatedReps += repsVal;
+              }
             }
           }
-        }
 
-        if (completedInThisExercise > 0 || isReadOnly) {
-          completedExercisesNum++;
-        }
-
-        const effectiveSets = completedInThisExercise > 0 ? completedInThisExercise : itemSets;
-        const effectiveReps = lastReps > 0 ? lastReps : (item.repeticiones || '10-12');
-
-        return {
-          name: item.exercise?.nombre || 'Ejercicio',
-          muscleGroup: item.exercise?.grupo_muscular || '',
-          totalSets: effectiveSets,
-          reps: effectiveReps,
-          weight: maxWeight > 0 ? maxWeight : (item.peso_sugerido || null)
-        };
-      });
-
-      // Si por modo read-only no había completedSets en memoria (ej: sesión cargada anteriormente en el día)
-      if (totalCompletedSetsCount === 0) {
-        totalCompletedSetsCount = (currentDay.ejercicios || []).reduce((acc, it) => acc + (parseInt(it.series, 10) || 4), 0);
-        completedExercisesNum = currentDay.ejercicios?.length || 0;
+          if (completedInThisExercise > 0) {
+            completedExercisesNum++;
+            exercisesSummary.push({
+              name: item.exercise?.nombre || 'Ejercicio',
+              muscleGroup: item.exercise?.grupo_muscular || '',
+              totalSets: completedInThisExercise,
+              reps: lastReps > 0 ? lastReps : (item.repeticiones || '10-12'),
+              weight: maxWeight > 0 ? maxWeight : (item.peso_sugerido || null)
+            });
+          }
+        });
       }
 
       const workoutSummaryData = {
@@ -976,7 +1224,7 @@ export default function StudentPortal({ student, onLogout }) {
         weekNumber: routine?.total_weeks > 1 ? selectedWeek : null,
         exercises: exercisesSummary,
         totalSets: totalCompletedSetsCount,
-        completedExercisesCount: completedExercisesNum || currentDay.ejercicios?.length || 0,
+        completedExercisesCount: completedExercisesNum,
         totalExercisesCount: currentDay.ejercicios?.length || 0,
         totalVolumeKg: Math.round(totalCalculatedVolume),
         totalReps: totalCalculatedReps
@@ -1978,7 +2226,22 @@ export default function StudentPortal({ student, onLogout }) {
                       {/* Filas independientes por cada serie */}
                       <div className="space-y-2">
                         {Array.from({ length: Math.max(1, parseInt(item.series, 10) || 1) }).map((_, sIdx) => {
-                          const isDone = isReadOnly || Boolean(completedSets[`${item.id}-${sIdx}`]);
+                          let isDone = Boolean(completedSets[`${item.id}-${sIdx}`]);
+                          if (isReadOnly && Object.keys(completedSets).length === 0) {
+                            if (todaySavedSessionLogs) {
+                              const exNameNorm = (item.exercise?.nombre || '').toLowerCase().trim();
+                              const matchingExLogs = todaySavedSessionLogs.filter(
+                                l => (l.exercise_name || '').toLowerCase().trim() === exNameNorm
+                              );
+                              if (matchingExLogs[sIdx]) {
+                                isDone = isExerciseLogCompleted(matchingExLogs[sIdx]);
+                              } else {
+                                isDone = false;
+                              }
+                            } else {
+                              isDone = true;
+                            }
+                          }
                           const setPeso = exerciseLogs[`${item.id}_set_${sIdx}_peso`] ?? '';
                           const setReps = exerciseLogs[`${item.id}_set_${sIdx}_reps`] ?? '';
 
@@ -1988,7 +2251,9 @@ export default function StudentPortal({ student, onLogout }) {
                               className={`grid grid-cols-12 gap-2 items-center p-2 rounded-xl border transition-all ${
                                 isDone
                                   ? 'bg-emerald-950/30 border-emerald-500/40 shadow-sm'
-                                  : 'bg-dark-900 border-dark-700/80 hover:border-dark-600'
+                                  : isReadOnly
+                                    ? 'bg-dark-950/50 border-dark-800/80 opacity-60'
+                                    : 'bg-dark-900 border-dark-700/80 hover:border-dark-600'
                               }`}
                             >
                               {/* Columna 1: Número de Serie & Objetivo */}
@@ -2016,10 +2281,7 @@ export default function StudentPortal({ student, onLogout }) {
                                   min="0"
                                   disabled={isReadOnly}
                                   value={setPeso}
-                                  onChange={(e) => setExerciseLogs(prev => ({
-                                    ...prev,
-                                    [`${item.id}_set_${sIdx}_peso`]: e.target.value
-                                  }))}
+                                  onChange={(e) => updateExerciseLogField(`${item.id}_set_${sIdx}_peso`, e.target.value)}
                                   placeholder={item.peso_sugerido ? `${item.peso_sugerido}` : 'kg'}
                                   className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
                                 />
@@ -2032,10 +2294,7 @@ export default function StudentPortal({ student, onLogout }) {
                                   min="0"
                                   disabled={isReadOnly}
                                   value={setReps}
-                                  onChange={(e) => setExerciseLogs(prev => ({
-                                    ...prev,
-                                    [`${item.id}_set_${sIdx}_reps`]: e.target.value
-                                  }))}
+                                  onChange={(e) => updateExerciseLogField(`${item.id}_set_${sIdx}_reps`, e.target.value)}
                                   placeholder={item.repeticiones ? `${item.repeticiones}` : 'reps'}
                                   className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
                                 />
@@ -2053,12 +2312,16 @@ export default function StudentPortal({ student, onLogout }) {
                                         ? 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30'
                                         : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500 shadow-md shadow-emerald-950/50 active:scale-95'
                                       : isReadOnly
-                                        ? 'bg-dark-950/40 text-gray-600 border-dark-800 cursor-not-allowed'
+                                        ? 'bg-red-950/30 text-red-400/80 border-red-900/40 cursor-not-allowed'
                                         : 'bg-dark-800 hover:bg-dark-750 text-gray-300 border-dark-700 hover:border-gray-500 hover:text-white active:scale-95'
                                   }`}
                                 >
-                                  <CheckCircle2 className={`w-3.5 h-3.5 ${isDone ? 'text-white' : 'text-gray-500'}`} />
-                                  <span>{isDone ? 'Hecha' : 'Listo'}</span>
+                                  {isReadOnly && !isDone ? (
+                                    <XCircle className="w-3.5 h-3.5 text-red-400/80" />
+                                  ) : (
+                                    <CheckCircle2 className={`w-3.5 h-3.5 ${isDone ? 'text-white' : 'text-gray-500'}`} />
+                                  )}
+                                  <span>{isDone ? 'Hecha' : (isReadOnly ? 'Omitida' : 'Listo')}</span>
                                 </button>
                               </div>
                             </div>
@@ -2089,10 +2352,7 @@ export default function StudentPortal({ student, onLogout }) {
                             type="text"
                             disabled={isReadOnly}
                             value={exerciseLogs[`${item.id}_actual_intensity`] ?? exerciseLogs[`${item.id}_intensity`] ?? ''}
-                            onChange={(e) => setExerciseLogs(prev => ({
-                              ...prev,
-                              [`${item.id}_actual_intensity`]: e.target.value
-                            }))}
+                            onChange={(e) => updateExerciseLogField(`${item.id}_actual_intensity`, e.target.value)}
                             placeholder={(item.recommended_intensity || item.intensidad_recomendada) || 'Ej: RPE 8'}
                             className="w-full bg-dark-900 border border-dark-700 focus:border-amber-400 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-bold text-center placeholder-gray-600 focus:outline-none disabled:opacity-50 transition-colors min-h-[36px]"
                           />
@@ -2113,7 +2373,7 @@ export default function StudentPortal({ student, onLogout }) {
                   {isReadOnly ? (
                     <button
                       type="button"
-                      onClick={handleOpenShareSummaryModal}
+                      onClick={() => handleOpenShareSummaryModal()}
                       className="bg-emerald-950/60 border border-emerald-500/50 hover:bg-emerald-900/60 w-full p-4 rounded-xl text-base sm:text-lg font-bold text-emerald-300 flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg active:scale-[0.98]"
                     >
                       <Share2 className="w-5 h-5 text-emerald-400" />
@@ -2122,7 +2382,7 @@ export default function StudentPortal({ student, onLogout }) {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setShowFinishConfirmModal(true)}
+                      onClick={handleRequestFinishWorkout}
                       disabled={isFinishingWorkout}
                       className="bg-red-600 hover:bg-red-500 active:scale-[0.98] w-full p-4 rounded-xl text-base sm:text-lg font-bold text-white flex items-center justify-center gap-2 shadow-glow-red hover:shadow-lg transition-all cursor-pointer"
                     >
@@ -2210,6 +2470,19 @@ export default function StudentPortal({ student, onLogout }) {
                     ? new Date(sess.fecha).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' })
                     : 'Sesión';
 
+                  const groupedMap = new Map();
+                  exList.forEach((ex) => {
+                    const name = ex.exercise_name || 'Ejercicio';
+                    if (!groupedMap.has(name)) {
+                      groupedMap.set(name, []);
+                    }
+                    groupedMap.get(name).push(ex);
+                  });
+                  const groupedEntries = Array.from(groupedMap.entries());
+                  const completedExercisesCount = groupedEntries.filter(([, setsArr]) =>
+                    setsArr.some(s => isExerciseLogCompleted(s))
+                  ).length;
+
                   return (
                     <div key={sess.id} className="card-dark rounded-xl p-3.5 text-xs space-y-2.5">
                       <div className="flex justify-between items-center border-b border-dark-700/60 pb-1.5">
@@ -2218,7 +2491,9 @@ export default function StudentPortal({ student, onLogout }) {
                           {sessDate}
                         </span>
                         <span className="text-[10px] text-gray-400 font-semibold bg-dark-900 px-2 py-0.5 rounded-full border border-dark-700">
-                          {exList.length} ejercicios
+                          {completedExercisesCount === groupedEntries.length
+                            ? `${completedExercisesCount} ${completedExercisesCount === 1 ? 'ejercicio' : 'ejercicios'}`
+                            : `${completedExercisesCount}/${groupedEntries.length} ejercicios`}
                         </span>
                       </div>
 
@@ -2229,37 +2504,62 @@ export default function StudentPortal({ student, onLogout }) {
                       )}
 
                       <div className="space-y-2 pt-0.5">
-                        {(() => {
-                          const groupedMap = new Map();
-                          exList.forEach((ex) => {
-                            const name = ex.exercise_name || 'Ejercicio';
-                            if (!groupedMap.has(name)) {
-                              groupedMap.set(name, []);
-                            }
-                            groupedMap.get(name).push(ex);
-                          });
+                        {groupedEntries.map(([exName, setsArr], i) => {
+                          const doneSets = setsArr.filter(s => isExerciseLogCompleted(s));
+                          const isNotDone = doneSets.length === 0;
 
-                          return Array.from(groupedMap.entries()).map(([exName, setsArr], i) => (
-                            <div key={i} className="p-2 rounded-lg bg-dark-900/70 border border-dark-700/60 space-y-1">
-                              <div className="flex justify-between items-center text-[11px]">
-                                <span className="font-bold text-white">{exName}</span>
-                                <span className="text-[10px] text-gray-400 font-mono">
-                                  {setsArr.length} {setsArr.length === 1 ? 'serie' : 'series'}
+                          return (
+                            <div
+                              key={i}
+                              className={`p-2 rounded-lg border space-y-1 ${
+                                isNotDone
+                                  ? 'bg-dark-950/60 border-red-900/30 opacity-65'
+                                  : 'bg-dark-900/70 border-dark-700/60'
+                              }`}
+                            >
+                              <div className="flex justify-between items-center gap-2 text-[11px]">
+                                <span className={`font-bold ${isNotDone ? 'text-gray-400 line-through decoration-red-500/50' : 'text-white'}`}>
+                                  {exName}
                                 </span>
-                              </div>
-                              <div className="flex flex-wrap gap-1.5 pt-0.5">
-                                {setsArr.map((s, sIndex) => (
-                                  <span key={sIndex} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-dark-950 border border-dark-700 text-[10px] text-gray-300 font-mono">
-                                    <strong className="text-gray-400">S{sIndex + 1}:</strong>
-                                    <span className="text-white font-bold">{s.actual_reps || s.prescribed_reps}r</span>
-                                    <span>@</span>
-                                    <span className="text-brand-light font-bold">{s.actual_weight || s.prescribed_weight}kg</span>
+                                {isNotDone ? (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-500/15 border border-red-500/30 text-red-400 text-[9px] font-bold uppercase">
+                                    <XCircle className="w-2.5 h-2.5" />
+                                    No realizado
                                   </span>
-                                ))}
+                                ) : (
+                                  <span className="text-[10px] text-gray-400 font-mono">
+                                    {doneSets.length === setsArr.length
+                                      ? `${doneSets.length} ${doneSets.length === 1 ? 'serie' : 'series'}`
+                                      : `${doneSets.length}/${setsArr.length} series`}
+                                  </span>
+                                )}
                               </div>
+                              {!isNotDone && (
+                                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                  {setsArr.map((s, sIndex) => {
+                                    const setCompleted = isExerciseLogCompleted(s);
+                                    if (!setCompleted) {
+                                      return (
+                                        <span key={sIndex} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-950/20 border border-red-900/30 text-[10px] text-red-400/80 font-mono">
+                                          <strong>S{sIndex + 1}:</strong>
+                                          <span>No realizada</span>
+                                        </span>
+                                      );
+                                    }
+                                    return (
+                                      <span key={sIndex} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-dark-950 border border-dark-700 text-[10px] text-gray-300 font-mono">
+                                        <strong className="text-gray-400">S{sIndex + 1}:</strong>
+                                        <span className="text-white font-bold">{s.actual_reps ?? s.prescribed_reps ?? 0}r</span>
+                                        <span>@</span>
+                                        <span className="text-brand-light font-bold">{s.actual_weight ?? s.prescribed_weight ?? 0}kg</span>
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
-                          ));
-                        })()}
+                          );
+                        })}
                       </div>
                     </div>
                   );
@@ -2579,7 +2879,71 @@ export default function StudentPortal({ student, onLogout }) {
         </div>
       )}
 
-      {/* 2. Modal Confirmación: Finalizar Entreno & Guardar Sesión con Feedback */}
+      {/* 2a. Modal Advertencia: Entrenamiento Incompleto (ejercicios sin marcar) */}
+      {showIncompleteWarningModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-dark-900 border border-amber-500/40 shadow-2xl p-6 text-center space-y-4 animate-in zoom-in-95">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
+              <AlertTriangle className="w-7 h-7" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-base font-black text-white">Entrenamiento incompleto</h3>
+              <p className="text-xs text-gray-300 leading-relaxed">
+                Te faltaron completar{' '}
+                <span className="font-black text-amber-400">
+                  {exerciseCompletionStats.incompleteExercisesCount}{' '}
+                  {exerciseCompletionStats.incompleteExercisesCount === 1 ? 'ejercicio' : 'ejercicios'}
+                </span>
+                {exerciseCompletionStats.missingSetsCount > 0 && (
+                  <span className="text-gray-400">
+                    {' '}({exerciseCompletionStats.missingSetsCount}{' '}
+                    {exerciseCompletionStats.missingSetsCount === 1 ? 'serie sin marcar' : 'series sin marcar'})
+                  </span>
+                )}
+                . ¿Querés finalizar el entrenamiento igual?
+              </p>
+              <p className="text-[11px] text-gray-500">
+                Solo los ejercicios y series marcados como "Hecha" contarán para tus métricas y volumen real.
+              </p>
+            </div>
+
+            {/* Campo opcional de comentarios / feedback para el coach */}
+            <div className="text-left space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-300">
+                Feedback para tu Coach (opcional):
+              </label>
+              <textarea
+                rows="2"
+                value={sessionComments}
+                onChange={(e) => updateSessionComments(e.target.value)}
+                placeholder="Ej: Falta de tiempo, molestia física o sensaciones del día..."
+                className="w-full bg-dark-950 border border-dark-700 focus:border-amber-500 rounded-xl p-2.5 text-xs text-white placeholder-gray-500 focus:outline-none transition-colors resize-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isFinishingWorkout}
+                onClick={() => setShowIncompleteWarningModal(false)}
+                className="py-3 px-3 rounded-xl bg-dark-800 hover:bg-dark-750 text-white border border-dark-700 font-bold text-xs transition-colors"
+              >
+                Seguir entrenando
+              </button>
+              <button
+                type="button"
+                disabled={isFinishingWorkout}
+                onClick={handleConfirmFinishWorkout}
+                className="py-3 px-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-xs transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-lg"
+              >
+                {isFinishingWorkout ? 'Guardando...' : 'Finalizar igual'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2b. Modal Confirmación: Finalizar Entreno & Guardar Sesión con Feedback (rutina completa) */}
       {showFinishConfirmModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-sm rounded-2xl bg-dark-900 border border-dark-700 shadow-2xl p-6 text-center space-y-4 animate-in zoom-in-95">
@@ -2601,7 +2965,7 @@ export default function StudentPortal({ student, onLogout }) {
               <textarea
                 rows="3"
                 value={sessionComments}
-                onChange={(e) => setSessionComments(e.target.value)}
+                onChange={(e) => updateSessionComments(e.target.value)}
                 placeholder="¿Cómo te sentiste? Sensaciones, RPE, molestias o marcas alcanzadas..."
                 className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-xl p-2.5 text-xs text-white placeholder-gray-500 focus:outline-none transition-colors resize-none"
               />

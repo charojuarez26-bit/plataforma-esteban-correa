@@ -13,7 +13,8 @@ import {
   Sparkles, 
   Layers,
   BarChart3,
-  RefreshCw
+  RefreshCw,
+  XCircle
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -24,7 +25,7 @@ import {
   Tooltip, 
   ResponsiveContainer 
 } from 'recharts';
-import { dataService } from '../../services/dataService';
+import { dataService, isExerciseLogCompleted } from '../../services/dataService';
 
 // Formatea masas en kg con separador de miles y máx. 1 decimal (sin ceros sobrantes)
 const fmtKg = (value) => {
@@ -59,13 +60,17 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
     }
   };
 
-  // Extraer lista única de ejercicios con conteo de registros
+  // Extraer lista única de ejercicios efectivamente realizados (excluyendo completado === false)
   const uniqueExercises = useMemo(() => {
     const map = new Map();
     sessions.forEach(session => {
+      const seenInSession = new Set();
       (session.session_exercise_logs || []).forEach(log => {
+        if (!isExerciseLogCompleted(log)) return;
         const name = (log.exercise_name || '').trim();
-        if (name) {
+        const key = name.toLowerCase();
+        if (name && !seenInSession.has(key)) {
+          seenInSession.add(key);
           map.set(name, (map.get(name) || 0) + 1);
         }
       });
@@ -126,7 +131,7 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
 
     chronologicalSessions.forEach(session => {
       const matchingLogs = (session.session_exercise_logs || []).filter(
-        l => (l.exercise_name || '').toLowerCase().trim() === selectedExercise.toLowerCase().trim()
+        l => isExerciseLogCompleted(l) && (l.exercise_name || '').toLowerCase().trim() === selectedExercise.toLowerCase().trim()
       );
 
       if (matchingLogs.length > 0) {
@@ -183,10 +188,11 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
     ? ((weightDelta / firstPoint.peso_real) * 100).toFixed(1) 
     : 0;
 
-  // Volumen total acumulado de todas las sesiones
+  // Volumen total acumulado de todas las sesiones (ignorando ejercicios/series no realizados)
   const totalVolumeAllSessions = useMemo(() => {
     return sessions.reduce((acc, sess) => {
       const sessVol = (sess.session_exercise_logs || []).reduce((sAcc, l) => {
+        if (!isExerciseLogCompleted(l)) return sAcc;
         const sets = parseInt(l.actual_sets, 10) || 0;
         const reps = parseInt(l.actual_reps, 10) || 0;
         const weight = parseFloat(l.actual_weight) || 0;
@@ -488,11 +494,26 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
           {sessions.map((session) => {
             const exLogs = session.session_exercise_logs || [];
             const sessionTotalVolume = exLogs.reduce((acc, l) => {
+              if (!isExerciseLogCompleted(l)) return acc;
               const sets = parseInt(l.actual_sets, 10) || 0;
               const reps = parseInt(l.actual_reps, 10) || 0;
               const weight = parseFloat(l.actual_weight) || 0;
               return acc + (sets * reps * weight);
             }, 0);
+
+            const groupedMap = new Map();
+            exLogs.forEach((log) => {
+              const name = log.exercise_name || 'Ejercicio';
+              if (!groupedMap.has(name)) {
+                groupedMap.set(name, []);
+              }
+              groupedMap.get(name).push(log);
+            });
+            const groupedEntries = Array.from(groupedMap.entries());
+            const completedExercisesCount = groupedEntries.filter(([, setsList]) =>
+              setsList.some(s => isExerciseLogCompleted(s))
+            ).length;
+            const skippedExercisesCount = groupedEntries.length - completedExercisesCount;
 
             return (
               <div 
@@ -510,9 +531,19 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
                         <span>{formatSessionDate(session.fecha)}</span>
                         <span className="text-xs font-normal text-gray-400">({formatSessionTime(session.fecha)})</span>
                       </h4>
-                      <p className="text-[11px] text-gray-400">
-                        {exLogs.length} ejercicios registrados en esta sesión
-                      </p>
+                      <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                        <p className="text-[11px] text-gray-400">
+                          {skippedExercisesCount > 0
+                            ? `${completedExercisesCount} de ${groupedEntries.length} ejercicios completados`
+                            : `${completedExercisesCount} ${completedExercisesCount === 1 ? 'ejercicio completado' : 'ejercicios completados'}`}
+                        </p>
+                        {skippedExercisesCount > 0 && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-red-500/15 border border-red-500/30 text-red-400 text-[10px] font-bold">
+                            <XCircle className="w-3 h-3" />
+                            {skippedExercisesCount} no {skippedExercisesCount === 1 ? 'realizado' : 'realizados'}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -544,62 +575,93 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
                 )}
 
                 {/* Tabla de desglose de ejercicios serie por serie */}
-                {exLogs.length > 0 && (() => {
-                  const groupedMap = new Map();
-                  exLogs.forEach((log) => {
-                    const name = log.exercise_name || 'Ejercicio';
-                    if (!groupedMap.has(name)) {
-                      groupedMap.set(name, []);
-                    }
-                    groupedMap.get(name).push(log);
-                  });
+                {groupedEntries.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="overflow-x-auto no-scrollbar -mx-4 sm:mx-0 px-4 sm:px-0">
+                      <table className="w-full text-xs text-left min-w-[580px]">
+                        <thead className="bg-dark-900/90 text-gray-400 uppercase text-[10px] border-b border-dark-700">
+                          <tr>
+                            <th className="py-2.5 px-3">Ejercicio</th>
+                            <th className="py-2.5 px-3">Prescrito (Coach)</th>
+                            <th className="py-2.5 px-3">Detalle Serie por Serie (Alumno)</th>
+                            <th className="py-2.5 px-3 text-center">Carga Máx</th>
+                            <th className="py-2.5 px-3 text-right">Volumen</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-dark-700/50 text-gray-300">
+                          {groupedEntries.map(([exName, setsList], idx) => {
+                            const firstLog = setsList[0];
+                            const pSets = firstLog.prescribed_sets ?? '-';
+                            const pReps = firstLog.prescribed_reps ?? '-';
+                            const pWeight = firstLog.prescribed_weight ?? '-';
 
-                  return (
-                    <div className="space-y-2">
-                      <div className="overflow-x-auto no-scrollbar -mx-4 sm:mx-0 px-4 sm:px-0">
-                        <table className="w-full text-xs text-left min-w-[580px]">
-                          <thead className="bg-dark-900/90 text-gray-400 uppercase text-[10px] border-b border-dark-700">
-                            <tr>
-                              <th className="py-2.5 px-3">Ejercicio</th>
-                              <th className="py-2.5 px-3">Prescrito (Coach)</th>
-                              <th className="py-2.5 px-3">Detalle Serie por Serie (Alumno)</th>
-                              <th className="py-2.5 px-3 text-center">Carga Máx</th>
-                              <th className="py-2.5 px-3 text-right">Volumen</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-dark-700/50 text-gray-300">
-                            {Array.from(groupedMap.entries()).map(([exName, setsList], idx) => {
-                              const firstLog = setsList[0];
-                              const pSets = firstLog.prescribed_sets ?? '-';
-                              const pReps = firstLog.prescribed_reps ?? '-';
-                              const pWeight = firstLog.prescribed_weight ?? '-';
+                            const completedSetsList = setsList.filter(isExerciseLogCompleted);
+                            const isExerciseNotDone = completedSetsList.length === 0;
+                            const isExercisePartial = completedSetsList.length > 0 && completedSetsList.length < setsList.length;
 
-                              const maxWeight = Math.max(...setsList.map(s => parseFloat(s.actual_weight) || 0));
-                              const pWNum = parseFloat(pWeight);
-                              const hasWeightDiff = !isNaN(maxWeight) && !isNaN(pWNum) && pWNum > 0;
-                              const diff = hasWeightDiff ? (maxWeight - pWNum) : 0;
+                            const maxWeight = completedSetsList.length > 0
+                              ? Math.max(...completedSetsList.map(s => parseFloat(s.actual_weight) || 0))
+                              : 0;
+                            const pWNum = parseFloat(pWeight);
+                            const hasWeightDiff = !isExerciseNotDone && !isNaN(maxWeight) && !isNaN(pWNum) && pWNum > 0;
+                            const diff = hasWeightDiff ? (maxWeight - pWNum) : 0;
 
-                              const exTotalVolume = setsList.reduce((acc, s) => {
-                                const setsCount = parseInt(s.actual_sets, 10) || 1;
-                                const repsCount = parseInt(s.actual_reps, 10) || 0;
-                                const w = parseFloat(s.actual_weight) || 0;
-                                return acc + (setsCount * repsCount * w);
-                              }, 0);
+                            const exTotalVolume = completedSetsList.reduce((acc, s) => {
+                              const setsCount = parseInt(s.actual_sets, 10) || 1;
+                              const repsCount = parseInt(s.actual_reps, 10) || 0;
+                              const w = parseFloat(s.actual_weight) || 0;
+                              return acc + (setsCount * repsCount * w);
+                            }, 0);
 
-                              return (
-                                <tr key={idx} className="hover:bg-dark-800/40 transition-colors">
-                                  <td className="py-2.5 px-3 font-semibold text-white">
-                                    <span>{exName}</span>
-                                    <span className="text-[10px] text-gray-400 font-normal block">
-                                      {setsList.length} {setsList.length === 1 ? 'serie registrada' : 'series registradas'}
+                            return (
+                              <tr
+                                key={idx}
+                                className={
+                                  isExerciseNotDone
+                                    ? 'bg-red-950/10 opacity-65 hover:opacity-85 transition-opacity'
+                                    : 'hover:bg-dark-800/40 transition-colors'
+                                }
+                              >
+                                <td className="py-2.5 px-3 font-semibold text-white">
+                                  <span className={isExerciseNotDone ? 'text-gray-400 line-through decoration-red-500/60 block' : 'block'}>
+                                    {exName}
+                                  </span>
+                                  {isExerciseNotDone ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/15 border border-red-500/30 text-red-400 text-[10px] font-bold uppercase tracking-wide mt-1">
+                                      <XCircle className="w-3 h-3" />
+                                      No realizado
                                     </span>
-                                  </td>
-                                  <td className="py-2.5 px-3 text-gray-400 whitespace-nowrap">
-                                    {pSets} x {pReps} @ <span className="text-gray-300 font-bold">{pWeight} kg</span>
-                                  </td>
-                                  <td className="py-2.5 px-3">
+                                  ) : (
+                                    <span className={`text-[10px] font-normal block ${isExercisePartial ? 'text-amber-400 font-semibold' : 'text-gray-400'}`}>
+                                      {isExercisePartial
+                                        ? `${completedSetsList.length} de ${setsList.length} series realizadas`
+                                        : `${completedSetsList.length} ${completedSetsList.length === 1 ? 'serie registrada' : 'series registradas'}`}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-gray-400 whitespace-nowrap">
+                                  {pSets} x {pReps} @ <span className={`font-bold ${isExerciseNotDone ? 'text-gray-500' : 'text-gray-300'}`}>{pWeight} kg</span>
+                                </td>
+                                <td className="py-2.5 px-3">
+                                  {isExerciseNotDone ? (
+                                    <span className="text-[11px] text-red-400/80 italic">
+                                      Ejercicio omitido por el alumno
+                                    </span>
+                                  ) : (
                                     <div className="flex flex-wrap gap-1.5 py-0.5">
                                       {setsList.map((s, sIdx) => {
+                                        const setDone = isExerciseLogCompleted(s);
+                                        if (!setDone) {
+                                          return (
+                                            <span
+                                              key={sIdx}
+                                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-mono border bg-red-950/20 border-red-900/40 text-red-400/80"
+                                            >
+                                              <span className="font-bold">S{sIdx + 1}:</span>
+                                              <span>No realizada</span>
+                                            </span>
+                                          );
+                                        }
                                         const sWeight = s.actual_weight ?? s.prescribed_weight;
                                         const sReps = s.actual_reps ?? s.prescribed_reps;
                                         const isHigher = parseFloat(sWeight) > pWNum;
@@ -620,35 +682,45 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
                                         );
                                       })}
                                     </div>
-                                  </td>
-                                  <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                                    <span className="font-bold text-white block">{fmtKg(maxWeight)} kg</span>
-                                    {hasWeightDiff && (
-                                      diff > 0 ? (
-                                        <span className="inline-flex items-center text-[10px] font-bold text-emerald-400">
-                                          +{fmtKg(diff)} kg
-                                        </span>
-                                      ) : diff < 0 ? (
-                                        <span className="inline-flex items-center text-[10px] font-bold text-amber-400">
-                                          {fmtKg(diff)} kg
-                                        </span>
-                                      ) : (
-                                        <span className="text-[10px] text-gray-500">= Obj</span>
-                                      )
-                                    )}
-                                  </td>
-                                  <td className="py-2.5 px-3 text-right font-mono font-bold text-gray-200 whitespace-nowrap">
-                                    {exTotalVolume > 0 ? `${fmtKg(exTotalVolume)} kg` : '-'}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                                  {isExerciseNotDone ? (
+                                    <span className="text-gray-500 font-mono">—</span>
+                                  ) : (
+                                    <>
+                                      <span className="font-bold text-white block">{fmtKg(maxWeight)} kg</span>
+                                      {hasWeightDiff && (
+                                        diff > 0 ? (
+                                          <span className="inline-flex items-center text-[10px] font-bold text-emerald-400">
+                                            +{fmtKg(diff)} kg
+                                          </span>
+                                        ) : diff < 0 ? (
+                                          <span className="inline-flex items-center text-[10px] font-bold text-amber-400">
+                                            {fmtKg(diff)} kg
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10px] text-gray-500">= Obj</span>
+                                        )
+                                      )}
+                                    </>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-mono font-bold text-gray-200 whitespace-nowrap">
+                                  {isExerciseNotDone ? (
+                                    <span className="text-gray-500">—</span>
+                                  ) : (
+                                    exTotalVolume > 0 ? `${fmtKg(exTotalVolume)} kg` : '-'
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
-                  );
-                })()}
+                  </div>
+                )}
               </div>
             );
           })}
