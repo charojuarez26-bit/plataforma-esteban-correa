@@ -1529,6 +1529,10 @@ export const dataService = {
     return [];
   },
 
+  async getExerciseMuscleGroups() {
+    return this.getDistinctMuscleGroups();
+  },
+
   async seedInitialExercises() {
     return [];
   },

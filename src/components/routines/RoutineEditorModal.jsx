@@ -121,14 +121,17 @@ export default function RoutineEditorModal({
     }
   }, [isOpen, externalClients]);
 
-  // Cargar grupos musculares
+  // Cargar grupos musculares disponibles
   useEffect(() => {
     if (!isOpen) return;
-    dataService.getExerciseMuscleGroups().then(grps => {
-      if (Array.isArray(grps) && grps.length > 0) {
-        setAvailableMuscleGroups(grps);
-      }
+    let isMounted = true;
+    dataService.getDistinctMuscleGroups().then(grps => {
+      if (!isMounted || !Array.isArray(grps) || grps.length === 0) return;
+      const base = ['Todos', 'Pecho', 'Espalda', 'Piernas', 'Hombros', 'Brazos', 'Abdomen / Core', 'Cardio / Otros'];
+      const custom = grps.filter(g => g && !base.some(b => b.toLowerCase() === g.toLowerCase()));
+      setAvailableMuscleGroups([...base, ...custom]);
     }).catch(() => {});
+    return () => { isMounted = false; };
   }, [isOpen]);
 
   // Precargar rutina en MODO EDICIÓN (UPDATE) o CREACIÓN (INSERT)
