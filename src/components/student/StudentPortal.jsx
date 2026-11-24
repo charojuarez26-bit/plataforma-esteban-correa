@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useRestTimer } from '../../hooks/useRestTimer';
 import BrandLogo, { MotivationalSlogan } from '../common/BrandLogo';
 import { 
   Dumbbell, 
@@ -18,6 +19,7 @@ import {
   ExternalLink,
   Calendar,
   Play,
+  Pause,
   Video,
   AlertTriangle,
   Sparkles,
@@ -196,18 +198,33 @@ export default function StudentPortal({ student, onLogout }) {
   const [showRoutinePdfModal, setShowRoutinePdfModal] = useState(false);
   const [pdfRoutineFeedback, setPdfRoutineFeedback] = useState(null);
 
-  // Auto-Rest Timer con Feedback Nativo (Vibración y Sonido)
-  const [restTimer, setRestTimer] = useState(0);
-  const [isTimerActive, setIsTimerActive] = useState(false);
+  // Auto-Rest Timer basado en timestamps del sistema (Date.now) con Feedback Nativo (Vibración y Sonido)
+  const audioCtxRef = useRef(null);
+
+  const unlockTimerAudio = useCallback(() => {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+        audioCtxRef.current = new AudioContextClass();
+      }
+      if (audioCtxRef.current.state === 'suspended') {
+        audioCtxRef.current.resume().catch(() => {});
+      }
+    } catch {}
+  }, []);
 
   // Función de audio sintético Web Audio API (cero dependencias externas y sin error 404)
-  const playTimerAlertSound = () => {
+  const playTimerAlertSound = useCallback(() => {
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (AudioContextClass) {
-        const ctx = new AudioContextClass();
+        const ctx = (audioCtxRef.current && audioCtxRef.current.state !== 'closed')
+          ? audioCtxRef.current
+          : new AudioContextClass();
+        audioCtxRef.current = ctx;
         if (ctx.state === 'suspended') {
-          ctx.resume();
+          ctx.resume().catch(() => {});
         }
         const playTone = (freq, startTime, duration) => {
           const osc = ctx.createOscillator();
@@ -238,36 +255,36 @@ export default function StudentPortal({ student, onLogout }) {
     } catch (error) {
       console.warn('Error reproduciendo sonido:', error);
     }
-  };
+  }, []);
 
-  // Efecto que decrementa el cronómetro cada 1000ms y activa el feedback nativo al llegar a 0
-  useEffect(() => {
-    let interval = null;
-
-    if (isTimerActive && restTimer > 0) {
-      interval = setInterval(() => {
-        setRestTimer(prev => prev - 1);
-      }, 1000);
-    } else if (isTimerActive && restTimer === 0) {
-      setIsTimerActive(false);
-
-      // API de Vibración (Patrón: vibra, pausa, vibra)
-      if (typeof window !== 'undefined' && 'vibrate' in navigator) {
-        try {
-          navigator.vibrate([500, 200, 500]);
-        } catch (e) {
-          console.warn('Vibrate API no permitida por el dispositivo/navegador:', e);
-        }
+  const handleRestTimerComplete = useCallback(() => {
+    // API de Vibración (Patrón: vibra, pausa, vibra)
+    if (typeof window !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate([500, 200, 500]);
+      } catch (e) {
+        console.warn('Vibrate API no permitida por el dispositivo/navegador:', e);
       }
-
-      // Sonido (Beep)
-      playTimerAlertSound();
     }
 
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isTimerActive, restTimer]);
+    // Sonido (Beep)
+    playTimerAlertSound();
+  }, [playTimerAlertSound]);
+
+  const restTimerStorageKey = `ec_rest_timer_${activeStudent?.id || student?.id || 'default'}`;
+
+  const {
+    secondsLeft: restTimer,
+    isActive: isTimerActive,
+    isPaused: isTimerPaused,
+    start: startRestTimer,
+    togglePause: togglePauseRestTimer,
+    adjustSeconds: adjustRestTimer,
+    stop: stopRestTimer
+  } = useRestTimer({
+    storageKey: restTimerStorageKey,
+    onComplete: handleRestTimerComplete
+  });
 
   useEffect(() => {
     loadStudentData();
@@ -919,8 +936,8 @@ export default function StudentPortal({ student, onLogout }) {
         ? restParam
         : (parseInt(String(restParam || '').replace(/\D/g, ''), 10) || 90);
       const descansoSugerido = rawSec > 0 ? rawSec : 90;
-      setRestTimer(descansoSugerido);
-      setIsTimerActive(true);
+      unlockTimerAudio();
+      startRestTimer(descansoSugerido);
     }
   };
 
@@ -1076,6 +1093,7 @@ export default function StudentPortal({ student, onLogout }) {
       } catch (e) {
         console.warn('[StudentPortal] No se pudo limpiar el borrador tras guardar:', e);
       }
+      stopRestTimer();
 
       setCompletedSessionsToday(prev => [...prev, dayId, dayLabel, currentDay.dia].filter(Boolean));
       setSessionComments('');
@@ -3224,27 +3242,49 @@ export default function StudentPortal({ student, onLogout }) {
 
       {/* 4. COMPONENTE FLOTANTE DE CRONÓMETRO (FLOATING PILL) */}
       {isTimerActive && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white border border-gray-700 shadow-2xl px-6 py-3 rounded-full flex items-center gap-3 z-50 animate-bounce-short">
-          <Timer className="w-5 h-5 text-red-500 animate-pulse shrink-0" />
-          <span className="font-mono text-lg font-bold">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900/95 backdrop-blur-md text-white border border-gray-700 shadow-2xl px-4 py-2.5 rounded-full flex items-center gap-2.5 z-50 animate-bounce-short max-w-[95vw]">
+          <Timer className={`w-5 h-5 shrink-0 ${isTimerPaused ? 'text-amber-400' : 'text-red-500 animate-pulse'}`} />
+          <span className={`font-mono text-lg font-bold tabular-nums min-w-[3.2rem] text-center ${isTimerPaused ? 'text-amber-300' : 'text-white'}`}>
             {Math.floor(restTimer / 60)}:{(restTimer % 60).toString().padStart(2, '0')}
           </span>
           <button
             type="button"
-            onClick={() => setRestTimer(prev => prev + 15)}
-            className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
+            onClick={() => adjustRestTimer(-15)}
+            className="text-[11px] font-bold px-2 py-1 rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors active:scale-95"
+            title="Restar 15 segundos"
+          >
+            -15s
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              unlockTimerAudio();
+              togglePauseRestTimer();
+            }}
+            className={`p-1.5 rounded-full transition-colors active:scale-95 ${
+              isTimerPaused
+                ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                : 'bg-gray-800 hover:bg-gray-700 text-amber-400 hover:text-amber-300'
+            }`}
+            title={isTimerPaused ? 'Reanudar descanso' : 'Pausar descanso'}
+            aria-label={isTimerPaused ? 'Reanudar descanso' : 'Pausar descanso'}
+          >
+            {isTimerPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => adjustRestTimer(15)}
+            className="text-[11px] font-bold px-2 py-1 rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors active:scale-95"
             title="Sumar 15 segundos"
           >
             +15s
           </button>
           <button
             type="button"
-            onClick={() => {
-              setIsTimerActive(false);
-              setRestTimer(0);
-            }}
-            className="ml-2 text-gray-400 hover:text-white transition-colors"
+            onClick={stopRestTimer}
+            className="ml-1 text-gray-400 hover:text-white transition-colors"
             title="Cerrar temporizador"
+            aria-label="Cerrar temporizador"
           >
             <X className="w-4 h-4" />
           </button>
