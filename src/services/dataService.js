@@ -219,20 +219,30 @@ export function formatRoutineWithDays(rawRoutine) {
     }));
   }
 
-  // Asegurar week_number en cada día
+  // Asegurar week_number e IDs únicos estables en cada día y cada ejercicio (evita colisiones en completedSets)
   let maxWeek = 1;
-  dias = dias.map((d) => {
+  dias = dias.map((d, dIdx) => {
     const wNum = parseInt(d.week_number, 10) || 1;
     if (wNum > maxWeek) maxWeek = wNum;
+    const seenExIds = new Set();
     return {
       ...d,
+      id: d.id ? String(d.id) : `day-${wNum}-${dIdx + 1}`,
       week_number: wNum,
-      ejercicios: (d.ejercicios || []).map(ex => ({
-        ...ex,
-        recommended_intensity: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || '',
-        intensidad_recomendada: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || '',
-        observaciones: ex.observaciones || ex.notas || ''
-      }))
+      ejercicios: (d.ejercicios || []).map((ex, exIdx) => {
+        let stableId = ex.id ? String(ex.id) : `day-${wNum}-${dIdx + 1}-ex-${exIdx}-${ex.exercise_id || ex.exercise?.id || exIdx}`;
+        if (seenExIds.has(stableId)) {
+          stableId = `${stableId}-idx-${exIdx}`;
+        }
+        seenExIds.add(stableId);
+        return {
+          ...ex,
+          id: stableId,
+          recommended_intensity: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || '',
+          intensidad_recomendada: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || '',
+          observaciones: ex.observaciones || ex.notas || ''
+        };
+      })
     };
   });
 
@@ -2734,7 +2744,15 @@ export const dataService = {
       const sessionLogId = sessionData.id;
       let savedExerciseLogs = [];
 
-      if (exercises && exercises.length > 0) {
+      // Filtrar estrictamente: solo persistir series/ejercicios efectivamente marcados como completados
+      const completedExercises = (exercises || []).filter(ex => {
+        if (!ex) return false;
+        if (ex.completado === false || ex.completed === false || ex.is_completed === false) return false;
+        if (ex.actual_sets !== undefined && ex.actual_sets !== null && Number(ex.actual_sets) <= 0) return false;
+        return true;
+      });
+
+      if (completedExercises.length > 0) {
         const toInt = (val) => {
           if (val === undefined || val === null || val === '') return null;
           const num = parseInt(String(val).replace(/[^0-9]/g, ''), 10);
@@ -2747,22 +2765,19 @@ export const dataService = {
           return isNaN(num) ? null : num;
         };
 
-        const exerciseRows = exercises.map(ex => {
-          const isCompleted = ex.completado !== false && ex.completed !== false && ex.is_completed !== false;
-          return {
-            session_log_id: sessionLogId,
-            exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
-            prescribed_sets: toInt(ex.prescribed_sets ?? ex.series),
-            prescribed_reps: toInt(ex.prescribed_reps ?? ex.repeticiones),
-            prescribed_weight: toFloat(ex.prescribed_weight ?? ex.peso_sugerido ?? ex.peso),
-            actual_sets: isCompleted ? toInt(ex.actual_sets ?? ex.series_reales ?? ex.series) : 0,
-            actual_reps: isCompleted ? toInt(ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones) : 0,
-            actual_weight: isCompleted ? toFloat(ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido) : 0,
-            actual_intensity: isCompleted && ex.actual_intensity ? String(ex.actual_intensity).trim() : null,
-            recommended_intensity: (ex.recommended_intensity || ex.intensidad_recomendada) ? String(ex.recommended_intensity || ex.intensidad_recomendada).trim() : null,
-            completado: isCompleted
-          };
-        });
+        const exerciseRows = completedExercises.map(ex => ({
+          session_log_id: sessionLogId,
+          exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
+          prescribed_sets: toInt(ex.prescribed_sets ?? ex.series),
+          prescribed_reps: toInt(ex.prescribed_reps ?? ex.repeticiones),
+          prescribed_weight: toFloat(ex.prescribed_weight ?? ex.peso_sugerido ?? ex.peso),
+          actual_sets: toInt(ex.actual_sets ?? ex.series_reales ?? 1) || 1,
+          actual_reps: toInt(ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones),
+          actual_weight: toFloat(ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido),
+          actual_intensity: ex.actual_intensity ? String(ex.actual_intensity).trim() : null,
+          recommended_intensity: (ex.recommended_intensity || ex.intensidad_recomendada) ? String(ex.recommended_intensity || ex.intensidad_recomendada).trim() : null,
+          completado: true
+        }));
 
         let { data: exData, error: exercisesError } = await withAuthRetry(() =>
           supabase
@@ -2836,7 +2851,7 @@ export const dataService = {
 
       const fullResult = {
         ...sessionData,
-        session_exercise_logs: savedExerciseLogs.length > 0 ? savedExerciseLogs : exercises
+        session_exercise_logs: savedExerciseLogs.length > 0 ? savedExerciseLogs : completedExercises
       };
 
       // Guardar también en caché local de respaldo
@@ -2852,33 +2867,26 @@ export const dataService = {
       return { data: fullResult, error: null };
     } catch (err) {
       console.error('[DataService] Exception in saveWorkoutSession:', err);
-      // Fallback local en caso de error de red o tabla
+      const completedOnly = (exercises || []).filter(
+        ex => ex && ex.completado !== false && ex.completed !== false && ex.is_completed !== false
+      );
       const mockSession = {
         id: `local-session-${Date.now()}`,
         client_id: clientId,
         fecha: new Date().toISOString(),
         comentarios_alumno: comentarios || null,
-        session_exercise_logs: exercises.map((ex, idx) => {
-          const isCompleted = ex.completado !== false && ex.completed !== false && ex.is_completed !== false;
-          return {
-            id: `local-ex-${Date.now()}-${idx}`,
-            exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
-            prescribed_sets: ex.prescribed_sets ?? ex.series,
-            prescribed_reps: ex.prescribed_reps ?? ex.repeticiones,
-            prescribed_weight: ex.prescribed_weight ?? ex.peso_sugerido,
-            actual_sets: isCompleted ? (ex.actual_sets ?? ex.series_reales ?? ex.series) : 0,
-            actual_reps: isCompleted ? (ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones) : 0,
-            actual_weight: isCompleted ? (ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido) : 0,
-            completado: isCompleted
-          };
-        })
+        session_exercise_logs: completedOnly.map((ex, idx) => ({
+          id: `local-ex-${Date.now()}-${idx}`,
+          exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
+          prescribed_sets: ex.prescribed_sets ?? ex.series,
+          prescribed_reps: ex.prescribed_reps ?? ex.repeticiones,
+          prescribed_weight: ex.prescribed_weight ?? ex.peso_sugerido,
+          actual_sets: ex.actual_sets ?? ex.series_reales ?? 1,
+          actual_reps: ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones,
+          actual_weight: ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido,
+          completado: true
+        }))
       };
-
-      try {
-        const key = `ec_session_logs_${clientId}`;
-        const prev = JSON.parse(localStorage.getItem(key) || '[]');
-        localStorage.setItem(key, JSON.stringify([mockSession, ...prev]));
-      } catch (e) {}
 
       return { data: mockSession, error: err };
     }

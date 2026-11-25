@@ -941,6 +941,10 @@ export default function StudentPortal({ student, onLogout }) {
     }
   };
 
+  // Identificador único y estable por ejercicio (evita colisiones si item.id falta o se repite)
+  const getExerciseKey = (item, itemIdx) =>
+    item?.id ? String(item.id) : `ex-${itemIdx}-${item?.exercise_id || item?.exercise?.id || itemIdx}`;
+
   // Estadísticas en tiempo real de ejercicios/series completados del día actual
   const exerciseCompletionStats = useMemo(() => {
     const list = currentDay?.ejercicios || [];
@@ -949,27 +953,40 @@ export default function StudentPortal({ student, onLogout }) {
     let unstartedExercises = 0;
     let totalSetsAll = 0;
     let completedSetsAll = 0;
+    const incompleteExercisesList = [];
 
-    list.forEach(item => {
+    list.forEach((item, itemIdx) => {
+      const exKey = getExerciseKey(item, itemIdx);
       const totalSets = Math.max(1, parseInt(item.series, 10) || 1);
       totalSetsAll += totalSets;
       let doneCount = 0;
       for (let sIdx = 0; sIdx < totalSets; sIdx++) {
-        if (completedSets[`${item.id}-${sIdx}`]) doneCount++;
+        if (completedSets[`${exKey}-${sIdx}`]) doneCount++;
       }
       completedSetsAll += doneCount;
-      if (doneCount === totalSets) fullyCompletedExercises++;
-      else if (doneCount > 0) partialExercises++;
-      else unstartedExercises++;
+      if (doneCount === totalSets) {
+        fullyCompletedExercises++;
+      } else {
+        if (doneCount > 0) partialExercises++;
+        else unstartedExercises++;
+        incompleteExercisesList.push({
+          name: item.exercise?.nombre || `Ejercicio ${itemIdx + 1}`,
+          doneSets: doneCount,
+          totalSets
+        });
+      }
     });
 
     const incompleteExercisesCount = list.length - fullyCompletedExercises;
+    const startedExercisesCount = fullyCompletedExercises + partialExercises;
     return {
       totalExercises: list.length,
       fullyCompletedExercises,
       partialExercises,
       unstartedExercises,
+      startedExercisesCount,
       incompleteExercisesCount,
+      incompleteExercisesList,
       totalSetsAll,
       completedSetsAll,
       missingSetsCount: totalSetsAll - completedSetsAll
@@ -979,7 +996,7 @@ export default function StudentPortal({ student, onLogout }) {
   // Validación previa al tocar "Finalizar y Guardar Sesión"
   const handleRequestFinishWorkout = () => {
     if (!currentDay || isReadOnly || isFinishingWorkout) return;
-    if (exerciseCompletionStats.incompleteExercisesCount > 0) {
+    if (exerciseCompletionStats.completedSetsAll === 0 || exerciseCompletionStats.incompleteExercisesCount > 0) {
       setShowIncompleteWarningModal(true);
     } else {
       setShowFinishConfirmModal(true);
@@ -988,6 +1005,64 @@ export default function StudentPortal({ student, onLogout }) {
 
   const handleConfirmFinishWorkout = async () => {
     if (!currentDay || isReadOnly) return;
+
+    // 1. Filtrar estrictamente: SOLO incluir las series/ejercicios que el alumno marcó como completados
+    const exercisesForLog = [];
+
+    (currentDay.ejercicios || []).forEach((item, itemIdx) => {
+      const exKey = getExerciseKey(item, itemIdx);
+      const totalSets = Math.max(1, parseInt(item.series, 10) || 1);
+
+      for (let sIdx = 0; sIdx < totalSets; sIdx++) {
+        const isDone = Boolean(completedSets[`${exKey}-${sIdx}`]);
+        if (!isDone) continue;
+
+        // Buscar valores específicos ingresados para esta serie
+        const setPesoInput = exerciseLogs[`${exKey}_set_${sIdx}_peso`];
+        const setRepsInput = exerciseLogs[`${exKey}_set_${sIdx}_reps`];
+
+        const actualWeight = (setPesoInput !== undefined && setPesoInput !== '')
+          ? setPesoInput
+          : ((exerciseLogs[`${exKey}_peso`] !== undefined && exerciseLogs[`${exKey}_peso`] !== '')
+            ? exerciseLogs[`${exKey}_peso`]
+            : (item.peso_sugerido || 0));
+
+        const actualReps = (setRepsInput !== undefined && setRepsInput !== '')
+          ? setRepsInput
+          : ((exerciseLogs[`${exKey}_reps`] !== undefined && exerciseLogs[`${exKey}_reps`] !== '')
+            ? exerciseLogs[`${exKey}_reps`]
+            : (item.repeticiones || 10));
+
+        const actualIntensity = (
+          exerciseLogs[`${exKey}_actual_intensity`] !== undefined && exerciseLogs[`${exKey}_actual_intensity`] !== ''
+        ) ? exerciseLogs[`${exKey}_actual_intensity`] : (exerciseLogs[`${exKey}_intensity`] || '');
+
+        const recommendedIntensity = item.recommended_intensity || item.intensidad_recomendada || '';
+
+        exercisesForLog.push({
+          exercise_name: item.exercise?.nombre || 'Ejercicio',
+          prescribed_sets: totalSets,
+          prescribed_reps: item.repeticiones,
+          prescribed_weight: item.peso_sugerido,
+          actual_sets: 1,
+          actual_reps: actualReps,
+          actual_weight: actualWeight,
+          recommended_intensity: recommendedIntensity,
+          actual_intensity: actualIntensity,
+          set_number: sIdx + 1,
+          completado: true,
+          is_completed: true
+        });
+      }
+    });
+
+    // Bloqueo de seguridad: nunca enviar un entrenamiento con 0 ejercicios/series marcados
+    if (exercisesForLog.length === 0) {
+      setShowFinishConfirmModal(false);
+      setShowIncompleteWarningModal(true);
+      return;
+    }
+
     setIsFinishingWorkout(true);
     const dayLabel = `Día ${selectedDayIndex + 1}`;
     const today = new Date().toISOString().split('T')[0];
@@ -995,62 +1070,7 @@ export default function StudentPortal({ student, onLogout }) {
     const studentId = student?.id || currentStudent?.id;
 
     try {
-      // 1. Mapear datos reales ejecutados SERIE POR SERIE respetando estrictamente qué se completó
-      const exercisesForLog = [];
-
-      (currentDay.ejercicios || []).forEach(item => {
-        const totalSets = Math.max(1, parseInt(item.series, 10) || 1);
-
-        for (let sIdx = 0; sIdx < totalSets; sIdx++) {
-          const isDone = Boolean(completedSets[`${item.id}-${sIdx}`]);
-
-          // Buscar valores específicos ingresados para esta serie
-          const setPesoInput = exerciseLogs[`${item.id}_set_${sIdx}_peso`];
-          const setRepsInput = exerciseLogs[`${item.id}_set_${sIdx}_reps`];
-
-          // Solo calcular valores reales si la serie fue marcada como completada
-          const actualWeight = isDone
-            ? ((setPesoInput !== undefined && setPesoInput !== '')
-                ? setPesoInput
-                : ((exerciseLogs[`${item.id}_peso`] !== undefined && exerciseLogs[`${item.id}_peso`] !== '')
-                  ? exerciseLogs[`${item.id}_peso`]
-                  : (item.peso_sugerido || 0)))
-            : 0;
-
-          const actualReps = isDone
-            ? ((setRepsInput !== undefined && setRepsInput !== '')
-                ? setRepsInput
-                : ((exerciseLogs[`${item.id}_reps`] !== undefined && exerciseLogs[`${item.id}_reps`] !== '')
-                  ? exerciseLogs[`${item.id}_reps`]
-                  : (item.repeticiones || 10)))
-            : 0;
-
-          const actualIntensity = isDone
-            ? ((exerciseLogs[`${item.id}_actual_intensity`] !== undefined && exerciseLogs[`${item.id}_actual_intensity`] !== '')
-                ? exerciseLogs[`${item.id}_actual_intensity`]
-                : (exerciseLogs[`${item.id}_intensity`] || ''))
-            : null;
-
-          const recommendedIntensity = item.recommended_intensity || item.intensidad_recomendada || '';
-
-          exercisesForLog.push({
-            exercise_name: item.exercise?.nombre || 'Ejercicio',
-            prescribed_sets: totalSets,
-            prescribed_reps: item.repeticiones,
-            prescribed_weight: item.peso_sugerido,
-            actual_sets: isDone ? 1 : 0,
-            actual_reps: actualReps,
-            actual_weight: actualWeight,
-            recommended_intensity: recommendedIntensity,
-            actual_intensity: actualIntensity,
-            set_number: sIdx + 1,
-            completado: isDone,
-            is_completed: isDone
-          });
-        }
-      });
-
-      // 2. Guardar en session_logs y session_exercise_logs (feedback de cargas)
+      // 2. Guardar en session_logs y session_exercise_logs ÚNICAMENTE lo marcado como completado
       const saveRes = await dataService.saveWorkoutSession({
         clientId: studentId,
         comentarios: sessionComments,
@@ -1185,30 +1205,31 @@ export default function StudentPortal({ student, onLogout }) {
           });
         });
       } else {
-        (currentDay.ejercicios || []).forEach((item) => {
+        (currentDay.ejercicios || []).forEach((item, itemIdx) => {
+          const exKey = getExerciseKey(item, itemIdx);
           const itemSets = Math.max(1, parseInt(item.series, 10) || 1);
           let completedInThisExercise = 0;
           let maxWeight = 0;
           let lastReps = 0;
 
           for (let sIdx = 0; sIdx < itemSets; sIdx++) {
-            const isDone = Boolean(completedSets[`${item.id}-${sIdx}`]);
+            const isDone = Boolean(completedSets[`${exKey}-${sIdx}`]);
             if (isDone) {
               completedInThisExercise++;
               totalCompletedSetsCount++;
 
-              const setPesoInput = exerciseLogs[`${item.id}_set_${sIdx}_peso`];
-              const setRepsInput = exerciseLogs[`${item.id}_set_${sIdx}_reps`];
+              const setPesoInput = exerciseLogs[`${exKey}_set_${sIdx}_peso`];
+              const setRepsInput = exerciseLogs[`${exKey}_set_${sIdx}_reps`];
               const weightVal = (setPesoInput !== undefined && setPesoInput !== '')
                 ? parseCleanWeight(setPesoInput)
-                : ((exerciseLogs[`${item.id}_peso`] !== undefined && exerciseLogs[`${item.id}_peso`] !== '')
-                  ? parseCleanWeight(exerciseLogs[`${item.id}_peso`])
+                : ((exerciseLogs[`${exKey}_peso`] !== undefined && exerciseLogs[`${exKey}_peso`] !== '')
+                  ? parseCleanWeight(exerciseLogs[`${exKey}_peso`])
                   : parseCleanWeight(item.peso_sugerido));
 
               const repsVal = (setRepsInput !== undefined && setRepsInput !== '')
                 ? parseCleanReps(setRepsInput)
-                : ((exerciseLogs[`${item.id}_reps`] !== undefined && exerciseLogs[`${item.id}_reps`] !== '')
-                  ? parseCleanReps(exerciseLogs[`${item.id}_reps`])
+                : ((exerciseLogs[`${exKey}_reps`] !== undefined && exerciseLogs[`${exKey}_reps`] !== '')
+                  ? parseCleanReps(exerciseLogs[`${exKey}_reps`])
                   : parseCleanReps(item.repeticiones || 10));
 
               if (weightVal > 0 && repsVal > 0) {
@@ -2143,9 +2164,11 @@ export default function StudentPortal({ student, onLogout }) {
             {/* Lista de Ejercicios del Día o Estado Vacío */}
             {currentDay?.ejercicios && currentDay.ejercicios.length > 0 ? (
               <div className="space-y-3">
-                {currentDay.ejercicios.map((item) => (
+                {currentDay.ejercicios.map((item, itemIdx) => {
+                  const exKey = getExerciseKey(item, itemIdx);
+                  return (
                   <div
-                    key={item.id}
+                    key={exKey}
                     className="card-dark rounded-2xl p-4 space-y-3 border border-white/5 shadow-md"
                   >
                     <div className="flex items-start gap-3">
@@ -2244,7 +2267,7 @@ export default function StudentPortal({ student, onLogout }) {
                       {/* Filas independientes por cada serie */}
                       <div className="space-y-2">
                         {Array.from({ length: Math.max(1, parseInt(item.series, 10) || 1) }).map((_, sIdx) => {
-                          let isDone = Boolean(completedSets[`${item.id}-${sIdx}`]);
+                          let isDone = Boolean(completedSets[`${exKey}-${sIdx}`]);
                           if (isReadOnly && Object.keys(completedSets).length === 0) {
                             if (todaySavedSessionLogs) {
                               const exNameNorm = (item.exercise?.nombre || '').toLowerCase().trim();
@@ -2260,8 +2283,8 @@ export default function StudentPortal({ student, onLogout }) {
                               isDone = true;
                             }
                           }
-                          const setPeso = exerciseLogs[`${item.id}_set_${sIdx}_peso`] ?? '';
-                          const setReps = exerciseLogs[`${item.id}_set_${sIdx}_reps`] ?? '';
+                          const setPeso = exerciseLogs[`${exKey}_set_${sIdx}_peso`] ?? '';
+                          const setReps = exerciseLogs[`${exKey}_set_${sIdx}_reps`] ?? '';
 
                           return (
                             <div
@@ -2299,7 +2322,7 @@ export default function StudentPortal({ student, onLogout }) {
                                   min="0"
                                   disabled={isReadOnly}
                                   value={setPeso}
-                                  onChange={(e) => updateExerciseLogField(`${item.id}_set_${sIdx}_peso`, e.target.value)}
+                                  onChange={(e) => updateExerciseLogField(`${exKey}_set_${sIdx}_peso`, e.target.value)}
                                   placeholder={item.peso_sugerido ? `${item.peso_sugerido}` : 'kg'}
                                   className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
                                 />
@@ -2312,7 +2335,7 @@ export default function StudentPortal({ student, onLogout }) {
                                   min="0"
                                   disabled={isReadOnly}
                                   value={setReps}
-                                  onChange={(e) => updateExerciseLogField(`${item.id}_set_${sIdx}_reps`, e.target.value)}
+                                  onChange={(e) => updateExerciseLogField(`${exKey}_set_${sIdx}_reps`, e.target.value)}
                                   placeholder={item.repeticiones ? `${item.repeticiones}` : 'reps'}
                                   className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
                                 />
@@ -2323,7 +2346,7 @@ export default function StudentPortal({ student, onLogout }) {
                                 <button
                                   type="button"
                                   disabled={isReadOnly}
-                                  onClick={() => toggleSetCompleted(item.id, sIdx, item.descanso_seg || item.descanso)}
+                                  onClick={() => toggleSetCompleted(exKey, sIdx, item.descanso_seg || item.descanso)}
                                   className={`w-full min-h-[38px] px-1.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 border select-none ${
                                     isDone
                                       ? isReadOnly
@@ -2369,8 +2392,8 @@ export default function StudentPortal({ student, onLogout }) {
                           <input
                             type="text"
                             disabled={isReadOnly}
-                            value={exerciseLogs[`${item.id}_actual_intensity`] ?? exerciseLogs[`${item.id}_intensity`] ?? ''}
-                            onChange={(e) => updateExerciseLogField(`${item.id}_actual_intensity`, e.target.value)}
+                            value={exerciseLogs[`${exKey}_actual_intensity`] ?? exerciseLogs[`${exKey}_intensity`] ?? ''}
+                            onChange={(e) => updateExerciseLogField(`${exKey}_actual_intensity`, e.target.value)}
                             placeholder={(item.recommended_intensity || item.intensidad_recomendada) || 'Ej: RPE 8'}
                             className="w-full bg-dark-900 border border-dark-700 focus:border-amber-400 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-bold text-center placeholder-gray-600 focus:outline-none disabled:opacity-50 transition-colors min-h-[36px]"
                           />
@@ -2384,10 +2407,25 @@ export default function StudentPortal({ student, onLogout }) {
                       </p>
                     )}
                   </div>
-                ))}
+                  );
+                })}
 
                 {/* BOTÓN FINALIZAR Y GUARDAR SESIÓN (O COMPARTIR EN STORIES SI ESTÁ COMPLETADO) */}
-                <div className="pt-3">
+                <div className="pt-3 space-y-2">
+                  {!isReadOnly && (
+                    <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-dark-900/80 border border-dark-700/80 text-[11px]">
+                      <span className="text-gray-400 font-medium">Progreso del día:</span>
+                      <span className={`font-bold ${
+                        exerciseCompletionStats.incompleteExercisesCount === 0 && exerciseCompletionStats.totalSetsAll > 0
+                          ? 'text-emerald-400'
+                          : exerciseCompletionStats.completedSetsAll > 0
+                            ? 'text-amber-400'
+                            : 'text-gray-400'
+                      }`}>
+                        {exerciseCompletionStats.completedSetsAll}/{exerciseCompletionStats.totalSetsAll} series · {exerciseCompletionStats.startedExercisesCount}/{exerciseCompletionStats.totalExercises} ejercicios
+                      </span>
+                    </div>
+                  )}
                   {isReadOnly ? (
                     <button
                       type="button"
@@ -2897,66 +2935,115 @@ export default function StudentPortal({ student, onLogout }) {
         </div>
       )}
 
-      {/* 2a. Modal Advertencia: Entrenamiento Incompleto (ejercicios sin marcar) */}
+      {/* 2a. Modal Advertencia: Entrenamiento Incompleto o Sin Ejercicios Marcados */}
       {showIncompleteWarningModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-dark-900 border border-amber-500/40 shadow-2xl p-6 text-center space-y-4 animate-in zoom-in-95">
+          <div className="w-full max-w-sm rounded-2xl bg-dark-900 border border-amber-500/40 shadow-2xl p-6 text-center space-y-4 animate-in zoom-in-95 max-h-[90vh] overflow-y-auto">
             <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
               <AlertTriangle className="w-7 h-7" />
             </div>
-            <div className="space-y-1.5">
-              <h3 className="text-base font-black text-white">Entrenamiento incompleto</h3>
-              <p className="text-xs text-gray-300 leading-relaxed">
-                Te faltaron completar{' '}
-                <span className="font-black text-amber-400">
-                  {exerciseCompletionStats.incompleteExercisesCount}{' '}
-                  {exerciseCompletionStats.incompleteExercisesCount === 1 ? 'ejercicio' : 'ejercicios'}
-                </span>
-                {exerciseCompletionStats.missingSetsCount > 0 && (
-                  <span className="text-gray-400">
-                    {' '}({exerciseCompletionStats.missingSetsCount}{' '}
-                    {exerciseCompletionStats.missingSetsCount === 1 ? 'serie sin marcar' : 'series sin marcar'})
-                  </span>
-                )}
-                . ¿Querés finalizar el entrenamiento igual?
-              </p>
-              <p className="text-[11px] text-gray-500">
-                Solo los ejercicios y series marcados como "Hecha" contarán para tus métricas y volumen real.
-              </p>
-            </div>
 
-            {/* Campo opcional de comentarios / feedback para el coach */}
-            <div className="text-left space-y-1">
-              <label className="block text-[11px] font-semibold text-gray-300">
-                Feedback para tu Coach (opcional):
-              </label>
-              <textarea
-                rows="2"
-                value={sessionComments}
-                onChange={(e) => updateSessionComments(e.target.value)}
-                placeholder="Ej: Falta de tiempo, molestia física o sensaciones del día..."
-                className="w-full bg-dark-950 border border-dark-700 focus:border-amber-500 rounded-xl p-2.5 text-xs text-white placeholder-gray-500 focus:outline-none transition-colors resize-none"
-              />
-            </div>
+            {exerciseCompletionStats.completedSetsAll === 0 ? (
+              <>
+                <div className="space-y-1.5">
+                  <h3 className="text-base font-black text-white">No marcaste ningún ejercicio</h3>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    Todavía no marcaste ninguna serie como realizada. Tocá el botón{' '}
+                    <span className="font-bold text-emerald-400">"Listo"</span> en las series que completaste antes de finalizar el entrenamiento.
+                  </p>
+                </div>
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowIncompleteWarningModal(false)}
+                    className="w-full py-3 px-4 rounded-xl bg-brand hover:bg-brand-dark text-white font-black text-xs transition-colors shadow-glow-red"
+                  >
+                    Seguir entrenando
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <h3 className="text-base font-black text-white">¡Te faltan ejercicios por completar!</h3>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    Te faltaron completar{' '}
+                    <span className="font-black text-amber-400">
+                      {exerciseCompletionStats.incompleteExercisesCount}{' '}
+                      {exerciseCompletionStats.incompleteExercisesCount === 1 ? 'ejercicio' : 'ejercicios'}
+                    </span>
+                    {exerciseCompletionStats.missingSetsCount > 0 && (
+                      <span className="text-gray-400">
+                        {' '}({exerciseCompletionStats.missingSetsCount}{' '}
+                        {exerciseCompletionStats.missingSetsCount === 1 ? 'serie sin marcar' : 'series sin marcar'})
+                      </span>
+                    )}
+                    . ¿Deseás mandarlo igual así?
+                  </p>
 
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <button
-                type="button"
-                disabled={isFinishingWorkout}
-                onClick={() => setShowIncompleteWarningModal(false)}
-                className="py-3 px-3 rounded-xl bg-dark-800 hover:bg-dark-750 text-white border border-dark-700 font-bold text-xs transition-colors"
-              >
-                Seguir entrenando
-              </button>
-              <button
-                type="button"
-                disabled={isFinishingWorkout}
-                onClick={handleConfirmFinishWorkout}
-                className="py-3 px-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-xs transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-lg"
-              >
-                {isFinishingWorkout ? 'Guardando...' : 'Finalizar igual'}
-              </button>
-            </div>
+                  {/* Lista compacta de ejercicios pendientes */}
+                  {exerciseCompletionStats.incompleteExercisesList.length > 0 && (
+                    <div className="text-left bg-dark-950/80 border border-dark-700/80 rounded-xl p-2.5 space-y-1">
+                      <span className="text-[10px] uppercase font-bold text-amber-400 tracking-wider block">
+                        Ejercicios incompletos:
+                      </span>
+                      <ul className="space-y-1 text-[11px] text-gray-300">
+                        {exerciseCompletionStats.incompleteExercisesList.slice(0, 5).map((ex, idx) => (
+                          <li key={idx} className="flex items-center justify-between gap-2">
+                            <span className="truncate">{ex.name}</span>
+                            <span className="text-[10px] font-mono text-amber-400 shrink-0">
+                              {ex.doneSets}/{ex.totalSets} series
+                            </span>
+                          </li>
+                        ))}
+                        {exerciseCompletionStats.incompleteExercisesList.length > 5 && (
+                          <li className="text-[10px] text-gray-500 italic">
+                            ...y {exerciseCompletionStats.incompleteExercisesList.length - 5} más
+                          </li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-emerald-300/90 bg-emerald-950/30 border border-emerald-500/20 rounded-lg px-2.5 py-1.5">
+                    Si finalizás igual, se enviarán <strong>únicamente los {exerciseCompletionStats.startedExercisesCount} {exerciseCompletionStats.startedExercisesCount === 1 ? 'ejercicio' : 'ejercicios'} ({exerciseCompletionStats.completedSetsAll} {exerciseCompletionStats.completedSetsAll === 1 ? 'serie' : 'series'})</strong> que marcaste como completados.
+                  </p>
+                </div>
+
+                {/* Campo opcional de comentarios / feedback para el coach */}
+                <div className="text-left space-y-1">
+                  <label className="block text-[11px] font-semibold text-gray-300">
+                    Feedback para tu Coach (opcional):
+                  </label>
+                  <textarea
+                    rows="2"
+                    value={sessionComments}
+                    onChange={(e) => updateSessionComments(e.target.value)}
+                    placeholder="Ej: Falta de tiempo, molestia física o sensaciones del día..."
+                    className="w-full bg-dark-950 border border-dark-700 focus:border-amber-500 rounded-xl p-2.5 text-xs text-white placeholder-gray-500 focus:outline-none transition-colors resize-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-2">
+                  <button
+                    type="button"
+                    disabled={isFinishingWorkout}
+                    onClick={() => setShowIncompleteWarningModal(false)}
+                    className="py-3 px-3 rounded-xl bg-dark-800 hover:bg-dark-750 text-white border border-dark-700 font-bold text-xs transition-colors"
+                  >
+                    Seguir entrenando
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isFinishingWorkout}
+                    onClick={handleConfirmFinishWorkout}
+                    className="py-3 px-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-xs transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-lg"
+                  >
+                    {isFinishingWorkout ? 'Guardando...' : 'Finalizar igual'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
