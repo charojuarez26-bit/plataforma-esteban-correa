@@ -39,7 +39,10 @@ import {
   Zap,
   Award,
   Lightbulb,
-  XCircle
+  XCircle,
+  Link2,
+  Plus,
+  TrendingDown
 } from 'lucide-react';
 import { toPng, toBlob } from 'html-to-image';
 import WorkoutShareStory from './WorkoutShareStory';
@@ -55,6 +58,13 @@ import {
   ResponsiveContainer 
 } from 'recharts';
 import { dataService, isExerciseLogCompleted, parseSessionFeedback, getDifficultyBadgeConfig } from '../../services/dataService';
+import {
+  groupExercisesBySuperset,
+  parseOptionalWeight,
+  parseOptionalInt,
+  normalizeSessionExerciseLogs,
+  computeSetVolumeWithDrops
+} from '../../utils/routineGroupUtils';
 import { supabase } from '../../lib/supabaseClient';
 import { 
   calcularEstadoPago, 
@@ -141,6 +151,7 @@ export default function StudentPortal({ student, onLogout }) {
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [completedSets, setCompletedSets] = useState({});
   const [exerciseLogs, setExerciseLogs] = useState({});
+  const [dropSets, setDropSets] = useState({}); // { [`${exKey}-${sIdx}`]: [{ id, peso, reps }] }
   const [trainingSessions, setTrainingSessions] = useState([]);
   const [studentSessionLogs, setStudentSessionLogs] = useState([]);
   const [selectedExerciseForModal, setSelectedExerciseForModal] = useState(null);
@@ -181,6 +192,7 @@ export default function StudentPortal({ student, onLogout }) {
   const workoutStateRef = useRef({
     completedSets: {},
     exerciseLogs: {},
+    dropSets: {},
     sessionComments: '',
     sessionDifficulty: ''
   });
@@ -791,26 +803,31 @@ export default function StudentPortal({ student, onLogout }) {
         const parsed = JSON.parse(savedRaw);
         const restoredSets = (parsed?.completedSets && typeof parsed.completedSets === 'object') ? parsed.completedSets : {};
         const restoredLogs = (parsed?.exerciseLogs && typeof parsed.exerciseLogs === 'object') ? parsed.exerciseLogs : {};
+        const restoredDrops = (parsed?.dropSets && typeof parsed.dropSets === 'object') ? parsed.dropSets : {};
         const restoredComments = typeof parsed?.sessionComments === 'string' ? parsed.sessionComments : '';
         const restoredDifficulty = typeof parsed?.sessionDifficulty === 'string' ? parsed.sessionDifficulty : '';
         setCompletedSets(restoredSets);
         setExerciseLogs(restoredLogs);
+        setDropSets(restoredDrops);
         setSessionComments(restoredComments);
         setSessionDifficulty(restoredDifficulty);
         workoutStateRef.current = {
           completedSets: restoredSets,
           exerciseLogs: restoredLogs,
+          dropSets: restoredDrops,
           sessionComments: restoredComments,
           sessionDifficulty: restoredDifficulty
         };
       } else {
         setCompletedSets({});
         setExerciseLogs({});
+        setDropSets({});
         setSessionComments('');
         setSessionDifficulty('');
         workoutStateRef.current = {
           completedSets: {},
           exerciseLogs: {},
+          dropSets: {},
           sessionComments: '',
           sessionDifficulty: ''
         };
@@ -819,11 +836,13 @@ export default function StudentPortal({ student, onLogout }) {
       console.warn('[StudentPortal] Error restaurando borrador de entrenamiento:', err);
       setCompletedSets({});
       setExerciseLogs({});
+      setDropSets({});
       setSessionComments('');
       setSessionDifficulty('');
       workoutStateRef.current = {
         completedSets: {},
         exerciseLogs: {},
+        dropSets: {},
         sessionComments: '',
         sessionDifficulty: ''
       };
@@ -872,7 +891,7 @@ export default function StudentPortal({ student, onLogout }) {
   // Inmutabilidad de Sesiones de Entrenamiento (Read-Only por el día actual)
   const isReadOnly = isCurrentDayDone;
 
-  // Sesión guardada hoy (para reflejar exactamente qué series se completaron en modo solo lectura tras recargar)
+  // Sesión guardada hoy (normalizada con bajadas para modo solo lectura tras recargar)
   const todaySavedSessionLogs = useMemo(() => {
     if (!isReadOnly || !studentSessionLogs || studentSessionLogs.length === 0) return null;
     const todayStr = new Date().toISOString().split('T')[0];
@@ -880,7 +899,7 @@ export default function StudentPortal({ student, onLogout }) {
       if (!sess?.fecha) return false;
       return String(sess.fecha).split('T')[0] === todayStr;
     });
-    return todayMatch?.session_exercise_logs || null;
+    return todayMatch?.session_exercise_logs ? normalizeSessionExerciseLogs(todayMatch.session_exercise_logs) : null;
   }, [isReadOnly, studentSessionLogs]);
 
   // Guardar borrador inmediatamente en localStorage en cada interacción del alumno
@@ -889,6 +908,7 @@ export default function StudentPortal({ student, onLogout }) {
     const merged = {
       completedSets: nextPartial.completedSets !== undefined ? nextPartial.completedSets : workoutStateRef.current.completedSets,
       exerciseLogs: nextPartial.exerciseLogs !== undefined ? nextPartial.exerciseLogs : workoutStateRef.current.exerciseLogs,
+      dropSets: nextPartial.dropSets !== undefined ? nextPartial.dropSets : workoutStateRef.current.dropSets,
       sessionComments: nextPartial.sessionComments !== undefined ? nextPartial.sessionComments : workoutStateRef.current.sessionComments,
       sessionDifficulty: nextPartial.sessionDifficulty !== undefined ? nextPartial.sessionDifficulty : workoutStateRef.current.sessionDifficulty,
       updatedAt: new Date().toISOString()
@@ -896,6 +916,7 @@ export default function StudentPortal({ student, onLogout }) {
     workoutStateRef.current = {
       completedSets: merged.completedSets,
       exerciseLogs: merged.exerciseLogs,
+      dropSets: merged.dropSets,
       sessionComments: merged.sessionComments,
       sessionDifficulty: merged.sessionDifficulty
     };
@@ -924,6 +945,54 @@ export default function StudentPortal({ student, onLogout }) {
     saveWorkoutDraftImmediate({ exerciseLogs: nextLogs });
   };
 
+  const handleAddDropSet = (exKey, setIdx) => {
+    if (isReadOnly) return;
+    const key = `${exKey}-${setIdx}`;
+    const currentDrops = workoutStateRef.current.dropSets[key] || [];
+    const newDrop = {
+      id: `drop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      peso: '',
+      reps: ''
+    };
+    const nextDropSets = {
+      ...workoutStateRef.current.dropSets,
+      [key]: [...currentDrops, newDrop]
+    };
+    setDropSets(nextDropSets);
+    saveWorkoutDraftImmediate({ dropSets: nextDropSets });
+  };
+
+  const handleUpdateDropSet = (exKey, setIdx, dropIdx, field, rawValue) => {
+    if (isReadOnly) return;
+    const sanitized = field === 'peso'
+      ? String(rawValue).replace(/[^0-9.,]/g, '')
+      : String(rawValue).replace(/[^0-9]/g, '');
+    const key = `${exKey}-${setIdx}`;
+    const currentDrops = workoutStateRef.current.dropSets[key] || [];
+    const updatedList = currentDrops.map((d, idx) =>
+      idx === dropIdx ? { ...d, [field]: sanitized } : d
+    );
+    const nextDropSets = {
+      ...workoutStateRef.current.dropSets,
+      [key]: updatedList
+    };
+    setDropSets(nextDropSets);
+    saveWorkoutDraftImmediate({ dropSets: nextDropSets });
+  };
+
+  const handleRemoveDropSet = (exKey, setIdx, dropIdx) => {
+    if (isReadOnly) return;
+    const key = `${exKey}-${setIdx}`;
+    const currentDrops = workoutStateRef.current.dropSets[key] || [];
+    const updatedList = currentDrops.filter((_, idx) => idx !== dropIdx);
+    const nextDropSets = {
+      ...workoutStateRef.current.dropSets,
+      [key]: updatedList
+    };
+    setDropSets(nextDropSets);
+    saveWorkoutDraftImmediate({ dropSets: nextDropSets });
+  };
+
   const updateSessionComments = (value) => {
     setSessionComments(value);
     saveWorkoutDraftImmediate({ sessionComments: value });
@@ -934,7 +1003,7 @@ export default function StudentPortal({ student, onLogout }) {
     saveWorkoutDraftImmediate({ sessionDifficulty: value });
   };
 
-  const toggleSetCompleted = (exerciseId, setIdx, restParam = 90) => {
+  const toggleSetCompleted = (exerciseId, setIdx, restParam = 90, shouldStartTimer = true) => {
     if (isReadOnly) return;
     const key = `${exerciseId}-${setIdx}`;
     const willBeDone = !workoutStateRef.current.completedSets[key];
@@ -946,8 +1015,8 @@ export default function StudentPortal({ student, onLogout }) {
     setCompletedSets(nextCompleted);
     saveWorkoutDraftImmediate({ completedSets: nextCompleted });
 
-    // Auto-Rest Timer: iniciar automáticamente al marcar la serie como completada
-    if (willBeDone) {
+    // Auto-Rest Timer: iniciar al marcar la serie como completada (en superseries, solo en el último ejercicio del bloque)
+    if (willBeDone && shouldStartTimer) {
       const rawSec = typeof restParam === 'number'
         ? restParam
         : (parseInt(String(restParam || '').replace(/\D/g, ''), 10) || 90);
@@ -1033,19 +1102,20 @@ export default function StudentPortal({ student, onLogout }) {
         const isDone = Boolean(completedSets[`${exKey}-${sIdx}`]);
         if (!isDone) continue;
 
-        // Buscar valores específicos ingresados para esta serie
+        // Buscar valores específicos ingresados para esta serie (preservando null si queda vacío, nunca forzar 0)
         const setPesoInput = exerciseLogs[`${exKey}_set_${sIdx}_peso`];
         const setRepsInput = exerciseLogs[`${exKey}_set_${sIdx}_reps`];
 
-        const actualWeight = (setPesoInput !== undefined && setPesoInput !== '')
+        const rawWeightSource = (setPesoInput !== undefined && String(setPesoInput).trim() !== '')
           ? setPesoInput
-          : ((exerciseLogs[`${exKey}_peso`] !== undefined && exerciseLogs[`${exKey}_peso`] !== '')
+          : ((exerciseLogs[`${exKey}_peso`] !== undefined && String(exerciseLogs[`${exKey}_peso`]).trim() !== '')
             ? exerciseLogs[`${exKey}_peso`]
-            : (item.peso_sugerido || 0));
+            : item.peso_sugerido);
+        const actualWeight = parseOptionalWeight(rawWeightSource);
 
-        const actualReps = (setRepsInput !== undefined && setRepsInput !== '')
+        const actualReps = (setRepsInput !== undefined && String(setRepsInput).trim() !== '')
           ? setRepsInput
-          : ((exerciseLogs[`${exKey}_reps`] !== undefined && exerciseLogs[`${exKey}_reps`] !== '')
+          : ((exerciseLogs[`${exKey}_reps`] !== undefined && String(exerciseLogs[`${exKey}_reps`]).trim() !== '')
             ? exerciseLogs[`${exKey}_reps`]
             : (item.repeticiones || 10));
 
@@ -1054,6 +1124,15 @@ export default function StudentPortal({ student, onLogout }) {
         ) ? exerciseLogs[`${exKey}_actual_intensity`] : (exerciseLogs[`${exKey}_intensity`] || '');
 
         const recommendedIntensity = item.recommended_intensity || item.intensidad_recomendada || '';
+
+        // Bajadas (Drop Sets) cargadas por el alumno para esta serie
+        const rawDrops = dropSets[`${exKey}-${sIdx}`] || [];
+        const cleanBajadas = rawDrops
+          .map(d => ({
+            peso: parseOptionalWeight(d.peso),
+            reps: parseOptionalInt(d.reps)
+          }))
+          .filter(d => d.peso !== null || d.reps !== null);
 
         exercisesForLog.push({
           exercise_name: item.exercise?.nombre || 'Ejercicio',
@@ -1066,6 +1145,7 @@ export default function StudentPortal({ student, onLogout }) {
           recommended_intensity: recommendedIntensity,
           actual_intensity: actualIntensity,
           set_number: sIdx + 1,
+          bajadas: cleanBajadas,
           completado: true,
           is_completed: true
         });
@@ -1182,9 +1262,10 @@ export default function StudentPortal({ student, onLogout }) {
       };
 
       const hasInMemoryCompleted = Object.keys(completedSets).length > 0;
-      const persistedLogsSource = savedSessionOverride?.session_exercise_logs || (!hasInMemoryCompleted ? todaySavedSessionLogs : null);
+      const rawPersistedSource = savedSessionOverride?.session_exercise_logs || (!hasInMemoryCompleted ? todaySavedSessionLogs : null);
+      const persistedLogsSource = rawPersistedSource ? normalizeSessionExerciseLogs(rawPersistedSource) : null;
 
-      // 1. Mapear SOLO datos realmente ejecutados (ignorando ejercicios y series con completado === false)
+      // 1. Mapear SOLO datos realmente ejecutados (incluyendo volumen de bajadas/drop sets)
       let totalCompletedSetsCount = 0;
       let totalCalculatedVolume = 0;
       let totalCalculatedReps = 0;
@@ -1208,11 +1289,15 @@ export default function StudentPortal({ student, onLogout }) {
             const w = parseCleanWeight(s.actual_weight);
             const r = parseCleanReps(s.actual_reps);
             if (w > maxWeight) maxWeight = w;
-            if (w > 0 && r > 0) totalCalculatedVolume += (w * r);
+            totalCalculatedVolume += computeSetVolumeWithDrops(s);
             if (r > 0) {
               lastReps = r;
               totalCalculatedReps += r;
             }
+            (s.bajadas || []).forEach(b => {
+              const br = parseCleanReps(b.reps);
+              if (br > 0) totalCalculatedReps += br;
+            });
           });
           completedExercisesNum++;
           exercisesSummary.push({
@@ -1259,6 +1344,18 @@ export default function StudentPortal({ student, onLogout }) {
                 lastReps = repsVal;
                 totalCalculatedReps += repsVal;
               }
+
+              // Sumar volumen y repeticiones de las bajadas (drop sets) de esta serie
+              (dropSets[`${exKey}-${sIdx}`] || []).forEach(b => {
+                const bw = parseOptionalWeight(b.peso);
+                const br = parseOptionalInt(b.reps);
+                if (bw !== null && bw > 0 && br !== null && br > 0) {
+                  totalCalculatedVolume += (bw * br);
+                }
+                if (br !== null && br > 0) {
+                  totalCalculatedReps += br;
+                }
+              });
             }
           }
 
@@ -2180,254 +2277,420 @@ export default function StudentPortal({ student, onLogout }) {
               </span>
             </div>
 
-            {/* Lista de Ejercicios del Día o Estado Vacío */}
+            {/* Lista de Ejercicios del Día (con soporte de Superseries y Drop Sets) */}
             {currentDay?.ejercicios && currentDay.ejercicios.length > 0 ? (
               <div className="space-y-3">
-                {currentDay.ejercicios.map((item, itemIdx) => {
-                  const exKey = getExerciseKey(item, itemIdx);
-                  return (
-                  <div
-                    key={exKey}
-                    className="card-dark rounded-2xl p-4 space-y-3 border border-white/5 shadow-md"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="w-16 h-16 rounded-xl bg-white p-1 border border-dark-700 shrink-0 flex items-center justify-center overflow-hidden">
-                        <StaticGif
-                          src={item.exercise?.gif_url || item.exercise?.imagen_url}
-                          alt={item.exercise?.nombre || 'Ejercicio'}
-                          className="w-full h-full object-contain"
-                        />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-brand/20 text-brand-light">
-                          {item.exercise.grupo_muscular}
-                        </span>
-                        <h4 className="text-sm font-bold text-white mt-1 break-words">
-                          {item.exercise.nombre}
-                        </h4>
-                        <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-2">
-                          {item.exercise.instrucciones}
-                        </p>
-                      </div>
-                    </div>
+                {(() => {
+                  const blocks = groupExercisesBySuperset(currentDay.ejercicios || []);
 
-                    {/* Botón accesible para ver video de técnica y errores a evitar */}
-                    <button
-                      type="button"
-                      onClick={() => setSelectedExerciseForModal(item.exercise)}
-                      className="w-full py-2.5 px-3 rounded-xl bg-dark-900 hover:bg-dark-850 text-brand-light hover:text-white border border-brand/30 hover:border-brand/60 transition-all flex items-center justify-between text-xs font-bold shadow-sm active:scale-[0.99] min-h-[44px]"
-                    >
-                      <span className="flex items-center gap-2">
-                        <Play className="w-3.5 h-3.5 fill-current text-brand" />
-                        <span>Ver Técnica / Video & Errores</span>
-                      </span>
-                      <ChevronRight className="w-4 h-4 text-brand" />
-                    </button>
+                  const renderStudentExerciseBody = (item, itemIdx, { isInSuperset = false, isLastInSuperset = true, supersetRestSec = null } = {}) => {
+                    const exKey = getExerciseKey(item, itemIdx);
+                    const isDropSetExercise = Boolean(item.es_descendente);
+                    const hasIntensity = Boolean(item.recommended_intensity || item.intensidad_recomendada);
+                    const restParamForSet = isInSuperset ? (supersetRestSec || item.descanso_seg || item.descanso || 90) : (item.descanso_seg || item.descanso || 90);
+                    const shouldTriggerRestOnSet = !isInSuperset || isLastInSuperset;
 
-                    {/* Parámetros de Carga & Intensidad Recomendada */}
-                    <div className={`grid ${(item.recommended_intensity || item.intensidad_recomendada) ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} gap-2 text-center text-xs`}>
-                      <div className="p-2 rounded-xl bg-dark-900 border border-dark-700">
-                        <span className="text-[10px] text-gray-400 block">Series x Reps</span>
-                        <span className="font-bold text-white">{item.series} x {item.repeticiones}</span>
-                      </div>
-                      <div className="p-2 rounded-xl bg-dark-900 border border-dark-700">
-                        <span className="text-[10px] text-gray-400 block">Carga Sugerida</span>
-                        <span className="font-bold text-brand-light">{item.peso_sugerido}</span>
-                      </div>
-                      <div className="p-2 rounded-xl bg-dark-900 border border-dark-700">
-                        <span className="text-[10px] text-gray-400 block">Descanso</span>
-                        <span className="font-bold text-white">{item.descanso_seg}s</span>
-                      </div>
-                      {(item.recommended_intensity || item.intensidad_recomendada) && (
-                        <div className="p-2 rounded-xl bg-dark-900 border border-amber-500/30">
-                          <span className="text-[10px] text-amber-400 font-bold block uppercase truncate">Intensidad Coach</span>
-                          <span className="font-black text-amber-300">{item.recommended_intensity || item.intensidad_recomendada}</span>
-                        </div>
-                      )}
-                    </div>
+                    // Columnas de parámetros: en superseries el descanso se muestra UNA sola vez al final del bloque
+                    const paramGridCols = isInSuperset
+                      ? (hasIntensity ? 'grid-cols-3' : 'grid-cols-2')
+                      : (hasIntensity ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3');
 
-                    {/* Consejos Técnicos / Observaciones del Entrenador */}
-                    {Boolean(item.observaciones && item.observaciones.trim()) && (
-                      <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-2.5 text-xs shadow-sm">
-                        <div className="w-6 h-6 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center shrink-0 text-amber-400 mt-0.5">
-                          <Lightbulb className="w-3.5 h-3.5" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <span className="text-[10px] uppercase font-bold text-amber-400 tracking-wider block mb-0.5">
-                            Consejo del Entrenador
-                          </span>
-                          <p className="italic text-zinc-200 text-xs leading-relaxed break-words font-medium">
-                            "{item.observaciones.trim()}"
-                          </p>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* REGISTRO DETALLADO SERIE POR SERIE */}
-                    <div className="space-y-2 pt-2 border-t border-dark-700/60">
-                      <div className="flex items-center justify-between text-[11px] font-bold text-gray-300 px-1">
-                        <span className="uppercase tracking-wider flex items-center gap-1.5 text-brand-light">
-                          <Dumbbell className="w-3.5 h-3.5" />
-                          Registro Serie por Serie
-                        </span>
-                        <span className="text-[10px] text-gray-400 font-normal">
-                          {isReadOnly ? 'Bloqueado (Solo lectura)' : 'Toca "Listo" al terminar cada serie'}
-                        </span>
-                      </div>
-
-                      {/* Header de columnas */}
-                      <div className="grid grid-cols-12 gap-2 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 text-center">
-                        <div className="col-span-3 text-left pl-1">Serie</div>
-                        <div className="col-span-3">Peso (kg)</div>
-                        <div className="col-span-3">Reps</div>
-                        <div className="col-span-3">Estado</div>
-                      </div>
-
-                      {/* Filas independientes por cada serie */}
-                      <div className="space-y-2">
-                        {Array.from({ length: Math.max(1, parseInt(item.series, 10) || 1) }).map((_, sIdx) => {
-                          let isDone = Boolean(completedSets[`${exKey}-${sIdx}`]);
-                          if (isReadOnly && Object.keys(completedSets).length === 0) {
-                            if (todaySavedSessionLogs) {
-                              const exNameNorm = (item.exercise?.nombre || '').toLowerCase().trim();
-                              const matchingExLogs = todaySavedSessionLogs.filter(
-                                l => (l.exercise_name || '').toLowerCase().trim() === exNameNorm
-                              );
-                              if (matchingExLogs[sIdx]) {
-                                isDone = isExerciseLogCompleted(matchingExLogs[sIdx]);
-                              } else {
-                                isDone = false;
-                              }
-                            } else {
-                              isDone = true;
-                            }
-                          }
-                          const setPeso = exerciseLogs[`${exKey}_set_${sIdx}_peso`] ?? '';
-                          const setReps = exerciseLogs[`${exKey}_set_${sIdx}_reps`] ?? '';
-
-                          return (
-                            <div
-                              key={sIdx}
-                              className={`grid grid-cols-12 gap-2 items-center p-2 rounded-xl border transition-all ${
-                                isDone
-                                  ? 'bg-emerald-950/30 border-emerald-500/40 shadow-sm'
-                                  : isReadOnly
-                                    ? 'bg-dark-950/50 border-dark-800/80 opacity-60'
-                                    : 'bg-dark-900 border-dark-700/80 hover:border-dark-600'
-                              }`}
-                            >
-                              {/* Columna 1: Número de Serie & Objetivo */}
-                              <div className="col-span-3 flex items-center gap-1.5 pl-0.5">
-                                <span className={`w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black shrink-0 ${
-                                  isDone 
-                                    ? 'bg-emerald-500 text-white shadow-sm' 
-                                    : 'bg-dark-800 text-gray-300 border border-dark-700'
-                                }`}>
-                                  {sIdx + 1}
+                    return (
+                      <div key={exKey} className="space-y-3">
+                        <div className="flex items-start gap-3">
+                          <div className="w-16 h-16 rounded-xl bg-white p-1 border border-dark-700 shrink-0 flex items-center justify-center overflow-hidden">
+                            <StaticGif
+                              src={item.exercise?.gif_url || item.exercise?.imagen_url}
+                              alt={item.exercise?.nombre || 'Ejercicio'}
+                              className="w-full h-full object-contain"
+                            />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-brand/20 text-brand-light">
+                                {item.exercise?.grupo_muscular || 'General'}
+                              </span>
+                              {isDropSetExercise && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-black px-1.5 py-0.5 rounded bg-orange-500/20 border border-orange-500/40 text-orange-300 uppercase tracking-wider">
+                                  <TrendingDown className="w-3 h-3" />
+                                  DROP
                                 </span>
-                                <div className="leading-tight min-w-0">
-                                  <span className="text-[11px] font-bold text-white block">Serie {sIdx + 1}</span>
-                                  <span className="text-[9px] text-gray-500 block truncate" title={`Obj: ${item.repeticiones} reps @ ${item.peso_sugerido || '-'} kg`}>
-                                    Obj: {item.repeticiones}r
-                                  </span>
-                                </div>
-                              </div>
+                              )}
+                            </div>
+                            <h4 className="text-sm font-bold text-white mt-1 break-words">
+                              {item.exercise?.nombre || 'Ejercicio'}
+                            </h4>
+                            {item.exercise?.instrucciones && (
+                              <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-2">
+                                {item.exercise.instrucciones}
+                              </p>
+                            )}
+                          </div>
+                        </div>
 
-                              {/* Columna 2: Input Peso Real (kg) */}
-                              <div className="col-span-3">
-                                <input
-                                  type="number"
-                                  step="0.5"
-                                  min="0"
-                                  disabled={isReadOnly}
-                                  value={setPeso}
-                                  onChange={(e) => updateExerciseLogField(`${exKey}_set_${sIdx}_peso`, e.target.value)}
-                                  placeholder={item.peso_sugerido ? `${item.peso_sugerido}` : 'kg'}
-                                  className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
-                                />
-                              </div>
+                        {/* Botón accesible para ver video de técnica y errores a evitar */}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedExerciseForModal(item.exercise)}
+                          className="w-full py-2.5 px-3 rounded-xl bg-dark-900 hover:bg-dark-850 text-brand-light hover:text-white border border-brand/30 hover:border-brand/60 transition-all flex items-center justify-between text-xs font-bold shadow-sm active:scale-[0.99] min-h-[44px]"
+                        >
+                          <span className="flex items-center gap-2">
+                            <Play className="w-3.5 h-3.5 fill-current text-brand" />
+                            <span>Ver Técnica / Video & Errores</span>
+                          </span>
+                          <ChevronRight className="w-4 h-4 text-brand" />
+                        </button>
 
-                              {/* Columna 3: Input Reps Reales */}
-                              <div className="col-span-3">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  disabled={isReadOnly}
-                                  value={setReps}
-                                  onChange={(e) => updateExerciseLogField(`${exKey}_set_${sIdx}_reps`, e.target.value)}
-                                  placeholder={item.repeticiones ? `${item.repeticiones}` : 'reps'}
-                                  className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
-                                />
-                              </div>
+                        {/* Parámetros de Carga & Intensidad Recomendada */}
+                        <div className={`grid ${paramGridCols} gap-2 text-center text-xs`}>
+                          <div className="p-2 rounded-xl bg-dark-900 border border-dark-700">
+                            <span className="text-[10px] text-gray-400 block">Series x Reps</span>
+                            <span className="font-bold text-white">{item.series} x {item.repeticiones}</span>
+                          </div>
+                          <div className="p-2 rounded-xl bg-dark-900 border border-dark-700">
+                            <span className="text-[10px] text-gray-400 block">Carga Sugerida</span>
+                            <span className="font-bold text-brand-light">{item.peso_sugerido || 'Libre'}</span>
+                          </div>
+                          {!isInSuperset && (
+                            <div className="p-2 rounded-xl bg-dark-900 border border-dark-700">
+                              <span className="text-[10px] text-gray-400 block">Descanso</span>
+                              <span className="font-bold text-white">{item.descanso_seg}s</span>
+                            </div>
+                          )}
+                          {hasIntensity && (
+                            <div className="p-2 rounded-xl bg-dark-900 border border-amber-500/30">
+                              <span className="text-[10px] text-amber-400 font-bold block uppercase truncate">Intensidad Coach</span>
+                              <span className="font-black text-amber-300">{item.recommended_intensity || item.intensidad_recomendada}</span>
+                            </div>
+                          )}
+                        </div>
 
-                              {/* Columna 4: Botón o Estado Completada */}
-                              <div className="col-span-3">
-                                <button
-                                  type="button"
-                                  disabled={isReadOnly}
-                                  onClick={() => toggleSetCompleted(exKey, sIdx, item.descanso_seg || item.descanso)}
-                                  className={`w-full min-h-[38px] px-1.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 border select-none ${
-                                    isDone
-                                      ? isReadOnly
-                                        ? 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30'
-                                        : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500 shadow-md shadow-emerald-950/50 active:scale-95'
-                                      : isReadOnly
-                                        ? 'bg-red-950/30 text-red-400/80 border-red-900/40 cursor-not-allowed'
-                                        : 'bg-dark-800 hover:bg-dark-750 text-gray-300 border-dark-700 hover:border-gray-500 hover:text-white active:scale-95'
-                                  }`}
-                                >
-                                  {isReadOnly && !isDone ? (
-                                    <XCircle className="w-3.5 h-3.5 text-red-400/80" />
-                                  ) : (
-                                    <CheckCircle2 className={`w-3.5 h-3.5 ${isDone ? 'text-white' : 'text-gray-500'}`} />
+                        {/* Consejos Técnicos / Observaciones del Entrenador */}
+                        {Boolean(item.observaciones && item.observaciones.trim()) && (
+                          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-2.5 text-xs shadow-sm">
+                            <div className="w-6 h-6 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center shrink-0 text-amber-400 mt-0.5">
+                              <Lightbulb className="w-3.5 h-3.5" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-[10px] uppercase font-bold text-amber-400 tracking-wider block mb-0.5">
+                                Consejo del Entrenador
+                              </span>
+                              <p className="italic text-zinc-200 text-xs leading-relaxed break-words font-medium">
+                                "{item.observaciones.trim()}"
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* REGISTRO DETALLADO SERIE POR SERIE */}
+                        <div className="space-y-2 pt-2 border-t border-dark-700/60">
+                          <div className="flex items-center justify-between text-[11px] font-bold text-gray-300 px-1">
+                            <span className="uppercase tracking-wider flex items-center gap-1.5 text-brand-light">
+                              <Dumbbell className="w-3.5 h-3.5" />
+                              Registro Serie por Serie
+                            </span>
+                            <span className="text-[10px] text-gray-400 font-normal">
+                              {isReadOnly ? 'Bloqueado (Solo lectura)' : 'Toca "Listo" al terminar cada serie'}
+                            </span>
+                          </div>
+
+                          {/* Header de columnas */}
+                          <div className="grid grid-cols-12 gap-2 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 text-center">
+                            <div className="col-span-3 text-left pl-1">Serie</div>
+                            <div className="col-span-3">Peso (kg)</div>
+                            <div className="col-span-3">Reps</div>
+                            <div className="col-span-3">Estado</div>
+                          </div>
+
+                          {/* Filas independientes por cada serie (+ bajadas si es Drop Set) */}
+                          <div className="space-y-2">
+                            {Array.from({ length: Math.max(1, parseInt(item.series, 10) || 1) }).map((_, sIdx) => {
+                              let isDone = Boolean(completedSets[`${exKey}-${sIdx}`]);
+                              let readOnlySavedDrops = null;
+
+                              if (isReadOnly && Object.keys(completedSets).length === 0) {
+                                if (todaySavedSessionLogs) {
+                                  const exNameNorm = (item.exercise?.nombre || '').toLowerCase().trim();
+                                  const matchingExLogs = todaySavedSessionLogs.filter(
+                                    l => (l.exercise_name || '').toLowerCase().trim() === exNameNorm
+                                  );
+                                  if (matchingExLogs[sIdx]) {
+                                    isDone = isExerciseLogCompleted(matchingExLogs[sIdx]);
+                                    readOnlySavedDrops = matchingExLogs[sIdx].bajadas || [];
+                                  } else {
+                                    isDone = false;
+                                  }
+                                } else {
+                                  isDone = true;
+                                }
+                              }
+
+                              const setPeso = exerciseLogs[`${exKey}_set_${sIdx}_peso`] ?? '';
+                              const setReps = exerciseLogs[`${exKey}_set_${sIdx}_reps`] ?? '';
+                              const currentSetDrops = readOnlySavedDrops !== null
+                                ? readOnlySavedDrops
+                                : (dropSets[`${exKey}-${sIdx}`] || []);
+
+                              return (
+                                <div key={sIdx} className="space-y-1.5">
+                                  <div
+                                    className={`grid grid-cols-12 gap-2 items-center p-2 rounded-xl border transition-all ${
+                                      isDone
+                                        ? 'bg-emerald-950/30 border-emerald-500/40 shadow-sm'
+                                        : isReadOnly
+                                          ? 'bg-dark-950/50 border-dark-800/80 opacity-60'
+                                          : 'bg-dark-900 border-dark-700/80 hover:border-dark-600'
+                                    }`}
+                                  >
+                                    {/* Columna 1: Número de Serie & Objetivo */}
+                                    <div className="col-span-3 flex items-center gap-1.5 pl-0.5">
+                                      <span className={`w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black shrink-0 ${
+                                        isDone 
+                                          ? 'bg-emerald-500 text-white shadow-sm' 
+                                          : 'bg-dark-800 text-gray-300 border border-dark-700'
+                                      }`}>
+                                        {sIdx + 1}
+                                      </span>
+                                      <div className="leading-tight min-w-0">
+                                        <span className="text-[11px] font-bold text-white block">Serie {sIdx + 1}</span>
+                                        <span className="text-[9px] text-gray-500 block truncate" title={`Obj: ${item.repeticiones} reps @ ${item.peso_sugerido || '-'} kg`}>
+                                          Obj: {item.repeticiones}r
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* Columna 2: Input Peso Real (kg) */}
+                                    <div className="col-span-3">
+                                      <input
+                                        type="text"
+                                        inputMode="decimal"
+                                        autoComplete="off"
+                                        disabled={isReadOnly}
+                                        value={setPeso}
+                                        onChange={(e) => updateExerciseLogField(`${exKey}_set_${sIdx}_peso`, e.target.value.replace(/[^0-9.,]/g, ''))}
+                                        placeholder={item.peso_sugerido ? `${item.peso_sugerido}` : 'kg'}
+                                        className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
+                                      />
+                                    </div>
+
+                                    {/* Columna 3: Input Reps Reales */}
+                                    <div className="col-span-3">
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        autoComplete="off"
+                                        disabled={isReadOnly}
+                                        value={setReps}
+                                        onChange={(e) => updateExerciseLogField(`${exKey}_set_${sIdx}_reps`, e.target.value.replace(/[^0-9]/g, ''))}
+                                        placeholder={item.repeticiones ? `${item.repeticiones}` : 'reps'}
+                                        className="w-full bg-dark-950 border border-dark-700 focus:border-brand rounded-lg px-2 py-1.5 text-xs text-white text-center font-bold placeholder-gray-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[38px]"
+                                      />
+                                    </div>
+
+                                    {/* Columna 4: Botón o Estado Completada */}
+                                    <div className="col-span-3">
+                                      <button
+                                        type="button"
+                                        disabled={isReadOnly}
+                                        onClick={() => toggleSetCompleted(exKey, sIdx, restParamForSet, shouldTriggerRestOnSet)}
+                                        className={`w-full min-h-[38px] px-1.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 border select-none ${
+                                          isDone
+                                            ? isReadOnly
+                                              ? 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30'
+                                              : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500 shadow-md shadow-emerald-950/50 active:scale-95'
+                                            : isReadOnly
+                                              ? 'bg-red-950/30 text-red-400/80 border-red-900/40 cursor-not-allowed'
+                                              : 'bg-dark-800 hover:bg-dark-750 text-gray-300 border-dark-700 hover:border-gray-500 hover:text-white active:scale-95'
+                                        }`}
+                                      >
+                                        {isReadOnly && !isDone ? (
+                                          <XCircle className="w-3.5 h-3.5 text-red-400/80" />
+                                        ) : (
+                                          <CheckCircle2 className={`w-3.5 h-3.5 ${isDone ? 'text-white' : 'text-gray-500'}`} />
+                                        )}
+                                        <span>{isDone ? 'Hecha' : (isReadOnly ? 'Omitida' : 'Listo')}</span>
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Sub-filas indentadas de Bajadas (Drop Sets) */}
+                                  {currentSetDrops.length > 0 && (
+                                    <div className="ml-4 pl-2.5 border-l-2 border-orange-500/50 space-y-1.5">
+                                      {currentSetDrops.map((drop, dIdx) => (
+                                        <div
+                                          key={drop.id || `drop-${sIdx}-${dIdx}`}
+                                          className="grid grid-cols-12 gap-2 items-center p-1.5 rounded-xl bg-orange-950/20 border border-orange-500/30"
+                                        >
+                                          <div className="col-span-3 flex items-center gap-1 pl-1">
+                                            <span className="text-[10px] font-black text-orange-400 uppercase tracking-tight truncate">
+                                              ↳ Drop {dIdx + 1}
+                                            </span>
+                                          </div>
+                                          <div className="col-span-3">
+                                            <input
+                                              type="text"
+                                              inputMode="decimal"
+                                              autoComplete="off"
+                                              disabled={isReadOnly}
+                                              value={drop.peso ?? ''}
+                                              onChange={(e) => handleUpdateDropSet(exKey, sIdx, dIdx, 'peso', e.target.value)}
+                                              placeholder="kg"
+                                              className="w-full bg-dark-950 border border-orange-500/30 focus:border-orange-400 rounded-lg px-2 py-1 text-xs text-orange-200 text-center font-bold placeholder-gray-600 focus:outline-none disabled:opacity-60 min-h-[34px]"
+                                            />
+                                          </div>
+                                          <div className="col-span-3">
+                                            <input
+                                              type="text"
+                                              inputMode="numeric"
+                                              autoComplete="off"
+                                              disabled={isReadOnly}
+                                              value={drop.reps ?? ''}
+                                              onChange={(e) => handleUpdateDropSet(exKey, sIdx, dIdx, 'reps', e.target.value)}
+                                              placeholder="reps"
+                                              className="w-full bg-dark-950 border border-orange-500/30 focus:border-orange-400 rounded-lg px-2 py-1 text-xs text-white text-center font-bold placeholder-gray-600 focus:outline-none disabled:opacity-60 min-h-[34px]"
+                                            />
+                                          </div>
+                                          <div className="col-span-3 flex justify-center">
+                                            {!isReadOnly && (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRemoveDropSet(exKey, sIdx, dIdx)}
+                                                className="w-full min-h-[34px] rounded-lg bg-dark-900 hover:bg-red-950/50 border border-dark-700 hover:border-red-500/40 text-gray-400 hover:text-red-400 flex items-center justify-center transition-colors active:scale-95"
+                                                title="Eliminar bajada"
+                                                aria-label="Eliminar bajada"
+                                              >
+                                                <X className="w-3.5 h-3.5" />
+                                              </button>
+                                            )}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
                                   )}
-                                  <span>{isDone ? 'Hecha' : (isReadOnly ? 'Omitida' : 'Listo')}</span>
-                                </button>
+
+                                  {/* Botón compacto "+ Bajada" cuando el ejercicio es Drop Set */}
+                                  {isDropSetExercise && !isReadOnly && (
+                                    <div className="flex justify-end pr-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleAddDropSet(exKey, sIdx)}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/35 text-orange-300 text-[10px] font-bold transition-all active:scale-95"
+                                      >
+                                        <Plus className="w-3 h-3" />
+                                        <span>Bajada</span>
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Registro de Intensidad Real (RPE / RIR) del Alumno */}
+                          <div className="mt-2.5 pt-2.5 border-t border-dark-700/60 flex items-center justify-between gap-3 bg-dark-950/70 p-2.5 rounded-xl border border-dark-750">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="w-7 h-7 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
+                                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                              </div>
+                              <div className="min-w-0">
+                                <span className="text-[11px] font-bold text-white block leading-tight">
+                                  Intensidad Real
+                                </span>
+                                <span className="text-[10px] text-gray-400 block truncate">
+                                  {(item.recommended_intensity || item.intensidad_recomendada)
+                                    ? `Recomendada: ${item.recommended_intensity || item.intensidad_recomendada}`
+                                    : 'RPE / RIR percibido en este ejercicio'}
+                                </span>
                               </div>
                             </div>
-                          );
-                        })}
-                      </div>
 
-                      {/* Registro de Intensidad Real (RPE / RIR) del Alumno */}
-                      <div className="mt-2.5 pt-2.5 border-t border-dark-700/60 flex items-center justify-between gap-3 bg-dark-950/70 p-2.5 rounded-xl border border-dark-750">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-7 h-7 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
-                            <Zap className="w-3.5 h-3.5 text-amber-400" />
-                          </div>
-                          <div className="min-w-0">
-                            <span className="text-[11px] font-bold text-white block leading-tight">
-                              Intensidad Real
-                            </span>
-                            <span className="text-[10px] text-gray-400 block truncate">
-                              {(item.recommended_intensity || item.intensidad_recomendada)
-                                ? `Recomendada: ${item.recommended_intensity || item.intensidad_recomendada}`
-                                : 'RPE / RIR percibido en este ejercicio'}
-                            </span>
+                            <div className="shrink-0 w-32 sm:w-36">
+                              <input
+                                type="text"
+                                disabled={isReadOnly}
+                                value={exerciseLogs[`${exKey}_actual_intensity`] ?? exerciseLogs[`${exKey}_intensity`] ?? ''}
+                                onChange={(e) => updateExerciseLogField(`${exKey}_actual_intensity`, e.target.value)}
+                                placeholder={(item.recommended_intensity || item.intensidad_recomendada) || 'Ej: RPE 8'}
+                                className="w-full bg-dark-900 border border-dark-700 focus:border-amber-400 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-bold text-center placeholder-gray-600 focus:outline-none disabled:opacity-50 transition-colors min-h-[36px]"
+                              />
+                            </div>
                           </div>
                         </div>
 
-                        <div className="shrink-0 w-32 sm:w-36">
-                          <input
-                            type="text"
-                            disabled={isReadOnly}
-                            value={exerciseLogs[`${exKey}_actual_intensity`] ?? exerciseLogs[`${exKey}_intensity`] ?? ''}
-                            onChange={(e) => updateExerciseLogField(`${exKey}_actual_intensity`, e.target.value)}
-                            placeholder={(item.recommended_intensity || item.intensidad_recomendada) || 'Ej: RPE 8'}
-                            className="w-full bg-dark-900 border border-dark-700 focus:border-amber-400 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-bold text-center placeholder-gray-600 focus:outline-none disabled:opacity-50 transition-colors min-h-[36px]"
-                          />
+                        {item.notas && (
+                          <p className="text-[11px] text-amber-300/90 italic bg-amber-950/20 p-2 rounded-lg border border-amber-900/30">
+                            💡 Nota del Coach: {item.notas}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  };
+
+                  return blocks.map((block, bIdx) => {
+                    if (!block.isGroup) {
+                      const { item, index } = block.items[0];
+                      return (
+                        <div
+                          key={getExerciseKey(item, index)}
+                          className="card-dark rounded-2xl p-4 border border-white/5 shadow-md"
+                        >
+                          {renderStudentExerciseBody(item, index)}
+                        </div>
+                      );
+                    }
+
+                    // Descanso único del bloque (toma el descanso del último ejercicio del grupo o el primero disponible)
+                    const lastEx = block.items[block.items.length - 1]?.item;
+                    const blockRestSec = lastEx?.descanso_seg || lastEx?.descanso || block.items[0]?.item?.descanso_seg || 90;
+
+                    return (
+                      <div
+                        key={`student-superset-${block.grupo_id}-${bIdx}`}
+                        className="card-dark rounded-2xl border border-violet-500/35 border-l-4 border-l-violet-500 shadow-lg overflow-hidden"
+                      >
+                        {/* Cabecera destacada del bloque de Superserie / Triserie / Circuito */}
+                        <div className="px-4 py-2.5 bg-violet-950/40 border-b border-violet-500/25 flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/25 border border-violet-400/40 text-violet-200 text-[10px] font-black uppercase tracking-wider">
+                              <Link2 className="w-3 h-3" />
+                              {block.label}
+                            </span>
+                            <span className="text-[11px] font-semibold text-violet-200/90">
+                              Hacer seguidos sin descanso
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-bold text-violet-300/80">
+                            {block.items.length} ejercicios
+                          </span>
+                        </div>
+
+                        {/* Ejercicios del bloque con registros independientes */}
+                        <div className="p-4 divide-y divide-violet-500/20 space-y-5">
+                          {block.items.map(({ item, index }, posInBlock) => (
+                            <div key={getExerciseKey(item, index)} className={posInBlock > 0 ? 'pt-5' : ''}>
+                              {renderStudentExerciseBody(item, index, {
+                                isInSuperset: true,
+                                isLastInSuperset: posInBlock === block.items.length - 1,
+                                supersetRestSec: blockRestSec
+                              })}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Descanso único al final del bloque */}
+                        <div className="px-4 py-2.5 bg-dark-950/80 border-t border-violet-500/25 flex items-center justify-between text-xs">
+                          <span className="text-violet-300 font-bold flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-violet-400" />
+                            <span>Descanso al completar el bloque</span>
+                          </span>
+                          <span className="font-mono font-black text-white bg-violet-500/20 border border-violet-500/35 px-2.5 py-0.5 rounded-lg">
+                            {blockRestSec}s
+                          </span>
                         </div>
                       </div>
-                    </div>
-
-                    {item.notas && (
-                      <p className="text-[11px] text-amber-300/90 italic bg-amber-950/20 p-2 rounded-lg border border-amber-900/30">
-                        💡 Nota del Coach: {item.notas}
-                      </p>
-                    )}
-                  </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
 
                 {/* BOTÓN FINALIZAR Y GUARDAR SESIÓN (O COMPARTIR EN STORIES SI ESTÁ COMPLETADO) */}
                 <div className="pt-3 space-y-2">
@@ -2540,7 +2803,7 @@ export default function StudentPortal({ student, onLogout }) {
                 </div>
               ) : (
                 studentSessionLogs.map((sess) => {
-                  const exList = sess.session_exercise_logs || [];
+                  const exList = normalizeSessionExerciseLogs(sess.session_exercise_logs || []);
                   const sessDate = sess.fecha 
                     ? new Date(sess.fecha).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' })
                     : 'Sesión';
@@ -2631,13 +2894,33 @@ export default function StudentPortal({ student, onLogout }) {
                                         </span>
                                       );
                                     }
+                                    const hasWeight = s.actual_weight !== null && s.actual_weight !== undefined && s.actual_weight !== '';
+                                    const drops = Array.isArray(s.bajadas) ? s.bajadas : [];
                                     return (
-                                      <span key={sIndex} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-dark-950 border border-dark-700 text-[10px] text-gray-300 font-mono">
-                                        <strong className="text-gray-400">S{sIndex + 1}:</strong>
-                                        <span className="text-white font-bold">{s.actual_reps ?? s.prescribed_reps ?? 0}r</span>
-                                        <span>@</span>
-                                        <span className="text-brand-light font-bold">{s.actual_weight ?? s.prescribed_weight ?? 0}kg</span>
-                                      </span>
+                                      <div key={sIndex} className="inline-flex flex-col gap-0.5">
+                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-dark-950 border border-dark-700 text-[10px] text-gray-300 font-mono">
+                                          <strong className="text-gray-400">S{sIndex + 1}:</strong>
+                                          <span className="text-white font-bold">{s.actual_reps ?? s.prescribed_reps ?? '-'}r</span>
+                                          {hasWeight && (
+                                            <>
+                                              <span>@</span>
+                                              <span className="text-brand-light font-bold">{s.actual_weight}kg</span>
+                                            </>
+                                          )}
+                                        </span>
+                                        {drops.map((b, bIdx) => (
+                                          <span key={bIdx} className="inline-flex items-center gap-1 pl-2 pr-1.5 py-0.5 rounded bg-orange-950/25 border border-orange-500/30 text-[9px] text-orange-300 font-mono">
+                                            <span className="text-orange-400 font-bold">↳ Drop:</span>
+                                            <strong className="text-white">{b.reps ?? '-'}r</strong>
+                                            {b.peso !== null && b.peso !== undefined && (
+                                              <>
+                                                <span>@</span>
+                                                <strong className="text-orange-300">{b.peso}kg</strong>
+                                              </>
+                                            )}
+                                          </span>
+                                        ))}
+                                      </div>
                                     );
                                   })}
                                 </div>

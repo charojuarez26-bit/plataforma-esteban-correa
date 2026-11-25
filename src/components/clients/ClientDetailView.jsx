@@ -28,7 +28,8 @@ import {
   Trash2,
   ExternalLink,
   HeartPulse,
-  Pencil
+  Pencil,
+  Link2
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -46,6 +47,7 @@ import RegisterPaymentModal from '../finance/RegisterPaymentModal';
 import MedicalRecordViewOnly from '../medical/MedicalRecordViewOnly';
 import WorkoutSessionProgress from '../progress/WorkoutSessionProgress';
 import RoutineEditorModal from '../routines/RoutineEditorModal';
+import { groupExercisesBySuperset } from '../../utils/routineGroupUtils';
 import { 
   calcularEstadoPago, 
   getEstadoPagoConfig, 
@@ -1101,41 +1103,73 @@ export default function ClientDetailView({ client: initialClient, onBack, onUpda
                       <span className="text-xs text-gray-400 font-semibold">{dia.ejercicios.length} ejercicios</span>
                     </div>
 
-                    <div className="space-y-2">
-                      {dia.ejercicios.map((item, eIdx) => (
-                        <div key={eIdx} className="p-3 rounded-lg bg-dark-850 border border-dark-750 flex flex-col gap-2">
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                            <div className="flex items-center gap-3">
-                              <span className="w-6 h-6 rounded-full bg-brand/20 text-brand-light text-xs font-bold flex items-center justify-center shrink-0">
-                                {eIdx + 1}
-                              </span>
-                              <div>
-                                <p className="text-xs font-bold text-white">{item.exercise?.nombre}</p>
-                                <span className="text-[10px] text-gray-400">{item.exercise?.grupo_muscular}</span>
+                    <div className="space-y-2.5">
+                      {groupExercisesBySuperset(dia.ejercicios || []).map((block, bIdx) => {
+                        const renderPreviewItem = (item, eIdx) => (
+                          <div key={eIdx} className="p-3 rounded-lg bg-dark-850 border border-dark-750 flex flex-col gap-2">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                              <div className="flex items-center gap-3">
+                                <span className="w-6 h-6 rounded-full bg-brand/20 text-brand-light text-xs font-bold flex items-center justify-center shrink-0">
+                                  {eIdx + 1}
+                                </span>
+                                <div>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <p className="text-xs font-bold text-white">{item.exercise?.nombre}</p>
+                                    {item.es_descendente && (
+                                      <span className="px-1.5 py-0.5 rounded bg-orange-500/20 border border-orange-500/40 text-orange-300 text-[9px] font-black uppercase">
+                                        DROP
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] text-gray-400">{item.exercise?.grupo_muscular}</span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-3 text-xs self-end sm:self-center">
+                                <span className="font-semibold text-gray-300">{item.series} x {item.repeticiones}</span>
+                                <span className="font-bold text-brand-light bg-brand/10 px-2 py-0.5 rounded">{item.peso_sugerido}</span>
+                                <span className="text-gray-400 text-[11px]">{item.descanso_seg}s desc.</span>
+                                {(item.recommended_intensity || item.intensidad_recomendada) && (
+                                  <span className="text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 text-[10px]">
+                                    {item.recommended_intensity || item.intensidad_recomendada}
+                                  </span>
+                                )}
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-3 text-xs self-end sm:self-center">
-                              <span className="font-semibold text-gray-300">{item.series} x {item.repeticiones}</span>
-                              <span className="font-bold text-brand-light bg-brand/10 px-2 py-0.5 rounded">{item.peso_sugerido}</span>
-                              <span className="text-gray-400 text-[11px]">{item.descanso_seg}s desc.</span>
-                              {(item.recommended_intensity || item.intensidad_recomendada) && (
-                                <span className="text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 text-[10px]">
-                                  {item.recommended_intensity || item.intensidad_recomendada}
-                                </span>
-                              )}
+                            {/* Observaciones / Consejos (sutil en vista previa Admin) */}
+                            {Boolean(item.observaciones?.trim()) && (
+                              <div className="text-[11px] text-zinc-400 italic bg-dark-900/60 rounded-lg px-2.5 py-1.5 border-l-2 border-brand/60 flex items-start gap-1.5 ml-0 sm:ml-9">
+                                <MessageSquare className="w-3 h-3 text-brand-light shrink-0 mt-0.5" />
+                                <span>{item.observaciones.trim()}</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+
+                        if (!block.isGroup) {
+                          const { item, index } = block.items[0];
+                          return renderPreviewItem(item, index);
+                        }
+
+                        return (
+                          <div
+                            key={`preview-grp-${block.grupo_id}-${bIdx}`}
+                            className="rounded-xl border border-violet-500/35 border-l-4 border-l-violet-500 bg-violet-950/15 p-2.5 space-y-2"
+                          >
+                            <div className="flex items-center gap-2 px-1">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-500/20 border border-violet-400/40 text-violet-200 text-[10px] font-black uppercase">
+                                <Link2 className="w-3 h-3" />
+                                {block.label}
+                              </span>
+                              <span className="text-[10px] text-violet-300/80">Hacer seguidos sin descanso</span>
+                            </div>
+                            <div className="space-y-1.5">
+                              {block.items.map(({ item, index }) => renderPreviewItem(item, index))}
                             </div>
                           </div>
-
-                          {/* Observaciones / Consejos (sutil en vista previa Admin) */}
-                          {Boolean(item.observaciones?.trim()) && (
-                            <div className="text-[11px] text-zinc-400 italic bg-dark-900/60 rounded-lg px-2.5 py-1.5 border-l-2 border-brand/60 flex items-start gap-1.5 ml-0 sm:ml-9">
-                              <MessageSquare className="w-3 h-3 text-brand-light shrink-0 mt-0.5" />
-                              <span>{item.observaciones.trim()}</span>
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ))}

@@ -28,6 +28,7 @@ import {
   Legend 
 } from 'recharts';
 import { dataService, parseSessionFeedback, getDifficultyBadgeConfig } from '../../services/dataService';
+import { normalizeSessionExerciseLogs } from '../../utils/routineGroupUtils';
 import ClientAvatar from '../common/ClientAvatar';
 
 export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavigateToClient }) {
@@ -557,7 +558,9 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
                 ? new Date(fb.fecha).toLocaleDateString('es-AR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
                 : '';
               const uniqueExCount = new Set(
-                (fb.session_exercise_logs || []).map(l => (l.exercise_name || '').toLowerCase().trim()).filter(Boolean)
+                normalizeSessionExerciseLogs(fb.session_exercise_logs || [])
+                  .map(l => (l.exercise_name || '').toLowerCase().trim())
+                  .filter(Boolean)
               ).size;
 
               return (

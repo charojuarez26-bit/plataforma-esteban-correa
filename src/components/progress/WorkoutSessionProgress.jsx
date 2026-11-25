@@ -26,6 +26,7 @@ import {
   ResponsiveContainer 
 } from 'recharts';
 import { dataService, isExerciseLogCompleted, parseSessionFeedback, getDifficultyBadgeConfig } from '../../services/dataService';
+import { normalizeSessionExerciseLogs, computeSetVolumeWithDrops } from '../../utils/routineGroupUtils';
 
 // Formatea masas en kg con separador de miles y máx. 1 decimal (sin ceros sobrantes)
 const fmtKg = (value) => {
@@ -52,7 +53,11 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
     setIsLoading(true);
     try {
       const logs = await dataService.getClientSessionLogs(cId);
-      setSessions(logs);
+      const normalized = (logs || []).map(sess => ({
+        ...sess,
+        session_exercise_logs: normalizeSessionExerciseLogs(sess.session_exercise_logs || [])
+      }));
+      setSessions(normalized);
     } catch (err) {
       console.error('Error cargando historial de sesiones:', err);
     } finally {
@@ -135,20 +140,28 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
       );
 
       if (matchingLogs.length > 0) {
-        // Carga máxima real ejecutada en esta sesión
-        const maxActualWeight = Math.max(...matchingLogs.map(l => parseFloat(l.actual_weight) || 0));
+        // Carga máxima real ejecutada en esta sesión (incluye series principales y bajadas)
+        const allWeights = [];
+        matchingLogs.forEach(l => {
+          const w = parseFloat(l.actual_weight);
+          if (!isNaN(w) && w > 0) allWeights.push(w);
+          (l.bajadas || []).forEach(b => {
+            const bw = parseFloat(b.peso);
+            if (!isNaN(bw) && bw > 0) allWeights.push(bw);
+          });
+        });
+        const maxActualWeight = allWeights.length > 0 ? Math.max(...allWeights) : 0;
         const maxPrescribedWeight = Math.max(...matchingLogs.map(l => parseFloat(l.prescribed_weight) || 0));
         
-        // Volumen total acumulado en esta sesión para este ejercicio
-        const sessionExVolume = matchingLogs.reduce((acc, l) => {
-          const sets = parseInt(l.actual_sets, 10) || 1;
-          const reps = parseInt(l.actual_reps, 10) || 0;
-          const weight = parseFloat(l.actual_weight) || 0;
-          return acc + (sets * reps * weight);
-        }, 0);
+        // Volumen total acumulado en esta sesión para este ejercicio (incluyendo bajadas/drop sets)
+        const sessionExVolume = matchingLogs.reduce((acc, l) => acc + computeSetVolumeWithDrops(l), 0);
 
         const totalSets = matchingLogs.reduce((acc, l) => acc + (parseInt(l.actual_sets, 10) || 1), 0);
-        const totalReps = matchingLogs.reduce((acc, l) => acc + (parseInt(l.actual_reps, 10) || 0), 0);
+        const totalReps = matchingLogs.reduce((acc, l) => {
+          const mainR = parseInt(l.actual_reps, 10) || 0;
+          const dropR = (l.bajadas || []).reduce((dAcc, b) => dAcc + (parseInt(b.reps, 10) || 0), 0);
+          return acc + mainR + dropR;
+        }, 0);
 
         const dateObj = new Date(session.fecha);
         const dateLabel = !isNaN(dateObj.getTime())
@@ -188,15 +201,12 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
     ? ((weightDelta / firstPoint.peso_real) * 100).toFixed(1) 
     : 0;
 
-  // Volumen total acumulado de todas las sesiones (ignorando ejercicios/series no realizados)
+  // Volumen total acumulado de todas las sesiones (incluyendo bajadas/drop sets e ignorando no realizados)
   const totalVolumeAllSessions = useMemo(() => {
     return sessions.reduce((acc, sess) => {
       const sessVol = (sess.session_exercise_logs || []).reduce((sAcc, l) => {
         if (!isExerciseLogCompleted(l)) return sAcc;
-        const sets = parseInt(l.actual_sets, 10) || 0;
-        const reps = parseInt(l.actual_reps, 10) || 0;
-        const weight = parseFloat(l.actual_weight) || 0;
-        return sAcc + (sets * reps * weight);
+        return sAcc + computeSetVolumeWithDrops(l);
       }, 0);
       return acc + sessVol;
     }, 0);
@@ -495,10 +505,7 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
             const exLogs = session.session_exercise_logs || [];
             const sessionTotalVolume = exLogs.reduce((acc, l) => {
               if (!isExerciseLogCompleted(l)) return acc;
-              const sets = parseInt(l.actual_sets, 10) || 0;
-              const reps = parseInt(l.actual_reps, 10) || 0;
-              const weight = parseFloat(l.actual_weight) || 0;
-              return acc + (sets * reps * weight);
+              return acc + computeSetVolumeWithDrops(l);
             }, 0);
 
             const groupedMap = new Map();
@@ -614,12 +621,7 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
                             const hasWeightDiff = !isExerciseNotDone && !isNaN(maxWeight) && !isNaN(pWNum) && pWNum > 0;
                             const diff = hasWeightDiff ? (maxWeight - pWNum) : 0;
 
-                            const exTotalVolume = completedSetsList.reduce((acc, s) => {
-                              const setsCount = parseInt(s.actual_sets, 10) || 1;
-                              const repsCount = parseInt(s.actual_reps, 10) || 0;
-                              const w = parseFloat(s.actual_weight) || 0;
-                              return acc + (setsCount * repsCount * w);
-                            }, 0);
+                            const exTotalVolume = completedSetsList.reduce((acc, s) => acc + computeSetVolumeWithDrops(s), 0);
 
                             return (
                               <tr
@@ -656,7 +658,7 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
                                       Ejercicio omitido por el alumno
                                     </span>
                                   ) : (
-                                    <div className="flex flex-wrap gap-1.5 py-0.5">
+                                    <div className="flex flex-wrap items-start gap-1.5 py-0.5">
                                       {setsList.map((s, sIdx) => {
                                         const setDone = isExerciseLogCompleted(s);
                                         if (!setDone) {
@@ -670,23 +672,45 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
                                             </span>
                                           );
                                         }
-                                        const sWeight = s.actual_weight ?? s.prescribed_weight;
-                                        const sReps = s.actual_reps ?? s.prescribed_reps;
-                                        const isHigher = parseFloat(sWeight) > pWNum;
+                                        const hasActualWeight = s.actual_weight !== null && s.actual_weight !== undefined && s.actual_weight !== '';
+                                        const sWeight = hasActualWeight ? s.actual_weight : null;
+                                        const sReps = s.actual_reps ?? s.prescribed_reps ?? '-';
+                                        const isHigher = hasActualWeight && parseFloat(sWeight) > pWNum;
+                                        const drops = Array.isArray(s.bajadas) ? s.bajadas : [];
                                         return (
-                                          <span 
-                                            key={sIdx} 
-                                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-mono border ${
-                                              isHigher 
-                                                ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300' 
-                                                : 'bg-dark-900 border-dark-700 text-gray-200'
-                                            }`}
-                                          >
-                                            <span className="text-gray-400 font-bold">S{sIdx + 1}:</span>
-                                            <strong className="text-white">{sReps}r</strong>
-                                            <span>@</span>
-                                            <strong className={isHigher ? 'text-emerald-400' : 'text-brand-light'}>{sWeight}kg</strong>
-                                          </span>
+                                          <div key={sIdx} className="inline-flex flex-col gap-1">
+                                            <span
+                                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-mono border ${
+                                                isHigher
+                                                  ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                                                  : 'bg-dark-900 border-dark-700 text-gray-200'
+                                              }`}
+                                            >
+                                              <span className="text-gray-400 font-bold">S{sIdx + 1}:</span>
+                                              <strong className="text-white">{sReps}r</strong>
+                                              {hasActualWeight && (
+                                                <>
+                                                  <span>@</span>
+                                                  <strong className={isHigher ? 'text-emerald-400' : 'text-brand-light'}>{sWeight}kg</strong>
+                                                </>
+                                              )}
+                                            </span>
+                                            {drops.map((b, bIdx) => (
+                                              <span
+                                                key={bIdx}
+                                                className="inline-flex items-center gap-1 pl-2 pr-2 py-0.5 rounded-lg text-[10px] font-mono border bg-orange-950/25 border-orange-500/35 text-orange-300"
+                                              >
+                                                <span className="text-orange-400 font-bold">↳ Drop:</span>
+                                                <strong className="text-white">{b.reps ?? '-'}r</strong>
+                                                {b.peso !== null && b.peso !== undefined && (
+                                                  <>
+                                                    <span>@</span>
+                                                    <strong className="text-orange-300">{b.peso}kg</strong>
+                                                  </>
+                                                )}
+                                              </span>
+                                            ))}
+                                          </div>
                                         );
                                       })}
                                     </div>

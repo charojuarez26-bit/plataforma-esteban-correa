@@ -25,10 +25,18 @@ import {
   Loader2,
   Repeat,
   FileDown,
-  MessageSquare
+  MessageSquare,
+  Link2,
+  Unlink,
+  TrendingDown
 } from 'lucide-react';
 import { exportRoutineToPdf } from '../../utils/routinePdfExporter';
 import { dataService } from '../../services/dataService';
+import {
+  groupExercisesBySuperset,
+  toggleLinkWithNextExercise,
+  cleanupOrphanGroupIds
+} from '../../utils/routineGroupUtils';
 import ClientAvatar from '../common/ClientAvatar';
 import StaticGif from '../common/StaticGif';
 import AssignRoutineModal from './AssignRoutineModal';
@@ -267,7 +275,9 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
           peso_sugerido: e.peso_raw !== null && e.peso_raw !== undefined ? e.peso_raw : (e.peso_sugerido || ''),
           descanso_seg: e.descanso_seg || e.descanso_segundos || 90,
           recommended_intensity: e.recommended_intensity || e.intensidad_recomendada || e.intensidad || '',
-          observaciones: e.observaciones || e.notas || ''
+          observaciones: e.observaciones || e.notas || '',
+          grupo_id: e.grupo_id || null,
+          es_descendente: Boolean(e.es_descendente)
         }))
       };
     });
@@ -567,7 +577,9 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
       peso_sugerido: exercise.peso_sugerido || exercise.carga || 70,
       descanso_seg: exercise.descanso_seg || exercise.descanso || 90,
       recommended_intensity: exercise.recommended_intensity || exercise.intensidad_recomendada || exercise.intensidad || '',
-      observaciones: exercise.observaciones || ''
+      observaciones: exercise.observaciones || '',
+      grupo_id: null,
+      es_descendente: Boolean(exercise.es_descendente)
     };
 
     setRoutineDays(prev => 
@@ -583,39 +595,60 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
 
   // Quitar ejercicio del día activo
   const handleRemoveExercise = (exerciseIdx) => {
-    setRoutineDays(prev => {
-      const copy = [...prev];
-      if (copy[activeDayIndex]) {
-        copy[activeDayIndex].ejercicios.splice(exerciseIdx, 1);
-      }
-      return copy;
-    });
+    setRoutineDays(prev => prev.map((day, dIdx) => {
+      if (dIdx !== activeDayIndex) return day;
+      const nextList = [...(day.ejercicios || [])];
+      nextList.splice(exerciseIdx, 1);
+      return { ...day, ejercicios: cleanupOrphanGroupIds(nextList) };
+    }));
   };
 
   // Reordenar ejercicios (Subir)
   const handleMoveExerciseUp = (exerciseIdx) => {
     if (exerciseIdx === 0) return;
-    setRoutineDays(prev => {
-      const copy = [...prev];
-      const list = copy[activeDayIndex].ejercicios;
+    setRoutineDays(prev => prev.map((day, dIdx) => {
+      if (dIdx !== activeDayIndex) return day;
+      const list = [...(day.ejercicios || [])];
       const temp = list[exerciseIdx - 1];
       list[exerciseIdx - 1] = list[exerciseIdx];
       list[exerciseIdx] = temp;
-      return copy;
-    });
+      return { ...day, ejercicios: cleanupOrphanGroupIds(list) };
+    }));
   };
 
   // Reordenar ejercicios (Bajar)
   const handleMoveExerciseDown = (exerciseIdx) => {
-    setRoutineDays(prev => {
-      const copy = [...prev];
-      const list = copy[activeDayIndex].ejercicios;
-      if (exerciseIdx === list.length - 1) return prev;
+    setRoutineDays(prev => prev.map((day, dIdx) => {
+      if (dIdx !== activeDayIndex) return day;
+      const list = [...(day.ejercicios || [])];
+      if (exerciseIdx >= list.length - 1) return day;
       const temp = list[exerciseIdx + 1];
       list[exerciseIdx + 1] = list[exerciseIdx];
       list[exerciseIdx] = temp;
-      return copy;
-    });
+      return { ...day, ejercicios: cleanupOrphanGroupIds(list) };
+    }));
+  };
+
+  // Vincular/Desvincular ejercicio con el siguiente (Superserie / Triserie / Circuito)
+  const handleToggleLinkWithNext = (exerciseIdx) => {
+    setRoutineDays(prev => prev.map((day, dIdx) => {
+      if (dIdx !== activeDayIndex) return day;
+      return {
+        ...day,
+        ejercicios: toggleLinkWithNextExercise(day.ejercicios || [], exerciseIdx)
+      };
+    }));
+  };
+
+  // Activar/Desactivar modo Serie Descendente (Drop Set)
+  const handleToggleDropSet = (exerciseIdx) => {
+    setRoutineDays(prev => prev.map((day, dIdx) => {
+      if (dIdx !== activeDayIndex) return day;
+      const nextList = (day.ejercicios || []).map((ex, i) =>
+        i === exerciseIdx ? { ...ex, es_descendente: !ex.es_descendente } : ex
+      );
+      return { ...day, ejercicios: nextList };
+    }));
   };
 
   // Modificar parámetro del ejercicio
@@ -2110,130 +2143,217 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                   </div>
 
                   <div className="space-y-3 md:max-h-[calc(90vh-320px)] md:overflow-y-auto no-scrollbar pr-1">
-                    {(currentActiveDay.ejercicios || []).map((item, idx) => (
-                      <div
-                        key={item.instanceId || item.id || `active-day-item-${activeDayIndex}-${idx}`}
-                        className="p-3.5 sm:p-3 rounded-2xl md:rounded-xl bg-dark-900 border border-dark-700 space-y-3 shadow-md"
-                      >
-                        {/* Fila superior: Nombre del ejercicio y acciones */}
-                        <div className="flex items-center justify-between gap-2 pb-1 border-b border-dark-800">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="w-6 h-6 rounded-full bg-brand/20 text-brand-light text-xs font-bold flex items-center justify-center shrink-0">
-                              {idx + 1}
-                            </span>
-                            <span className="text-sm md:text-xs font-bold text-white truncate">
-                              {item.exercise?.nombre || 'Ejercicio'}
-                            </span>
-                          </div>
+                    {(() => {
+                      const allDayExercises = currentActiveDay.ejercicios || [];
+                      const blocks = groupExercisesBySuperset(allDayExercises);
 
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => handleMoveExerciseUp(idx)}
-                              disabled={idx === 0}
-                              className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[36px] min-w-[36px] flex items-center justify-center"
-                              title="Subir orden"
-                            >
-                              <ArrowUp className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleMoveExerciseDown(idx)}
-                              disabled={idx === currentActiveDay.ejercicios.length - 1}
-                              className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[36px] min-w-[36px] flex items-center justify-center"
-                              title="Bajar orden"
-                            >
-                              <ArrowDown className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveExercise(idx)}
-                              className="p-1.5 rounded-lg bg-red-950/30 hover:bg-red-950/60 text-red-400 hover:text-red-300 ml-1 min-h-[36px] min-w-[36px] flex items-center justify-center border border-red-500/20"
-                              title="Quitar ejercicio"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
+                      const renderExerciseEditorCard = (item, idx) => {
+                        const isLastOfDay = idx === allDayExercises.length - 1;
+                        const nextItem = !isLastOfDay ? allDayExercises[idx + 1] : null;
+                        const isLinkedWithNext = Boolean(item.grupo_id && nextItem?.grupo_id && item.grupo_id === nextItem.grupo_id);
+                        const isDrop = Boolean(item.es_descendente);
 
-                        {/* Fila inferior: Grid responsivo de parámetros (Series, Reps, Carga, Descanso, Intensidad) */}
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 text-left md:text-center">
-                          {/* Columna 1: Series */}
-                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
-                            <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Series</span>
-                            <input
-                              type="number"
-                              min="1"
-                              value={item.series}
-                              onChange={(e) => handleUpdateExerciseParam(idx, 'series', e.target.value)}
-                              className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
-                            />
-                          </div>
+                        return (
+                          <div
+                            key={item.instanceId || item.id || `active-day-item-${activeDayIndex}-${idx}`}
+                            className="p-3.5 sm:p-3 rounded-2xl md:rounded-xl bg-dark-900 border border-dark-700 space-y-3 shadow-md"
+                          >
+                            {/* Fila superior: Nombre del ejercicio y acciones */}
+                            <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-dark-800">
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <span className="w-6 h-6 rounded-full bg-brand/20 text-brand-light text-xs font-bold flex items-center justify-center shrink-0">
+                                  {idx + 1}
+                                </span>
+                                <span className="text-sm md:text-xs font-bold text-white truncate">
+                                  {item.exercise?.nombre || 'Ejercicio'}
+                                </span>
+                                {isDrop && (
+                                  <span className="px-1.5 py-0.5 rounded-md bg-orange-500/20 border border-orange-500/40 text-orange-300 text-[10px] font-black tracking-wider uppercase shrink-0">
+                                    DROP
+                                  </span>
+                                )}
+                              </div>
 
-                          {/* Columna 2: Reps */}
-                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
-                            <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Reps</span>
-                            <input
-                              type="text"
-                              value={item.repeticiones}
-                              onChange={(e) => handleUpdateExerciseParam(idx, 'repeticiones', e.target.value)}
-                              className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
-                            />
-                          </div>
+                              <div className="flex items-center gap-1 shrink-0 flex-wrap justify-end">
+                                {/* Toggle Drop Set / Serie Descendente */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleDropSet(idx)}
+                                  className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 min-h-[32px] ${
+                                    isDrop
+                                      ? 'bg-orange-500/20 border-orange-400 text-orange-300 shadow-sm'
+                                      : 'bg-dark-850 hover:bg-dark-800 border-dark-700 text-zinc-400 hover:text-orange-300'
+                                  }`}
+                                  title="Activar/desactivar serie descendente (Drop Set)"
+                                >
+                                  <TrendingDown className="w-3.5 h-3.5" />
+                                  <span>{isDrop ? 'DROP' : 'Drop Set'}</span>
+                                </button>
 
-                          {/* Columna 3: Carga */}
-                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
-                            <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Carga (kg)</span>
-                            <input
-                              type="number"
-                              step="0.5"
-                              value={item.peso_sugerido}
-                              onChange={(e) => handleUpdateExerciseParam(idx, 'peso_sugerido', e.target.value)}
-                              className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-brand-light min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
-                            />
-                          </div>
+                                {/* Botón Vincular / Desvincular Superserie (excepto último ejercicio del día) */}
+                                {!isLastOfDay && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleLinkWithNext(idx)}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 min-h-[32px] ${
+                                      isLinkedWithNext
+                                        ? 'bg-violet-500/20 border-violet-400 text-violet-200 hover:bg-violet-500/30'
+                                        : 'bg-dark-850 hover:bg-dark-800 border-dark-700 text-zinc-400 hover:text-violet-300'
+                                    }`}
+                                    title={isLinkedWithNext ? 'Desvincular del ejercicio siguiente' : 'Vincular con el ejercicio siguiente (Superserie)'}
+                                  >
+                                    {isLinkedWithNext ? (
+                                      <>
+                                        <Unlink className="w-3.5 h-3.5" />
+                                        <span>Desvincular</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Link2 className="w-3.5 h-3.5" />
+                                        <span>Vincular</span>
+                                      </>
+                                    )}
+                                  </button>
+                                )}
 
-                          {/* Columna 4: Descanso */}
-                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
-                            <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Descanso (s)</span>
-                            <input
-                              type="number"
-                              step="15"
-                              value={item.descanso_seg}
-                              onChange={(e) => handleUpdateExerciseParam(idx, 'descanso_seg', e.target.value)}
-                              className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
-                            />
-                          </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleMoveExerciseUp(idx)}
+                                  disabled={idx === 0}
+                                  className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[32px] min-w-[32px] flex items-center justify-center"
+                                  title="Subir orden"
+                                >
+                                  <ArrowUp className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleMoveExerciseDown(idx)}
+                                  disabled={isLastOfDay}
+                                  className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[32px] min-w-[32px] flex items-center justify-center"
+                                  title="Bajar orden"
+                                >
+                                  <ArrowDown className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveExercise(idx)}
+                                  className="p-1.5 rounded-lg bg-red-950/30 hover:bg-red-950/60 text-red-400 hover:text-red-300 ml-0.5 min-h-[32px] min-w-[32px] flex items-center justify-center border border-red-500/20"
+                                  title="Quitar ejercicio"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
 
-                          {/* Columna 5: Intensidad Recomendada */}
-                          <div className="bg-dark-850 p-2 rounded-xl border border-dark-750 col-span-2 sm:col-span-1">
-                            <span className="text-[11px] md:text-[10px] text-amber-400 uppercase font-bold block mb-1">Intensidad</span>
-                            <input
-                              type="text"
-                              placeholder="RPE 8 / RIR 2"
-                              value={item.recommended_intensity ?? item.intensidad_recomendada ?? ''}
-                              onChange={(e) => handleUpdateExerciseParam(idx, 'recommended_intensity', e.target.value)}
-                              className="w-full bg-dark-900 border border-dark-700 focus:border-amber-400 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-amber-300 min-h-[44px] md:min-h-[38px] focus:outline-none placeholder:text-zinc-600 placeholder:font-normal"
-                            />
-                          </div>
-                        </div>
+                            {/* Fila inferior: Grid responsivo de parámetros (Series, Reps, Carga, Descanso, Intensidad) */}
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 text-left md:text-center">
+                              {/* Columna 1: Series */}
+                              <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
+                                <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Series</span>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={item.series}
+                                  onChange={(e) => handleUpdateExerciseParam(idx, 'series', e.target.value)}
+                                  className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
+                                />
+                              </div>
 
-                        {/* Observaciones / Consejos para el alumno */}
-                        <div className="mt-2.5 pt-2.5 border-t border-dark-800/80 text-left">
-                          <label className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold flex items-center gap-1.5 mb-1">
-                            <MessageSquare className="w-3 h-3 text-brand-light" />
-                            <span>Observaciones / Consejos</span>
-                          </label>
-                          <input
-                            type="text"
-                            placeholder="Ej: Controlar la bajada, mantener espalda recta..."
-                            value={item.observaciones || ''}
-                            onChange={(e) => handleUpdateExerciseParam(idx, 'observaciones', e.target.value)}
-                            className="w-full bg-dark-900 border border-dark-700 focus:border-brand rounded-lg px-3 py-2 md:py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none transition-colors min-h-[38px]"
-                          />
-                        </div>
-                      </div>
-                    ))}
+                              {/* Columna 2: Reps */}
+                              <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
+                                <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Reps</span>
+                                <input
+                                  type="text"
+                                  value={item.repeticiones}
+                                  onChange={(e) => handleUpdateExerciseParam(idx, 'repeticiones', e.target.value)}
+                                  className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
+                                />
+                              </div>
+
+                              {/* Columna 3: Carga */}
+                              <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
+                                <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Carga (kg)</span>
+                                <input
+                                  type="number"
+                                  step="0.5"
+                                  value={item.peso_sugerido}
+                                  onChange={(e) => handleUpdateExerciseParam(idx, 'peso_sugerido', e.target.value)}
+                                  className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-brand-light min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
+                                />
+                              </div>
+
+                              {/* Columna 4: Descanso */}
+                              <div className="bg-dark-850 p-2 rounded-xl border border-dark-750">
+                                <span className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold block mb-1">Descanso (s)</span>
+                                <input
+                                  type="number"
+                                  step="15"
+                                  value={item.descanso_seg}
+                                  onChange={(e) => handleUpdateExerciseParam(idx, 'descanso_seg', e.target.value)}
+                                  className="w-full bg-dark-900 border border-dark-700 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-white min-h-[44px] md:min-h-[38px] focus:outline-none focus:border-brand"
+                                />
+                              </div>
+
+                              {/* Columna 5: Intensidad Recomendada */}
+                              <div className="bg-dark-850 p-2 rounded-xl border border-dark-750 col-span-2 sm:col-span-1">
+                                <span className="text-[11px] md:text-[10px] text-amber-400 uppercase font-bold block mb-1">Intensidad</span>
+                                <input
+                                  type="text"
+                                  placeholder="RPE 8 / RIR 2"
+                                  value={item.recommended_intensity ?? item.intensidad_recomendada ?? ''}
+                                  onChange={(e) => handleUpdateExerciseParam(idx, 'recommended_intensity', e.target.value)}
+                                  className="w-full bg-dark-900 border border-dark-700 focus:border-amber-400 rounded-lg p-2 md:py-1.5 md:px-2 text-center text-base md:text-xs font-black text-amber-300 min-h-[44px] md:min-h-[38px] focus:outline-none placeholder:text-zinc-600 placeholder:font-normal"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Observaciones / Consejos para el alumno */}
+                            <div className="mt-2.5 pt-2.5 border-t border-dark-800/80 text-left">
+                              <label className="text-[11px] md:text-[10px] text-zinc-400 uppercase font-bold flex items-center gap-1.5 mb-1">
+                                <MessageSquare className="w-3 h-3 text-brand-light" />
+                                <span>Observaciones / Consejos</span>
+                              </label>
+                              <input
+                                type="text"
+                                placeholder="Ej: Controlar la bajada, mantener espalda recta..."
+                                value={item.observaciones || ''}
+                                onChange={(e) => handleUpdateExerciseParam(idx, 'observaciones', e.target.value)}
+                                className="w-full bg-dark-900 border border-dark-700 focus:border-brand rounded-lg px-3 py-2 md:py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none transition-colors min-h-[38px]"
+                              />
+                            </div>
+                          </div>
+                        );
+                      };
+
+                      return blocks.map((block, bIdx) => {
+                        if (!block.isGroup) {
+                          const { item, index } = block.items[0];
+                          return renderExerciseEditorCard(item, index);
+                        }
+
+                        return (
+                          <div
+                            key={`grp-block-${block.grupo_id}-${bIdx}`}
+                            className="rounded-2xl border border-violet-500/35 border-l-4 border-l-violet-500 bg-violet-950/15 p-2.5 space-y-2.5 shadow-md"
+                          >
+                            <div className="flex items-center justify-between px-1.5">
+                              <div className="flex items-center gap-2">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/20 border border-violet-400/40 text-violet-200 text-[10px] font-black tracking-wider uppercase">
+                                  <Link2 className="w-3 h-3" />
+                                  {block.label}
+                                </span>
+                                <span className="text-[10px] text-violet-300/80 font-medium">
+                                  {block.items.length} ejercicios encadenados sin descanso
+                                </span>
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              {block.items.map(({ item, index }) => renderExerciseEditorCard(item, index))}
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
 
                     {(currentActiveDay.ejercicios || []).length === 0 && (
                       <div className="p-8 text-center border-2 border-dashed border-dark-700 rounded-xl text-zinc-500 text-xs">

@@ -295,6 +295,8 @@ export function formatRoutineWithDays(rawRoutine) {
         return {
           ...ex,
           id: stableId,
+          grupo_id: ex.grupo_id || null,
+          es_descendente: Boolean(ex.es_descendente),
           recommended_intensity: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || '',
           intensidad_recomendada: ex.recommended_intensity || ex.intensidad_recomendada || ex.intensidad || '',
           observaciones: ex.observaciones || ex.notas || ''
@@ -1987,6 +1989,8 @@ export const dataService = {
             recommended_intensity: item.recommended_intensity || item.intensidad_recomendada || item.intensidad || '',
             intensidad_recomendada: item.recommended_intensity || item.intensidad_recomendada || item.intensidad || '',
             observaciones: item.observaciones ? String(item.observaciones).trim() : (item.notas ? String(item.notas).trim() : ''),
+            grupo_id: item.grupo_id || null,
+            es_descendente: Boolean(item.es_descendente),
             orden: item.orden || exIdx + 1
           };
         });
@@ -2848,31 +2852,67 @@ export const dataService = {
 
       if (completedExercises.length > 0) {
         const toInt = (val) => {
-          if (val === undefined || val === null || val === '') return null;
+          if (val === undefined || val === null || String(val).trim() === '') return null;
           const num = parseInt(String(val).replace(/[^0-9]/g, ''), 10);
           return isNaN(num) ? null : num;
         };
 
         const toFloat = (val) => {
-          if (val === undefined || val === null || val === '') return null;
-          const num = parseFloat(String(val).replace(/[^0-9.]/g, ''));
+          if (val === undefined || val === null || String(val).trim() === '') return null;
+          const normalized = String(val).trim().replace(',', '.').replace(/[^0-9.]/g, '');
+          if (!normalized) return null;
+          const num = parseFloat(normalized);
           return isNaN(num) ? null : num;
         };
 
-        const exerciseRows = completedExercises.map(ex => ({
-          session_log_id: sessionLogId,
-          exercise_name: ex.exercise_name || ex.nombre || 'Ejercicio',
-          prescribed_sets: toInt(ex.prescribed_sets ?? ex.series),
-          prescribed_reps: toInt(ex.prescribed_reps ?? ex.repeticiones),
-          prescribed_weight: toFloat(ex.prescribed_weight ?? ex.peso_sugerido ?? ex.peso),
-          actual_sets: toInt(ex.actual_sets ?? ex.series_reales ?? 1) || 1,
-          actual_reps: toInt(ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones),
-          actual_weight: toFloat(ex.actual_weight ?? ex.peso_real ?? ex.peso_sugerido),
-          actual_intensity: ex.actual_intensity ? String(ex.actual_intensity).trim() : null,
-          recommended_intensity: (ex.recommended_intensity || ex.intensidad_recomendada) ? String(ex.recommended_intensity || ex.intensidad_recomendada).trim() : null,
-          completado: true
-        }));
+        const perExSetCounter = new Map();
+        const normalizedCompletedMeta = completedExercises.map(ex => {
+          const exName = ex.exercise_name || ex.nombre || 'Ejercicio';
+          const exKey = exName.toLowerCase().trim();
+          const setNum = ex.set_number || ((perExSetCounter.get(exKey) || 0) + 1);
+          perExSetCounter.set(exKey, setNum);
 
+          const cleanBajadas = Array.isArray(ex.bajadas)
+            ? ex.bajadas
+                .map(b => ({
+                  peso: toFloat(b?.peso ?? b?.weight),
+                  reps: toInt(b?.reps ?? b?.repeticiones)
+                }))
+                .filter(b => b.peso !== null || b.reps !== null)
+            : [];
+
+          const resolvedActualWeight = ex.actual_weight !== undefined
+            ? toFloat(ex.actual_weight)
+            : (ex.peso_real !== undefined ? toFloat(ex.peso_real) : toFloat(ex.peso_sugerido));
+
+          const row = {
+            session_log_id: sessionLogId,
+            exercise_name: exName,
+            prescribed_sets: toInt(ex.prescribed_sets ?? ex.series),
+            prescribed_reps: toInt(ex.prescribed_reps ?? ex.repeticiones),
+            prescribed_weight: toFloat(ex.prescribed_weight ?? ex.peso_sugerido ?? ex.peso),
+            actual_sets: toInt(ex.actual_sets ?? ex.series_reales ?? 1) || 1,
+            actual_reps: toInt(ex.actual_reps ?? ex.reps_reales ?? ex.repeticiones),
+            actual_weight: resolvedActualWeight,
+            actual_intensity: ex.actual_intensity ? String(ex.actual_intensity).trim() : null,
+            recommended_intensity: (ex.recommended_intensity || ex.intensidad_recomendada) ? String(ex.recommended_intensity || ex.intensidad_recomendada).trim() : null,
+            completado: true,
+            bajadas: cleanBajadas
+          };
+
+          return { row, setNum, cleanBajadas };
+        });
+
+        const exerciseRows = normalizedCompletedMeta.map(m => m.row);
+
+        const isMissingColumnError = (err) =>
+          Boolean(err) && (
+            err.code === '42703' ||
+            err.code === 'PGRST204' ||
+            /bajadas|completado|actual_intensity|recommended_intensity/i.test(err.message || '')
+          );
+
+        let usedBajadasColumn = true;
         let { data: exData, error: exercisesError } = await withAuthRetry(() =>
           supabase
             .from('session_exercise_logs')
@@ -2880,55 +2920,42 @@ export const dataService = {
             .select()
         );
 
-        const isMissingColumnError = (err) =>
-          Boolean(err) && (
-            err.code === '42703' ||
-            err.code === 'PGRST204' ||
-            /completado|actual_intensity|recommended_intensity/i.test(err.message || '')
-          );
-
-        // Fallback preventivo si columnas opcionales ('completado', 'actual_intensity', 'recommended_intensity') aún no fueron migradas en Supabase
+        // Fallback progresivo si columnas opcionales ('bajadas', 'completado', 'actual_intensity', 'recommended_intensity') aún no fueron migradas
         if (isMissingColumnError(exercisesError)) {
           console.warn('[DataService] Columna opcional aún no migrada en session_exercise_logs. Reintentando inserción compatible...', exercisesError.message);
-          const msg = exercisesError.message || '';
-          const missingCompletado = /completado/i.test(msg);
-          const missingIntensity = /actual_intensity|recommended_intensity/i.test(msg);
+          const optionalCols = ['bajadas', 'completado', 'actual_intensity', 'recommended_intensity'];
+          const droppedCols = new Set();
 
-          const attemptRows = exerciseRows.map(r => {
-            const copy = { ...r };
-            if (missingCompletado || (!missingCompletado && !missingIntensity)) delete copy.completado;
-            if (missingIntensity || (!missingCompletado && !missingIntensity)) {
-              delete copy.actual_intensity;
-              delete copy.recommended_intensity;
+          for (let attempt = 0; attempt < 3 && isMissingColumnError(exercisesError); attempt++) {
+            const msg = exercisesError.message || '';
+            let matchedAny = false;
+            optionalCols.forEach(col => {
+              if (new RegExp(col, 'i').test(msg)) {
+                droppedCols.add(col);
+                matchedAny = true;
+              }
+            });
+            if (!matchedAny) {
+              optionalCols.forEach(col => droppedCols.add(col));
             }
-            return copy;
-          });
+            if (droppedCols.has('bajadas')) {
+              usedBajadasColumn = false;
+            }
 
-          const retry = await withAuthRetry(() =>
-            supabase
-              .from('session_exercise_logs')
-              .insert(attemptRows)
-              .select()
-          );
-          exData = retry.data;
-          exercisesError = retry.error;
-
-          if (isMissingColumnError(exercisesError)) {
-            const minimalRows = exerciseRows.map(r => {
+            const attemptRows = exerciseRows.map(r => {
               const copy = { ...r };
-              delete copy.completado;
-              delete copy.actual_intensity;
-              delete copy.recommended_intensity;
+              droppedCols.forEach(col => { delete copy[col]; });
               return copy;
             });
-            const retry2 = await withAuthRetry(() =>
+
+            const retry = await withAuthRetry(() =>
               supabase
                 .from('session_exercise_logs')
-                .insert(minimalRows)
+                .insert(attemptRows)
                 .select()
             );
-            exData = retry2.data;
-            exercisesError = retry2.error;
+            exData = retry.data;
+            exercisesError = retry.error;
           }
         }
 
@@ -2936,9 +2963,41 @@ export const dataService = {
           console.error('[DataService] Error insertando session_exercise_logs:', exercisesError);
           throw exercisesError;
         } else if (exData) {
+          // Si la columna JSONB 'bajadas' aún no existía en Supabase, persistir bajadas como filas compatibles [DROP S#]
+          if (!usedBajadasColumn) {
+            const fallbackDropRows = [];
+            normalizedCompletedMeta.forEach(({ row, setNum, cleanBajadas }) => {
+              cleanBajadas.forEach((b) => {
+                fallbackDropRows.push({
+                  session_log_id: sessionLogId,
+                  exercise_name: `${row.exercise_name} [DROP S${setNum}]`,
+                  prescribed_sets: row.prescribed_sets,
+                  prescribed_reps: row.prescribed_reps,
+                  prescribed_weight: row.prescribed_weight,
+                  actual_sets: 1,
+                  actual_reps: b.reps,
+                  actual_weight: b.peso
+                });
+              });
+            });
+
+            if (fallbackDropRows.length > 0) {
+              try {
+                await withAuthRetry(() =>
+                  supabase
+                    .from('session_exercise_logs')
+                    .insert(fallbackDropRows)
+                );
+              } catch (dropErr) {
+                console.warn('[DataService] Error guardando bajadas fallback:', dropErr);
+              }
+            }
+          }
+
           savedExerciseLogs = exData.map((row, idx) => ({
             ...row,
-            completado: row.completado !== undefined ? row.completado : exerciseRows[idx]?.completado !== false
+            completado: row.completado !== undefined ? row.completado : true,
+            bajadas: Array.isArray(row.bajadas) ? row.bajadas : (normalizedCompletedMeta[idx]?.cleanBajadas || [])
           }));
         }
       }
