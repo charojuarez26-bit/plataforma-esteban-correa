@@ -122,6 +122,63 @@ export function isExerciseLogCompleted(log) {
   return true;
 }
 
+const VALID_DIFFICULTIES = new Set(['suave', 'normal', 'duro']);
+
+export function normalizeDifficulty(val) {
+  if (!val) return null;
+  const clean = String(val).trim().toLowerCase();
+  return VALID_DIFFICULTIES.has(clean) ? clean : null;
+}
+
+export function parseSessionFeedback(session) {
+  if (!session) return { difficulty: null, cleanComment: '' };
+  let difficulty = normalizeDifficulty(session.dificultad_percibida || session.dificultad);
+  let cleanComment = session.comentarios_alumno ? String(session.comentarios_alumno).trim() : '';
+
+  const tagRegex = /^\[Percepci[oó]n:\s*(Suave|Normal|Duro)\]\s*/i;
+  const match = cleanComment.match(tagRegex);
+  if (match) {
+    if (!difficulty) {
+      difficulty = normalizeDifficulty(match[1]);
+    }
+    cleanComment = cleanComment.replace(tagRegex, '').trim();
+  }
+
+  return { difficulty, cleanComment };
+}
+
+export function getDifficultyBadgeConfig(difficulty) {
+  const norm = normalizeDifficulty(difficulty);
+  if (norm === 'suave') {
+    return {
+      key: 'suave',
+      label: 'Suave',
+      emoji: '😌',
+      badgeClass: 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300',
+      dotClass: 'bg-emerald-400'
+    };
+  }
+  if (norm === 'normal') {
+    return {
+      key: 'normal',
+      label: 'Normal',
+      emoji: '💪',
+      badgeClass: 'bg-sky-500/15 border-sky-500/35 text-sky-300',
+      dotClass: 'bg-sky-400'
+    };
+  }
+  if (norm === 'duro') {
+    return {
+      key: 'duro',
+      label: 'Duro',
+      emoji: '🔥',
+      badgeClass: 'bg-red-500/15 border-red-500/35 text-red-400',
+      dotClass: 'bg-red-500'
+    };
+  }
+  return null;
+}
+
 export function formatRoutineWithDays(rawRoutine) {
   if (!rawRoutine) return null;
 
@@ -2715,20 +2772,24 @@ export const dataService = {
   // ==========================================================
   // REGISTRO DE ENTRENAMIENTO REAL (FEEDBACK DE CARGAS & SESIONES)
   // ==========================================================
-  async saveWorkoutSession({ clientId, comentarios, exercises = [] }) {
+  async saveWorkoutSession({ clientId, comentarios, dificultad = null, exercises = [] }) {
     if (!clientId) {
       console.error('[DataService] saveWorkoutSession requiere clientId');
       return { data: null, error: new Error('clientId es requerido') };
     }
 
+    const normDiff = normalizeDifficulty(dificultad);
+    const trimmedComment = comentarios ? String(comentarios).trim() : '';
+
     try {
       const sessionPayload = {
         client_id: clientId,
         fecha: new Date().toISOString(),
-        comentarios_alumno: comentarios ? String(comentarios).trim() : null
+        comentarios_alumno: trimmedComment || null,
+        ...(normDiff ? { dificultad_percibida: normDiff } : {})
       };
 
-      const { data: sessionData, error: sessionError } = await withAuthRetry(() =>
+      let { data: sessionData, error: sessionError } = await withAuthRetry(() =>
         supabase
           .from('session_logs')
           .insert([sessionPayload])
@@ -2736,9 +2797,42 @@ export const dataService = {
           .single()
       );
 
+      // Fallback compatible si la columna 'dificultad_percibida' aún no fue migrada en Supabase
+      if (
+        sessionError &&
+        normDiff &&
+        (sessionError.code === '42703' ||
+          sessionError.code === 'PGRST204' ||
+          /dificultad_percibida/i.test(sessionError.message || ''))
+      ) {
+        console.warn('[DataService] Columna dificultad_percibida pendiente en session_logs. Guardando percepción en comentarios_alumno...');
+        const diffLabel = normDiff.charAt(0).toUpperCase() + normDiff.slice(1);
+        const encodedComment = trimmedComment
+          ? `[Percepción: ${diffLabel}] ${trimmedComment}`
+          : `[Percepción: ${diffLabel}]`;
+
+        const retrySession = await withAuthRetry(() =>
+          supabase
+            .from('session_logs')
+            .insert([{
+              client_id: clientId,
+              fecha: sessionPayload.fecha,
+              comentarios_alumno: encodedComment
+            }])
+            .select()
+            .single()
+        );
+        sessionData = retrySession.data;
+        sessionError = retrySession.error;
+      }
+
       if (sessionError) {
         console.error('[DataService] Error insertando session_logs:', sessionError);
         throw sessionError;
+      }
+
+      if (sessionData && normDiff && !sessionData.dificultad_percibida) {
+        sessionData = { ...sessionData, dificultad_percibida: normDiff };
       }
 
       const sessionLogId = sessionData.id;
@@ -2924,6 +3018,24 @@ export const dataService = {
     supabaseLogs.forEach(l => logsMap.set(l.id, l));
 
     return Array.from(logsMap.values()).sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  },
+
+  async getRecentSessionFeedbacks(limit = 6) {
+    try {
+      const { data, error } = await withAuthRetry(() =>
+        supabase
+          .from('session_logs')
+          .select('*, session_exercise_logs(id, exercise_name)')
+          .order('fecha', { ascending: false })
+          .limit(limit)
+      );
+      if (!error && Array.isArray(data)) {
+        return data;
+      }
+    } catch (err) {
+      console.warn('[DataService] Error consultando feedbacks recientes:', err);
+    }
+    return [];
   }
 };
 

@@ -14,7 +14,8 @@ import {
   CheckCircle2, 
   Clock, 
   ChevronRight,
-  DollarSign
+  DollarSign,
+  MessageSquare
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -26,7 +27,7 @@ import {
   ResponsiveContainer, 
   Legend 
 } from 'recharts';
-import { dataService } from '../../services/dataService';
+import { dataService, parseSessionFeedback, getDifficultyBadgeConfig } from '../../services/dataService';
 import ClientAvatar from '../common/ClientAvatar';
 
 export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavigateToClient }) {
@@ -40,6 +41,7 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
     paymentsList: []
   });
   const [appointments, setAppointments] = useState([]);
+  const [recentFeedbacks, setRecentFeedbacks] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [weekly, setWeekly] = useState({
     chart: ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'].map(dia => ({ dia, programados: 0, asistencias: 0 })),
@@ -85,14 +87,16 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
   const loadDashboardData = async () => {
     setIsLoading(true);
     try {
-      const [data, apts, weeklyRes] = await Promise.all([
+      const [data, apts, weeklyRes, feedbacksRes] = await Promise.all([
         dataService.getDashboardMetrics(),
         dataService.getAppointments(),
-        dataService.getWeeklyActivity()
+        dataService.getWeeklyActivity(),
+        dataService.getRecentSessionFeedbacks(6)
       ]);
       if (data) setMetrics(data);
       if (Array.isArray(apts)) setAppointments(apts.slice(0, 4));
       if (weeklyRes) setWeekly(weeklyRes);
+      if (Array.isArray(feedbacksRes)) setRecentFeedbacks(feedbacksRes);
     } catch (err) {
       console.error('Error cargando métricas del Dashboard:', err);
     } finally {
@@ -518,6 +522,90 @@ export default function DashboardView({ onNavigate, onOpenNewClientModal, onNavi
           </button>
         </div>
 
+      </div>
+
+      {/* Feedback Reciente de Entrenamientos (Suave / Normal / Duro + Comentarios) */}
+      <div className="card-dark rounded-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-brand-light" />
+              <span>Feedback Reciente de Entrenamientos</span>
+            </h2>
+            <p className="text-xs text-gray-400">
+              Sensación percibida por tus alumnos al finalizar cada sesión (Suave, Normal o Duro)
+            </p>
+          </div>
+        </div>
+
+        {recentFeedbacks.length === 0 ? (
+          <div className="py-6 text-center border border-dashed border-dark-700/80 rounded-xl p-4 bg-dark-900/40">
+            <Dumbbell className="w-7 h-7 text-gray-500 mx-auto mb-2 opacity-60" />
+            <p className="text-xs font-semibold text-gray-300">Todavía no hay sesiones con feedback</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">
+              Cuando tus alumnos finalicen sus rutinas aparecerá aquí cómo sintieron el entrenamiento.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {recentFeedbacks.map((fb) => {
+              const fbClient = (metrics.clientsList || []).find(c => c.id === fb.client_id);
+              const clientName = fbClient?.nombre_completo || 'Alumno';
+              const { difficulty, cleanComment } = parseSessionFeedback(fb);
+              const diffBadge = getDifficultyBadgeConfig(difficulty);
+              const dateLabel = fb.fecha
+                ? new Date(fb.fecha).toLocaleDateString('es-AR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+                : '';
+              const uniqueExCount = new Set(
+                (fb.session_exercise_logs || []).map(l => (l.exercise_name || '').toLowerCase().trim()).filter(Boolean)
+              ).size;
+
+              return (
+                <div
+                  key={fb.id}
+                  onClick={() => onNavigateToClient ? onNavigateToClient(fb.client_id) : onNavigate('clientes')}
+                  className="p-3.5 rounded-xl bg-dark-900 border border-dark-700/70 hover:border-brand/40 transition-all cursor-pointer group flex flex-col justify-between gap-2.5"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <ClientAvatar
+                        client={fbClient}
+                        name={clientName}
+                        size="sm"
+                        rounded="rounded-lg"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-white group-hover:text-brand-light transition-colors truncate">
+                          {clientName}
+                        </p>
+                        <p className="text-[10px] text-gray-400">
+                          {dateLabel}{uniqueExCount > 0 ? ` • ${uniqueExCount} ejerc.` : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    {diffBadge && (
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[10px] font-bold shrink-0 ${diffBadge.badgeClass}`}>
+                        <span>{diffBadge.emoji}</span>
+                        <span>{diffBadge.label}</span>
+                      </span>
+                    )}
+                  </div>
+
+                  {cleanComment ? (
+                    <p className="text-[11px] text-gray-300 italic line-clamp-2 bg-dark-950/60 border border-dark-800 rounded-lg px-2.5 py-1.5">
+                      "{cleanComment}"
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-gray-500 italic">
+                      Sin comentario adicional
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
     </div>

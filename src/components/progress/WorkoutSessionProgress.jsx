@@ -25,7 +25,7 @@ import {
   Tooltip, 
   ResponsiveContainer 
 } from 'recharts';
-import { dataService, isExerciseLogCompleted } from '../../services/dataService';
+import { dataService, isExerciseLogCompleted, parseSessionFeedback, getDifficultyBadgeConfig } from '../../services/dataService';
 
 // Formatea masas en kg con separador de miles y máx. 1 decimal (sin ceros sobrantes)
 const fmtKg = (value) => {
@@ -514,6 +514,8 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
               setsList.some(s => isExerciseLogCompleted(s))
             ).length;
             const skippedExercisesCount = groupedEntries.length - completedExercisesCount;
+            const { difficulty: sessionDiff, cleanComment: sessionCleanComment } = parseSessionFeedback(session);
+            const diffBadge = getDifficultyBadgeConfig(sessionDiff);
 
             return (
               <div 
@@ -547,7 +549,13 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 self-start sm:self-auto">
+                  <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                    {diffBadge && (
+                      <span className={`px-2.5 py-1 rounded-lg border text-xs font-bold inline-flex items-center gap-1.5 ${diffBadge.badgeClass}`}>
+                        <span>{diffBadge.emoji}</span>
+                        <span>Sensación: {diffBadge.label}</span>
+                      </span>
+                    )}
                     <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold flex items-center gap-1">
                       <Activity className="w-3.5 h-3.5" />
                       <span>{fmtKg(sessionTotalVolume)} kg volumen</span>
@@ -556,7 +564,7 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
                 </div>
 
                 {/* Comentarios del alumno al finalizar la sesión */}
-                {session.comentarios_alumno ? (
+                {sessionCleanComment ? (
                   <div className="bg-brand-950/30 border border-brand/30 rounded-xl p-3.5 flex items-start gap-3 shadow-inner">
                     <MessageSquare className="w-4 h-4 text-brand-light shrink-0 mt-0.5" />
                     <div className="space-y-1">
@@ -564,15 +572,15 @@ export default function WorkoutSessionProgress({ clientId, clientName }) {
                         Feedback / Sensaciones del Alumno:
                       </span>
                       <p className="text-xs text-gray-200 italic font-medium leading-relaxed">
-                        "{session.comentarios_alumno}"
+                        "{sessionCleanComment}"
                       </p>
                     </div>
                   </div>
-                ) : (
+                ) : !diffBadge ? (
                   <p className="text-[11px] text-gray-500 italic px-1">
                     Sin comentarios adicionales registrados por el alumno al finalizar.
                   </p>
-                )}
+                ) : null}
 
                 {/* Tabla de desglose de ejercicios serie por serie */}
                 {groupedEntries.length > 0 && (

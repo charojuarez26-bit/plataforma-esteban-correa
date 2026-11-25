@@ -54,7 +54,7 @@ import {
   Tooltip, 
   ResponsiveContainer 
 } from 'recharts';
-import { dataService, isExerciseLogCompleted } from '../../services/dataService';
+import { dataService, isExerciseLogCompleted, parseSessionFeedback, getDifficultyBadgeConfig } from '../../services/dataService';
 import { supabase } from '../../lib/supabaseClient';
 import { 
   calcularEstadoPago, 
@@ -175,12 +175,14 @@ export default function StudentPortal({ student, onLogout }) {
   const [completedSessionsToday, setCompletedSessionsToday] = useState([]);
   const [entrenamientosDeHoy, setEntrenamientosDeHoy] = useState([]);
   const [sessionComments, setSessionComments] = useState('');
+  const [sessionDifficulty, setSessionDifficulty] = useState(''); // 'suave' | 'normal' | 'duro' | ''
 
   // Persistencia de borrador en localStorage (anti-pérdida al cambiar de app en celular)
   const workoutStateRef = useRef({
     completedSets: {},
     exerciseLogs: {},
-    sessionComments: ''
+    sessionComments: '',
+    sessionDifficulty: ''
   });
   const loadedDraftKeyRef = useRef(null);
   const restoredActiveSessionRef = useRef(false);
@@ -790,22 +792,27 @@ export default function StudentPortal({ student, onLogout }) {
         const restoredSets = (parsed?.completedSets && typeof parsed.completedSets === 'object') ? parsed.completedSets : {};
         const restoredLogs = (parsed?.exerciseLogs && typeof parsed.exerciseLogs === 'object') ? parsed.exerciseLogs : {};
         const restoredComments = typeof parsed?.sessionComments === 'string' ? parsed.sessionComments : '';
+        const restoredDifficulty = typeof parsed?.sessionDifficulty === 'string' ? parsed.sessionDifficulty : '';
         setCompletedSets(restoredSets);
         setExerciseLogs(restoredLogs);
         setSessionComments(restoredComments);
+        setSessionDifficulty(restoredDifficulty);
         workoutStateRef.current = {
           completedSets: restoredSets,
           exerciseLogs: restoredLogs,
-          sessionComments: restoredComments
+          sessionComments: restoredComments,
+          sessionDifficulty: restoredDifficulty
         };
       } else {
         setCompletedSets({});
         setExerciseLogs({});
         setSessionComments('');
+        setSessionDifficulty('');
         workoutStateRef.current = {
           completedSets: {},
           exerciseLogs: {},
-          sessionComments: ''
+          sessionComments: '',
+          sessionDifficulty: ''
         };
       }
     } catch (err) {
@@ -813,10 +820,12 @@ export default function StudentPortal({ student, onLogout }) {
       setCompletedSets({});
       setExerciseLogs({});
       setSessionComments('');
+      setSessionDifficulty('');
       workoutStateRef.current = {
         completedSets: {},
         exerciseLogs: {},
-        sessionComments: ''
+        sessionComments: '',
+        sessionDifficulty: ''
       };
     }
 
@@ -881,12 +890,14 @@ export default function StudentPortal({ student, onLogout }) {
       completedSets: nextPartial.completedSets !== undefined ? nextPartial.completedSets : workoutStateRef.current.completedSets,
       exerciseLogs: nextPartial.exerciseLogs !== undefined ? nextPartial.exerciseLogs : workoutStateRef.current.exerciseLogs,
       sessionComments: nextPartial.sessionComments !== undefined ? nextPartial.sessionComments : workoutStateRef.current.sessionComments,
+      sessionDifficulty: nextPartial.sessionDifficulty !== undefined ? nextPartial.sessionDifficulty : workoutStateRef.current.sessionDifficulty,
       updatedAt: new Date().toISOString()
     };
     workoutStateRef.current = {
       completedSets: merged.completedSets,
       exerciseLogs: merged.exerciseLogs,
-      sessionComments: merged.sessionComments
+      sessionComments: merged.sessionComments,
+      sessionDifficulty: merged.sessionDifficulty
     };
     try {
       localStorage.setItem(workoutDraftKey, JSON.stringify(merged));
@@ -916,6 +927,11 @@ export default function StudentPortal({ student, onLogout }) {
   const updateSessionComments = (value) => {
     setSessionComments(value);
     saveWorkoutDraftImmediate({ sessionComments: value });
+  };
+
+  const updateSessionDifficulty = (value) => {
+    setSessionDifficulty(value);
+    saveWorkoutDraftImmediate({ sessionDifficulty: value });
   };
 
   const toggleSetCompleted = (exerciseId, setIdx, restParam = 90) => {
@@ -1074,6 +1090,7 @@ export default function StudentPortal({ student, onLogout }) {
       const saveRes = await dataService.saveWorkoutSession({
         clientId: studentId,
         comentarios: sessionComments,
+        dificultad: sessionDifficulty,
         exercises: exercisesForLog
       });
 
@@ -1117,7 +1134,9 @@ export default function StudentPortal({ student, onLogout }) {
 
       setCompletedSessionsToday(prev => [...prev, dayId, dayLabel, currentDay.dia].filter(Boolean));
       setSessionComments('');
+      setSessionDifficulty('');
       workoutStateRef.current.sessionComments = '';
+      workoutStateRef.current.sessionDifficulty = '';
       setShowFinishConfirmModal(false);
       setShowIncompleteWarningModal(false);
       // Abrir modal de celebración con la tarjeta personalizada para Stories (solo ejercicios realizados)
@@ -2538,24 +2557,34 @@ export default function StudentPortal({ student, onLogout }) {
                   const completedExercisesCount = groupedEntries.filter(([, setsArr]) =>
                     setsArr.some(s => isExerciseLogCompleted(s))
                   ).length;
+                  const { difficulty: sessDiff, cleanComment: sessCleanComment } = parseSessionFeedback(sess);
+                  const diffBadge = getDifficultyBadgeConfig(sessDiff);
 
                   return (
                     <div key={sess.id} className="card-dark rounded-xl p-3.5 text-xs space-y-2.5">
-                      <div className="flex justify-between items-center border-b border-dark-700/60 pb-1.5">
+                      <div className="flex justify-between items-center gap-2 border-b border-dark-700/60 pb-1.5 flex-wrap">
                         <span className="font-bold text-white flex items-center gap-1.5">
                           <Flame className="w-3.5 h-3.5 text-amber-400" />
                           {sessDate}
                         </span>
-                        <span className="text-[10px] text-gray-400 font-semibold bg-dark-900 px-2 py-0.5 rounded-full border border-dark-700">
-                          {completedExercisesCount === groupedEntries.length
-                            ? `${completedExercisesCount} ${completedExercisesCount === 1 ? 'ejercicio' : 'ejercicios'}`
-                            : `${completedExercisesCount}/${groupedEntries.length} ejercicios`}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {diffBadge && (
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold ${diffBadge.badgeClass}`}>
+                              <span>{diffBadge.emoji}</span>
+                              <span>{diffBadge.label}</span>
+                            </span>
+                          )}
+                          <span className="text-[10px] text-gray-400 font-semibold bg-dark-900 px-2 py-0.5 rounded-full border border-dark-700">
+                            {completedExercisesCount === groupedEntries.length
+                              ? `${completedExercisesCount} ${completedExercisesCount === 1 ? 'ejercicio' : 'ejercicios'}`
+                              : `${completedExercisesCount}/${groupedEntries.length} ejercicios`}
+                          </span>
+                        </div>
                       </div>
 
-                      {sess.comentarios_alumno && (
+                      {sessCleanComment && (
                         <p className="text-[11px] text-brand-light italic bg-brand-950/20 p-2 rounded-lg border border-brand/20">
-                          💬 "{sess.comentarios_alumno}"
+                          💬 "{sessCleanComment}"
                         </p>
                       )}
 
@@ -3010,6 +3039,37 @@ export default function StudentPortal({ student, onLogout }) {
                   </p>
                 </div>
 
+                {/* Selector de Percepción del Entrenamiento: Suave / Normal / Duro */}
+                <div className="text-left space-y-1.5">
+                  <label className="block text-[11px] font-semibold text-gray-300">
+                    ¿Cómo te pareció el entrenamiento? <span className="text-brand-light">*</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { value: 'suave', label: 'Suave', emoji: '😌', active: 'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-sm' },
+                      { value: 'normal', label: 'Normal', emoji: '💪', active: 'bg-sky-500/20 border-sky-400 text-sky-300 shadow-sm' },
+                      { value: 'duro', label: 'Duro', emoji: '🔥', active: 'bg-red-500/20 border-red-400 text-red-300 shadow-sm' }
+                    ].map((opt) => {
+                      const isSelected = sessionDifficulty === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => updateSessionDifficulty(opt.value)}
+                          className={`py-2.5 px-2 rounded-xl border text-xs font-bold flex flex-col items-center justify-center gap-1 transition-all active:scale-95 ${
+                            isSelected
+                              ? opt.active
+                              : 'bg-dark-950 border-dark-700 text-gray-400 hover:border-dark-600 hover:text-gray-200'
+                          }`}
+                        >
+                          <span className="text-base leading-none">{opt.emoji}</span>
+                          <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* Campo opcional de comentarios / feedback para el coach */}
                 <div className="text-left space-y-1">
                   <label className="block text-[11px] font-semibold text-gray-300">
@@ -3024,7 +3084,13 @@ export default function StudentPortal({ student, onLogout }) {
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 pt-2">
+                {!sessionDifficulty && (
+                  <p className="text-[10px] text-amber-400/90 font-medium">
+                    Elegí Suave, Normal o Duro para enviar tu sesión al entrenador.
+                  </p>
+                )}
+
+                <div className="grid grid-cols-2 gap-3 pt-1">
                   <button
                     type="button"
                     disabled={isFinishingWorkout}
@@ -3035,9 +3101,9 @@ export default function StudentPortal({ student, onLogout }) {
                   </button>
                   <button
                     type="button"
-                    disabled={isFinishingWorkout}
+                    disabled={isFinishingWorkout || !sessionDifficulty}
                     onClick={handleConfirmFinishWorkout}
-                    className="py-3 px-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-xs transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-lg"
+                    className="py-3 px-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shadow-lg"
                   >
                     {isFinishingWorkout ? 'Guardando...' : 'Finalizar igual'}
                   </button>
@@ -3051,7 +3117,7 @@ export default function StudentPortal({ student, onLogout }) {
       {/* 2b. Modal Confirmación: Finalizar Entreno & Guardar Sesión con Feedback (rutina completa) */}
       {showFinishConfirmModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-dark-900 border border-dark-700 shadow-2xl p-6 text-center space-y-4 animate-in zoom-in-95">
+          <div className="w-full max-w-sm rounded-2xl bg-dark-900 border border-dark-700 shadow-2xl p-6 text-center space-y-4 animate-in zoom-in-95 max-h-[90vh] overflow-y-auto">
             <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
               <Flame className="w-7 h-7" />
             </div>
@@ -3060,6 +3126,37 @@ export default function StudentPortal({ student, onLogout }) {
               <p className="text-xs text-gray-400">
                 Se registrará tu entrenamiento de {currentDay?.dia || `Día ${selectedDayIndex + 1}`} con los pesos, repeticiones y series ejecutadas.
               </p>
+            </div>
+
+            {/* Selector de Percepción del Entrenamiento: Suave / Normal / Duro */}
+            <div className="text-left space-y-1.5">
+              <label className="block text-[11px] font-semibold text-gray-300">
+                ¿Cómo te pareció el entrenamiento? <span className="text-brand-light">*</span>
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { value: 'suave', label: 'Suave', emoji: '😌', active: 'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-sm' },
+                  { value: 'normal', label: 'Normal', emoji: '💪', active: 'bg-sky-500/20 border-sky-400 text-sky-300 shadow-sm' },
+                  { value: 'duro', label: 'Duro', emoji: '🔥', active: 'bg-red-500/20 border-red-400 text-red-300 shadow-sm' }
+                ].map((opt) => {
+                  const isSelected = sessionDifficulty === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => updateSessionDifficulty(opt.value)}
+                      className={`py-2.5 px-2 rounded-xl border text-xs font-bold flex flex-col items-center justify-center gap-1 transition-all active:scale-95 ${
+                        isSelected
+                          ? opt.active
+                          : 'bg-dark-950 border-dark-700 text-gray-400 hover:border-dark-600 hover:text-gray-200'
+                      }`}
+                    >
+                      <span className="text-base leading-none">{opt.emoji}</span>
+                      <span>{opt.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             {/* Campo opcional de comentarios / feedback para el coach */}
@@ -3076,7 +3173,13 @@ export default function StudentPortal({ student, onLogout }) {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3 pt-2">
+            {!sessionDifficulty && (
+              <p className="text-[10px] text-amber-400/90 font-medium">
+                Elegí Suave, Normal o Duro para enviar tu sesión al entrenador.
+              </p>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
               <button
                 type="button"
                 onClick={() => setShowFinishConfirmModal(false)}
@@ -3086,9 +3189,9 @@ export default function StudentPortal({ student, onLogout }) {
               </button>
               <button
                 type="button"
-                disabled={isFinishingWorkout}
+                disabled={isFinishingWorkout || !sessionDifficulty}
                 onClick={handleConfirmFinishWorkout}
-                className="py-3 px-4 rounded-xl bg-brand hover:bg-brand-dark text-white font-black text-xs transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-glow-red"
+                className="py-3 px-4 rounded-xl bg-brand hover:bg-brand-dark text-white font-black text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shadow-glow-red"
               >
                 {isFinishingWorkout ? 'Guardando...' : 'Finalizar y Guardar'}
               </button>
