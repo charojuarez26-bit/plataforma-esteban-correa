@@ -2158,90 +2158,91 @@ export default function RoutinesManagerView({ onNavigateToClient, initialClientI
                             key={item.instanceId || item.id || `active-day-item-${activeDayIndex}-${idx}`}
                             className="p-3.5 sm:p-3 rounded-2xl md:rounded-xl bg-dark-900 border border-dark-700 space-y-3 shadow-md"
                           >
-                            {/* Fila superior: Nombre del ejercicio y acciones */}
-                            <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-dark-800">
-                              <div className="flex items-center gap-2 min-w-0 flex-1">
-                                <span className="w-6 h-6 rounded-full bg-brand/20 text-brand-light text-xs font-bold flex items-center justify-center shrink-0">
+                            {/* Cabecera responsiva: 2 filas en móvil (título completo arriba, controles abajo) */}
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 pb-2 border-b border-dark-800">
+                              {/* Fila 1 (Título): badge de orden + nombre completo */}
+                              <div className="flex items-start sm:items-center gap-2 min-w-0 flex-1">
+                                <span className="w-6 h-6 rounded-full bg-brand/20 text-brand-light text-xs font-bold flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
                                   {idx + 1}
                                 </span>
-                                <span className="text-sm md:text-xs font-bold text-white truncate">
+                                <span className="text-sm md:text-xs font-bold text-white leading-snug break-words">
                                   {item.exercise?.nombre || 'Ejercicio'}
                                 </span>
-                                {isDrop && (
-                                  <span className="px-1.5 py-0.5 rounded-md bg-orange-500/20 border border-orange-500/40 text-orange-300 text-[10px] font-black tracking-wider uppercase shrink-0">
-                                    DROP
-                                  </span>
-                                )}
                               </div>
 
-                              <div className="flex items-center gap-1 shrink-0 flex-wrap justify-end">
-                                {/* Toggle Drop Set / Serie Descendente */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleDropSet(idx)}
-                                  className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 min-h-[32px] ${
-                                    isDrop
-                                      ? 'bg-orange-500/20 border-orange-400 text-orange-300 shadow-sm'
-                                      : 'bg-dark-850 hover:bg-dark-800 border-dark-700 text-zinc-400 hover:text-orange-300'
-                                  }`}
-                                  title="Activar/desactivar serie descendente (Drop Set)"
-                                >
-                                  <TrendingDown className="w-3.5 h-3.5" />
-                                  <span>{isDrop ? 'DROP' : 'Drop Set'}</span>
-                                </button>
-
-                                {/* Botón Vincular / Desvincular Superserie (excepto último ejercicio del día) */}
-                                {!isLastOfDay && (
+                              {/* Fila 2 (Controles): Drop Set y Vincular a la izquierda; orden y eliminar a la derecha */}
+                              <div className="flex items-center justify-between gap-2 w-full sm:w-auto shrink-0">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {/* Toggle Drop Set / Serie Descendente */}
                                   <button
                                     type="button"
-                                    onClick={() => handleToggleLinkWithNext(idx)}
+                                    onClick={() => handleToggleDropSet(idx)}
                                     className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 min-h-[32px] ${
-                                      isLinkedWithNext
-                                        ? 'bg-violet-500/20 border-violet-400 text-violet-200 hover:bg-violet-500/30'
-                                        : 'bg-dark-850 hover:bg-dark-800 border-dark-700 text-zinc-400 hover:text-violet-300'
+                                      isDrop
+                                        ? 'bg-orange-500/20 border-orange-400 text-orange-300 shadow-sm'
+                                        : 'bg-dark-850 hover:bg-dark-800 border-dark-700 text-zinc-400 hover:text-orange-300'
                                     }`}
-                                    title={isLinkedWithNext ? 'Desvincular del ejercicio siguiente' : 'Vincular con el ejercicio siguiente (Superserie)'}
+                                    title="Activar/desactivar serie descendente (Drop Set)"
                                   >
-                                    {isLinkedWithNext ? (
-                                      <>
-                                        <Unlink className="w-3.5 h-3.5" />
-                                        <span>Desvincular</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Link2 className="w-3.5 h-3.5" />
-                                        <span>Vincular</span>
-                                      </>
-                                    )}
+                                    <TrendingDown className="w-3.5 h-3.5" />
+                                    <span>{isDrop ? 'DROP' : 'Drop Set'}</span>
                                   </button>
-                                )}
 
-                                <button
-                                  type="button"
-                                  onClick={() => handleMoveExerciseUp(idx)}
-                                  disabled={idx === 0}
-                                  className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[32px] min-w-[32px] flex items-center justify-center"
-                                  title="Subir orden"
-                                >
-                                  <ArrowUp className="w-4 h-4" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleMoveExerciseDown(idx)}
-                                  disabled={isLastOfDay}
-                                  className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[32px] min-w-[32px] flex items-center justify-center"
-                                  title="Bajar orden"
-                                >
-                                  <ArrowDown className="w-4 h-4" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveExercise(idx)}
-                                  className="p-1.5 rounded-lg bg-red-950/30 hover:bg-red-950/60 text-red-400 hover:text-red-300 ml-0.5 min-h-[32px] min-w-[32px] flex items-center justify-center border border-red-500/20"
-                                  title="Quitar ejercicio"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
+                                  {/* Botón Vincular / Desvincular Superserie (excepto último ejercicio del día) */}
+                                  {!isLastOfDay && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleToggleLinkWithNext(idx)}
+                                      className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 min-h-[32px] ${
+                                        isLinkedWithNext
+                                          ? 'bg-violet-500/20 border-violet-400 text-violet-200 hover:bg-violet-500/30'
+                                          : 'bg-dark-850 hover:bg-dark-800 border-dark-700 text-zinc-400 hover:text-violet-300'
+                                      }`}
+                                      title={isLinkedWithNext ? 'Desvincular del ejercicio siguiente' : 'Vincular con el ejercicio siguiente (Superserie)'}
+                                    >
+                                      {isLinkedWithNext ? (
+                                        <>
+                                          <Unlink className="w-3.5 h-3.5" />
+                                          <span>Desvincular</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Link2 className="w-3.5 h-3.5" />
+                                          <span>Vincular</span>
+                                        </>
+                                      )}
+                                    </button>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveExerciseUp(idx)}
+                                    disabled={idx === 0}
+                                    className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[32px] min-w-[32px] flex items-center justify-center"
+                                    title="Subir orden"
+                                  >
+                                    <ArrowUp className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveExerciseDown(idx)}
+                                    disabled={isLastOfDay}
+                                    className="p-1 rounded-lg hover:bg-dark-800 text-zinc-400 hover:text-white disabled:opacity-20 min-h-[32px] min-w-[32px] flex items-center justify-center"
+                                    title="Bajar orden"
+                                  >
+                                    <ArrowDown className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveExercise(idx)}
+                                    className="p-1.5 rounded-lg bg-red-950/30 hover:bg-red-950/60 text-red-400 hover:text-red-300 ml-0.5 min-h-[32px] min-w-[32px] flex items-center justify-center border border-red-500/20"
+                                    title="Quitar ejercicio"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
                               </div>
                             </div>
 
